@@ -1,0 +1,8 @@
+<Solution>
+  <Configurations>
+    <Platform Name="ARM64" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Wapi.vcxproj" Id="3e4c7d90-e9c0-4ec9-9386-f45cab493888" />
+</Solution>
