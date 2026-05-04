@@ -36,8 +36,6 @@ void test(const std::string& name, const std::string& script) {
 
 int main() {
 
-    run("int pid = findProcessPID(\"notepad\")");
-
     std::cout << "--- Wapi Coverage Test ---\n\n";
 
     // Process

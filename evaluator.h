@@ -30,5 +30,6 @@ private:
     WapiValue wapi_openProcess(int pid);
     WapiValue wapi_terminateProcess(int pid);
     WapiValue wapi_suspendProcess(int pid);
+	WapiValue wapi_resumeProcess(int pid);
 };
 

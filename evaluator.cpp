@@ -56,6 +56,10 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         int pid = std::get<int>(evalNode(call->args[0]));
         return wapi_suspendProcess(pid);
     }
+	if (call->name == "resumeProcess") {
+		int pid = std::get<int>(evalNode(call->args[0]));
+		return wapi_resumeProcess(pid);
+	}
 
     throw std::runtime_error("Unknown function: " + call->name);
 }
@@ -149,6 +153,20 @@ WapiValue Evaluator::wapi_suspendProcess(int handle) {
     return 0;
 }
 
+WapiValue Evaluator::wapi_resumeProcess(int handle) {
+	typedef LONG(NTAPI* NtResumeProcessFunc)(HANDLE);
 
+	HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+	if (!ntdll) throw WapiUnstableException("Failed to get ntdll.dll");
 
+	NtResumeProcessFunc NtResumeProcess = (NtResumeProcessFunc)GetProcAddress(ntdll, "NtResumeProcess");
+    if (!NtResumeProcess) throw WapiUnstableException("Failed to find NtResumeProcess");
+
+    HANDLE hProcess = (HANDLE)(uintptr_t)handle;
+    LONG status = NtResumeProcess(hProcess);
+
+    if (status != 0) throw WapiUnstableException("NtResumeProcess failed");
+
+    return 0;
+}
 
