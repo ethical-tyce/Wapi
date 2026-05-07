@@ -4,7 +4,6 @@
 #include <memory>
 #include "lexer.h"
 
-// AST Nodes
 struct ASTNode {
     virtual ~ASTNode() = default;
 };
@@ -12,6 +11,11 @@ struct ASTNode {
 struct IntLiteral : ASTNode {
     int value;
     IntLiteral(int v) : value(v) {}
+};
+
+struct LongLongLiteral : ASTNode {
+    long long value;
+    LongLongLiteral(long long v) : value(v) {}
 };
 
 struct StringLiteral : ASTNode {

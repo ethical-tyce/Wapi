@@ -23,17 +23,14 @@ std::shared_ptr<Program> Parser::parse() {
 std::shared_ptr<ASTNode> Parser::parseStatement() {
     Token t = current();
 
-    // variable declaration: int x = ...
-    if (t.type == TYPE_INT || t.type == TYPE_STRING || t.type == TYPE_BOOL)
+    if (t.type == TYPE_INT || t.type == TYPE_LONG || t.type == TYPE_STRING || t.type == TYPE_BOOL)
         return parseVarDeclaration();
 
-    // dot call: .send(...)
     if (t.type == DOT_CALL) {
         consume();
         return parseFunctionCall(t.value);
     }
 
-    // identifier followed by ( = function call
     if (t.type == IDENTIFIER) {
         consume();
         if (current().type == LPAREN)
@@ -45,10 +42,10 @@ std::shared_ptr<ASTNode> Parser::parseStatement() {
 
 std::shared_ptr<ASTNode> Parser::parseVarDeclaration() {
     auto decl = std::make_shared<VarDeclaration>();
-    decl->type = consume().value;            // int / string / bool
-    decl->name = expect(IDENTIFIER).value;   // variable name
-    expect(ASSIGN);                          // =
-    decl->value = parseExpression();         // right hand side
+    decl->type = consume().value;
+    decl->name = expect(IDENTIFIER).value;
+    expect(ASSIGN);
+    decl->value = parseExpression();
     return decl;
 }
 
@@ -67,6 +64,10 @@ std::shared_ptr<ASTNode> Parser::parseFunctionCall(const std::string& name) {
 std::shared_ptr<ASTNode> Parser::parseExpression() {
     Token t = current();
 
+    if (t.type == HEX_LITERAL) {
+        consume();
+        return std::make_shared<LongLongLiteral>(std::stoull(t.value, nullptr, 16));
+    }
     if (t.type == INT_LITERAL) {
         consume();
         return std::make_shared<IntLiteral>(std::stoi(t.value));

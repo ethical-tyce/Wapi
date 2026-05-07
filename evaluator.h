@@ -4,7 +4,7 @@
 #include <variant>
 #include "parser.h"
 
-using WapiValue = std::variant<int, std::string, bool>;
+using WapiValue = std::variant<int, long long, std::string, bool>;
 
 class WapiUnstableException : public std::exception {
 public:
@@ -28,8 +28,15 @@ private:
     WapiValue wapi_findProcessPID(const std::string& name);
     WapiValue wapi_listProcesses();
     WapiValue wapi_openProcess(int pid);
-    WapiValue wapi_terminateProcess(int pid);
-    WapiValue wapi_suspendProcess(int pid);
-	WapiValue wapi_resumeProcess(int pid);
-};
+    WapiValue wapi_terminateProcess(long long handle);
+    WapiValue wapi_suspendProcess(long long handle);
+    WapiValue wapi_resumeProcess(long long handle);
+    WapiValue wapi_readMemory(long long handle, long long address);
+    WapiValue wapi_writeMemory(long long handle, long long address);
+    
 
+    WapiValue wapi_injectDLL(int pid, const std::string& dllPath);
+
+
+
+};

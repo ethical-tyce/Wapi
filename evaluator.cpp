@@ -5,8 +5,6 @@
 #include <TlHelp32.h>
 #include <algorithm>
 
-
-
 void Evaluator::run(std::shared_ptr<Program> program) {
     for (auto& stmt : program->statements)
         evalNode(stmt);
@@ -14,6 +12,9 @@ void Evaluator::run(std::shared_ptr<Program> program) {
 
 WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
     if (auto n = std::dynamic_pointer_cast<IntLiteral>(node))
+        return n->value;
+
+    if (auto n = std::dynamic_pointer_cast<LongLongLiteral>(node))
         return n->value;
 
     if (auto n = std::dynamic_pointer_cast<StringLiteral>(node))
@@ -49,17 +50,37 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         return wapi_openProcess(pid);
     }
     if (call->name == "terminateProcess") {
-        int pid = std::get<int>(evalNode(call->args[0]));
-        return wapi_terminateProcess(pid);
+        long long handle = std::get<long long>(evalNode(call->args[0]));
+        return wapi_terminateProcess(handle);
     }
     if (call->name == "suspendProcess") {
-        int pid = std::get<int>(evalNode(call->args[0]));
-        return wapi_suspendProcess(pid);
+        long long handle = std::get<long long>(evalNode(call->args[0]));
+        return wapi_suspendProcess(handle);
     }
-	if (call->name == "resumeProcess") {
-		int pid = std::get<int>(evalNode(call->args[0]));
-		return wapi_resumeProcess(pid);
-	}
+    if (call->name == "resumeProcess") {
+        long long handle = std::get<long long>(evalNode(call->args[0]));
+        return wapi_resumeProcess(handle);
+    }
+    if (call->name == "readMemory") {
+        long long handle = std::get<long long>(evalNode(call->args[0]));
+        long long address = std::get<long long>(evalNode(call->args[1]));
+        return wapi_readMemory(handle, address);
+    }
+    if (call->name == "writeMemory") {
+        long long handle = std::get<long long>(evalNode(call->args[0]));
+        long long address = std::get<long long>(evalNode(call->args[1]));
+        return wapi_writeMemory(handle, address);
+    }
+
+
+
+
+    if (call->name == "injectDLL") {
+        int pid = std::get<int>(evalNode(call->args[0]));
+        std::string dllPath = std::get<std::string>(evalNode(call->args[1]));
+        return wapi_injectDLL(pid, dllPath);
+        
+    }
 
     throw std::runtime_error("Unknown function: " + call->name);
 }
@@ -72,7 +93,6 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
 ╚███╔███╔╝██║██║ ╚████║██████╔╝╚██████╔╝╚███╔███╔╝███████║    ██║  ██║██║     ██║    ██████╔╝██║██║ ╚████║██████╔╝██║██║ ╚████║╚██████╔╝███████║
  ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝╚═════╝  ╚═════╝  ╚══╝╚══╝ ╚══════╝    ╚═╝  ╚═╝╚═╝     ╚═╝    ╚═════╝ ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚══════╝
 */
-
 
 WapiValue Evaluator::wapi_findProcessPID(const std::string& name) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -104,15 +124,15 @@ WapiValue Evaluator::wapi_findProcessPID(const std::string& name) {
 
 WapiValue Evaluator::wapi_listProcesses() {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    PROCESSENTRY32 entry;
+    PROCESSENTRY32W entry;
     entry.dwSize = sizeof(entry);
 
-    if (Process32First(snap, &entry)) {
+    if (Process32FirstW(snap, &entry)) {
         do {
             std::wstring ws(entry.szExeFile);
             std::string name(ws.begin(), ws.end());
             std::cout << entry.th32ProcessID << " - " << name << "\n";
-        } while (Process32Next(snap, &entry));
+        } while (Process32NextW(snap, &entry));
     }
 
     CloseHandle(snap);
@@ -121,14 +141,12 @@ WapiValue Evaluator::wapi_listProcesses() {
 
 WapiValue Evaluator::wapi_openProcess(int pid) {
     HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (handle == NULL) {
+    if (handle == NULL)
         throw WapiUnstableException("Failed to open process");
-    }
-    std::cout << "Opened process " << pid << " successfully\n";
-    return (int)(uintptr_t)handle;
+    return (long long)(uintptr_t)handle;
 }
 
-WapiValue Evaluator::wapi_terminateProcess(int handle) {
+WapiValue Evaluator::wapi_terminateProcess(long long handle) {
     HANDLE hProcess = (HANDLE)(uintptr_t)handle;
     if (!TerminateProcess(hProcess, 0))
         throw WapiUnstableException("Failed to terminate process");
@@ -136,7 +154,7 @@ WapiValue Evaluator::wapi_terminateProcess(int handle) {
     return 0;
 }
 
-WapiValue Evaluator::wapi_suspendProcess(int handle) {
+WapiValue Evaluator::wapi_suspendProcess(long long handle) {
     typedef LONG(NTAPI* NtSuspendProcessFunc)(HANDLE);
 
     HMODULE ntdll = GetModuleHandleA("ntdll.dll");
@@ -153,13 +171,13 @@ WapiValue Evaluator::wapi_suspendProcess(int handle) {
     return 0;
 }
 
-WapiValue Evaluator::wapi_resumeProcess(int handle) {
-	typedef LONG(NTAPI* NtResumeProcessFunc)(HANDLE);
+WapiValue Evaluator::wapi_resumeProcess(long long handle) {
+    typedef LONG(NTAPI* NtResumeProcessFunc)(HANDLE);
 
-	HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-	if (!ntdll) throw WapiUnstableException("Failed to get ntdll.dll");
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (!ntdll) throw WapiUnstableException("Failed to get ntdll.dll");
 
-	NtResumeProcessFunc NtResumeProcess = (NtResumeProcessFunc)GetProcAddress(ntdll, "NtResumeProcess");
+    NtResumeProcessFunc NtResumeProcess = (NtResumeProcessFunc)GetProcAddress(ntdll, "NtResumeProcess");
     if (!NtResumeProcess) throw WapiUnstableException("Failed to find NtResumeProcess");
 
     HANDLE hProcess = (HANDLE)(uintptr_t)handle;
@@ -169,4 +187,72 @@ WapiValue Evaluator::wapi_resumeProcess(int handle) {
 
     return 0;
 }
+
+WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
+    HANDLE hProcess = (HANDLE)(uintptr_t)handle;
+    int buffer = 0;
+    SIZE_T bytesRead;
+
+    if (!ReadProcessMemory(hProcess, (LPCVOID)(uintptr_t)address, &buffer, sizeof(buffer), &bytesRead))
+        throw WapiUnstableException("Failed to read process memory");
+
+    std::cout << "Read " << bytesRead << " bytes from address 0x" << std::hex << address << ": " << std::dec << buffer << "\n";
+    return buffer;
+}
+
+WapiValue Evaluator::wapi_writeMemory(long long handle, long long address) {
+    HANDLE hProcess = (HANDLE)(uintptr_t)handle;
+    int buffer = 0;
+
+    SIZE_T bytesWritten;
+
+    if (!WriteProcessMemory(hProcess, (LPVOID)(uintptr_t)address, &buffer, sizeof(buffer), &bytesWritten))
+        throw WapiUnstableException("Failed to write process memory");
+
+    std::cout << "Wrote " << bytesWritten << " bytes to address 0x" << std::hex << address << ": " << std::dec << buffer << "\n";
+    return buffer;
+}
+
+
+
+
+
+
+WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+    if (!hProcess) throw WapiUnstableException("Failed to open process");
+
+    // write dll path into target process memory
+    LPVOID remote = VirtualAllocEx(hProcess, NULL, dllPath.size() + 1, MEM_COMMIT, PAGE_READWRITE);
+    if (!remote) {
+        CloseHandle(hProcess);
+        throw WapiUnstableException("Failed to allocate memory");
+    }
+
+    if (!WriteProcessMemory(hProcess, remote, dllPath.c_str(), dllPath.size() + 1, NULL)) {
+        VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
+        CloseHandle(hProcess);
+        throw WapiUnstableException("Failed to write memory");
+    }
+
+    // create remote thread that calls LoadLibraryA with our dll path
+    HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0,
+        (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA"),
+        remote, 0, NULL);
+
+    if (!hThread) {
+        VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
+        CloseHandle(hProcess);
+        throw WapiUnstableException("Failed to create remote thread");
+    }
+
+    WaitForSingleObject(hThread, INFINITE);
+    VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
+    CloseHandle(hThread);
+    CloseHandle(hProcess);
+
+    std::cout << "DLL injected successfully\n";
+    return 0;
+}
+
 

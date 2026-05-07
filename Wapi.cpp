@@ -49,7 +49,7 @@ int main() {
 
     // Memory
     std::cout << "\n[Memory]\n";
-    test("readMemory", R"(int pid = findProcessPID("notepad") int handle = openProcess(pid) int val = readMemory(handle, 0x1000))");
+    test("readMemory", R"(int pid = findProcessPID("target") int handle = openProcess(pid) int val = readMemory(handle, 140698252431448))");
     test("writeMemory", R"(int pid = findProcessPID("notepad") int handle = openProcess(pid) writeMemory(handle, 0x1000, 42))");
     test("allocMemory", R"(int pid = findProcessPID("notepad") int handle = openProcess(pid) int addr = allocMemory(handle, 1024))");
     test("freeMemory", R"(int pid = findProcessPID("notepad") int handle = openProcess(pid) int addr = allocMemory(handle, 1024) freeMemory(handle, addr))");

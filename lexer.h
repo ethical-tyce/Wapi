@@ -1,11 +1,10 @@
 #pragma once
-#pragma once
 #include <string>
 #include <vector>
 
 enum TokenType {
-    INT_LITERAL, STRING_LITERAL,
-    TYPE_INT, TYPE_STRING, TYPE_BOOL,
+    INT_LITERAL, HEX_LITERAL, STRING_LITERAL,
+    TYPE_INT, TYPE_LONG, TYPE_STRING, TYPE_BOOL,
     IF, ELSE, WHILE,
     DOT_CALL,
     EQUALS, NOT_EQUALS, ASSIGN,
@@ -31,7 +30,7 @@ private:
     size_t pos;
 
     void skipWhitespace();
-    Token readDotCall();
+    Token readHex();
     Token readInt();
     Token readString();
     Token readIdentifierOrKeyword();
