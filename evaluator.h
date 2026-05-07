@@ -32,10 +32,11 @@ private:
     WapiValue wapi_suspendProcess(long long handle);
     WapiValue wapi_resumeProcess(long long handle);
     WapiValue wapi_readMemory(long long handle, long long address);
-    WapiValue wapi_writeMemory(long long handle, long long address);
+    WapiValue wapi_writeMemory(long long handle, long long address, int value);
     
 
     WapiValue wapi_injectDLL(int pid, const std::string& dllPath);
+    WapiValue wapi_testInjectDLL(int pid);
 
 
 

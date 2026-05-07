@@ -69,7 +69,8 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
     if (call->name == "writeMemory") {
         long long handle = std::get<long long>(evalNode(call->args[0]));
         long long address = std::get<long long>(evalNode(call->args[1]));
-        return wapi_writeMemory(handle, address);
+        int value = std::get<int>(evalNode(call->args[2]));
+        return wapi_writeMemory(handle, address, value);
     }
 
 
@@ -79,7 +80,10 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         int pid = std::get<int>(evalNode(call->args[0]));
         std::string dllPath = std::get<std::string>(evalNode(call->args[1]));
         return wapi_injectDLL(pid, dllPath);
-        
+    }
+    if (call->name == "testInjectDLL") {
+        int pid = std::get<int>(evalNode(call->args[0]));
+		return wapi_testInjectDLL(pid);
     }
 
     throw std::runtime_error("Unknown function: " + call->name);
@@ -200,17 +204,15 @@ WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
     return buffer;
 }
 
-WapiValue Evaluator::wapi_writeMemory(long long handle, long long address) {
+WapiValue Evaluator::wapi_writeMemory(long long handle, long long address, int value) {
     HANDLE hProcess = (HANDLE)(uintptr_t)handle;
-    int buffer = 0;
-
     SIZE_T bytesWritten;
 
-    if (!WriteProcessMemory(hProcess, (LPVOID)(uintptr_t)address, &buffer, sizeof(buffer), &bytesWritten))
+    if (!WriteProcessMemory(hProcess, (LPVOID)(uintptr_t)address, &value, sizeof(value), &bytesWritten))
         throw WapiUnstableException("Failed to write process memory");
 
-    std::cout << "Wrote " << bytesWritten << " bytes to address 0x" << std::hex << address << ": " << std::dec << buffer << "\n";
-    return buffer;
+    std::cout << "Wrote " << bytesWritten << " bytes to address 0x" << std::hex << address << "\n";
+    return 0;
 }
 
 
@@ -222,7 +224,6 @@ WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     if (!hProcess) throw WapiUnstableException("Failed to open process");
 
-    // write dll path into target process memory
     LPVOID remote = VirtualAllocEx(hProcess, NULL, dllPath.size() + 1, MEM_COMMIT, PAGE_READWRITE);
     if (!remote) {
         CloseHandle(hProcess);
@@ -235,7 +236,6 @@ WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
         throw WapiUnstableException("Failed to write memory");
     }
 
-    // create remote thread that calls LoadLibraryA with our dll path
     HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0,
         (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA"),
         remote, 0, NULL);
@@ -247,12 +247,32 @@ WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
     }
 
     WaitForSingleObject(hThread, INFINITE);
+
+    DWORD exitCode;
+    GetExitCodeThread(hThread, &exitCode);
+    std::cout << "LoadLibrary returned: " << exitCode << "\n";
+
     VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
     CloseHandle(hThread);
     CloseHandle(hProcess);
+
+    if (exitCode == 0)
+        throw WapiUnstableException("LoadLibrary failed inside target process - check DLL path");
 
     std::cout << "DLL injected successfully\n";
     return 0;
 }
 
+WapiValue Evaluator::wapi_testInjectDLL(int pid) {
+    // get the directory of Wapi.exe and look for TestDLL.dll there
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    std::wstring dir(exePath);
+    dir = dir.substr(0, dir.find_last_of(L"\\/"));
+    std::wstring dllPathW = dir + L"\\TestDLL.dll";
+    std::string dllPath(dllPathW.begin(), dllPathW.end());
+
+    std::cout << "Injecting: " << dllPath << "\n";
+    return wapi_injectDLL(pid, dllPath);
+}
 

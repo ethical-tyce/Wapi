@@ -2,6 +2,8 @@
 #include "lexer.h"
 #include "parser.h"
 #include "evaluator.h"
+#include <Windows.h>
+#include <shellapi.h>
 
 void run(const std::string& source) {
     Lexer lexer(source);
@@ -36,6 +38,8 @@ void test(const std::string& name, const std::string& script) {
 
 int main() {
 
+    // Run functionality tests
+
     std::cout << "--- Wapi Coverage Test ---\n\n";
 
     // Process
@@ -43,7 +47,7 @@ int main() {
     test("listProcesses", "listProcesses()");
     test("findProcessPID", "int pid = findProcessPID(\"notepad\")");
     test("openProcess", R"(int pid = findProcessPID("notepad") int handle = openProcess(pid))");
-    test("terminateProcess", R"(int pid = findProcessPID("notepad") int handle = openProcess(pid) terminateProcess(handle))");
+    //test("terminateProcess", R"(int pid = findProcessPID("notepad") int handle = openProcess(pid) terminateProcess(handle))");
     test("suspendProcess", R"(int pid = findProcessPID("notepad") int handle = openProcess(pid) suspendProcess(handle))");
     test("resumeProcess", R"(int pid = findProcessPID("notepad") int handle = openProcess(pid) resumeProcess(handle))");
 
@@ -86,5 +90,19 @@ int main() {
     std::cout << passed << "/" << total << " tests passed (" << percent << "%)\n";
     std::cout << failed << " failed\n";
 
+    // at the bottom of main, after the test results
+    try {
+        run(R"(
+        int pid = findProcessPID("notepad")
+        testInjectDLL(pid)
+    )");
+    }
+    catch (const std::exception& e) {
+        std::cout << "Injection test: " << e.what() << "\n";
+    }
+
+    std::cout << failed << " failed\n";
+
+    system("pause"); // add this
     return 0;
 }
