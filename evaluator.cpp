@@ -72,7 +72,16 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         int value = std::get<int>(evalNode(call->args[2]));
         return wapi_writeMemory(handle, address, value);
     }
-
+    if (call->name == "allocMemory") {
+        long long handle = std::get<long long>(evalNode(call->args[0]));
+        int size = std::get<int>(evalNode(call->args[1]));
+        return wapi_allocMemory(handle, size);
+    }
+    if (call->name == "freeMemory") {
+        long long handle = std::get<long long>(evalNode(call->args[0]));
+        long long address = std::get<long long>(evalNode(call->args[1]));
+        return wapi_freeMemory(handle, address);
+    }
 
 
 
@@ -215,8 +224,16 @@ WapiValue Evaluator::wapi_writeMemory(long long handle, long long address, int v
     return 0;
 }
 
+WapiValue Evaluator::wapi_allocMemory(long long handle, int size) {
+    HANDLE hProcess = (HANDLE)(uintptr_t)handle;
+    LPVOID addr = VirtualAllocEx(hProcess, NULL, size, MEM_COMMIT, PAGE_READWRITE);
 
+}
 
+WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
+    HANDLE hProcess = (HANDLE)(uintptr_t)handle;
+
+}
 
 
 

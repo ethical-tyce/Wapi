@@ -9,7 +9,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         log << "DLL loaded!\n";
         log.close();
 
-        MessageBoxA(NULL, "Test Succeeded!", "Wapi Injection", MB_OK | MB_SYSTEMMODAL);
+        MessageBoxA(NULL, "Test DLL Injection Successful!", "Wapi Injection", MB_OK | MB_SYSTEMMODAL);
     }
     return TRUE;
 }
