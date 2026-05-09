@@ -38,6 +38,9 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
 }
 
 WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
+
+    // PROCESS
+
     if (call->name == "findProcessPID") {
         std::string name = std::get<std::string>(evalNode(call->args[0]));
         return wapi_findProcessPID(name);
@@ -61,6 +64,9 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         long long handle = std::get<long long>(evalNode(call->args[0]));
         return wapi_resumeProcess(handle);
     }
+
+    // MEMORY
+
     if (call->name == "readMemory") {
         long long handle = std::get<long long>(evalNode(call->args[0]));
         long long address = std::get<long long>(evalNode(call->args[1]));
@@ -83,7 +89,14 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         return wapi_freeMemory(handle, address);
     }
 
+    // WINDOW
 
+    if (call->name == "findWindow") {
+        std::string name = std::get<std::string>(evalNode(call->args[0]));
+        return wapi_findWindow(name);
+    }
+
+    // DLL INJECTION
 
     if (call->name == "injectDLL") {
         int pid = std::get<int>(evalNode(call->args[0]));
@@ -105,6 +118,14 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
 ██║███╗██║██║██║╚██╗██║██║  ██║██║   ██║██║███╗██║╚════██║    ██╔══██║██╔═══╝ ██║    ██╔══██╗██║██║╚██╗██║██║  ██║██║██║╚██╗██║██║   ██║╚════██║
 ╚███╔███╔╝██║██║ ╚████║██████╔╝╚██████╔╝╚███╔███╔╝███████║    ██║  ██║██║     ██║    ██████╔╝██║██║ ╚████║██████╔╝██║██║ ╚████║╚██████╔╝███████║
  ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝╚═════╝  ╚═════╝  ╚══╝╚══╝ ╚══════╝    ╚═╝  ╚═╝╚═╝     ╚═╝    ╚═════╝ ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚══════╝
+
+
+██████╗ ██████╗  ██████╗  ██████╗███████╗███████╗███████╗
+██╔══██╗██╔══██╗██╔═══██╗██╔════╝██╔════╝██╔════╝██╔════╝
+██████╔╝██████╔╝██║   ██║██║     █████╗  ███████╗███████╗
+██╔═══╝ ██╔══██╗██║   ██║██║     ██╔══╝  ╚════██║╚════██║
+██║     ██║  ██║╚██████╔╝╚██████╗███████╗███████║███████║
+╚═╝     ╚═╝  ╚═╝ ╚═════╝  ╚═════╝╚══════╝╚══════╝╚══════╝
 */
 
 WapiValue Evaluator::wapi_findProcessPID(const std::string& name) {
@@ -201,6 +222,16 @@ WapiValue Evaluator::wapi_resumeProcess(long long handle) {
     return 0;
 }
 
+
+/*
+███╗   ███╗███████╗███╗   ███╗ ██████╗ ██████╗ ██╗   ██╗
+████╗ ████║██╔════╝████╗ ████║██╔═══██╗██╔══██╗╚██╗ ██╔╝
+██╔████╔██║█████╗  ██╔████╔██║██║   ██║██████╔╝ ╚████╔╝
+██║╚██╔╝██║██╔══╝  ██║╚██╔╝██║██║   ██║██╔══██╗  ╚██╔╝
+██║ ╚═╝ ██║███████╗██║ ╚═╝ ██║╚██████╔╝██║  ██║   ██║
+╚═╝     ╚═╝╚══════╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝
+*/
+
 WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
     HANDLE hProcess = (HANDLE)(uintptr_t)handle;
     int buffer = 0;
@@ -227,15 +258,43 @@ WapiValue Evaluator::wapi_writeMemory(long long handle, long long address, int v
 WapiValue Evaluator::wapi_allocMemory(long long handle, int size) {
     HANDLE hProcess = (HANDLE)(uintptr_t)handle;
     LPVOID addr = VirtualAllocEx(hProcess, NULL, size, MEM_COMMIT, PAGE_READWRITE);
-
+    if (!addr) throw WapiUnstableException("Failed to allocate memory");
+    std::cout << "Allocated " << size << " bytes\n";
+    return (long long)(uintptr_t)addr;
 }
 
 WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
     HANDLE hProcess = (HANDLE)(uintptr_t)handle;
+    if (!VirtualFreeEx(hProcess, (LPVOID)(uintptr_t)address, 0, MEM_RELEASE))
+        throw WapiUnstableException("Failed to free memory");
+    std::cout << "Freed memory\n";
+    return 0;
 
 }
 
 
+/*
+██╗    ██╗██╗███╗   ██╗██████╗  ██████╗ ██╗    ██╗
+██║    ██║██║████╗  ██║██╔══██╗██╔═══██╗██║    ██║
+██║ █╗ ██║██║██╔██╗ ██║██║  ██║██║   ██║██║ █╗ ██║
+██║███╗██║██║██║╚██╗██║██║  ██║██║   ██║██║███╗██║
+╚███╔███╔╝██║██║ ╚████║██████╔╝╚██████╔╝╚███╔███╔╝
+ ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝╚═════╝  ╚═════╝  ╚══╝╚══╝
+*/
+
+WapiValue Evaluator::wapi_findWindow(const std::string& name) {
+    return 0;
+}
+
+
+/*
+██████╗ ██╗     ██╗         ██╗███╗   ██╗     ██╗███████╗ ██████╗████████╗██╗ ██████╗ ███╗   ██╗
+██╔══██╗██║     ██║         ██║████╗  ██║     ██║██╔════╝██╔════╝╚══██╔══╝██║██╔═══██╗████╗  ██║
+██║  ██║██║     ██║         ██║██╔██╗ ██║     ██║█████╗  ██║        ██║   ██║██║   ██║██╔██╗ ██║
+██║  ██║██║     ██║         ██║██║╚██╗██║██   ██║██╔══╝  ██║        ██║   ██║██║   ██║██║╚██╗██║
+██████╔╝███████╗███████╗    ██║██║ ╚████║╚█████╔╝███████╗╚██████╗   ██║   ██║╚██████╔╝██║ ╚████║
+╚═════╝ ╚══════╝╚══════╝    ╚═╝╚═╝  ╚═══╝ ╚════╝ ╚══════╝ ╚═════╝   ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
+*/
 
 WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
