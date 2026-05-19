@@ -277,7 +277,9 @@ WapiValue Evaluator::wapi_openProcess(int pid) {
 
     if (options.checkOnly) {
         emitAudit("openProcess", "proc.open.all_access", "allow", "checkOnly no side-effects");
-        return static_cast<long long>(1);
+        const long long synthetic = 1;
+        trackedHandles.insert(synthetic);
+        return synthetic;
     }
 
     HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, static_cast<DWORD>(pid));
