@@ -69,6 +69,8 @@ private:
     WapiValue wapi_allocMemory(long long handle, int size);
     WapiValue wapi_freeMemory(long long handle, long long address);
 
+    WapiValue wapi_closeHandle(long long handle);
+
     WapiValue wapi_findWindow(const std::string& name);
 
     WapiValue wapi_injectDLL(int pid, const std::string& dllPath);

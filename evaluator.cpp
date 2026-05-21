@@ -206,6 +206,10 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
             asLongLong(call->args[1], call->name, 1)
         );
     }
+    if (call->name == "closeHandle") {
+        checkArgCount(call, 1);
+        return wapi_closeHandle(asLongLong(call->args[0], call->name, 0));
+    }
     if (call->name == "findWindow") {
         checkArgCount(call, 1);
         return wapi_findWindow(asString(call->args[0], call->name, 0));
@@ -412,6 +416,20 @@ WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
     }
 
     std::cout << "Freed memory\n";
+    return 0;
+}
+
+WapiValue Evaluator::wapi_closeHandle(long long handle) {
+    HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "closeHandle"));
+
+    if (options.checkOnly) {
+        emitAudit("closeHandle", "proc.open.all_access", "allow", "checkOnly no side-effects");
+        trackedHandles.erase(handle);
+        return 0;
+    }
+
+    CloseHandle(hProcess);
+    trackedHandles.erase(handle);
     return 0;
 }
 
