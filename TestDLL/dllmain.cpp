@@ -1,11 +1,15 @@
 #include "pch.h"
 #include <Windows.h>
 #include <fstream>
+#include <string>
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
-        // write to file to confirm DLL loaded
-        std::ofstream log("C:\\wapi_test.txt");
+        char tempPath[MAX_PATH] = {};
+        DWORD len = GetTempPathA(MAX_PATH, tempPath);
+        std::string logPath = (len > 0 && len < MAX_PATH) ? std::string(tempPath) + "wapi_test.txt" : "wapi_test.txt";
+
+        std::ofstream log(logPath);
         log << "DLL loaded!\n";
         log.close();
 

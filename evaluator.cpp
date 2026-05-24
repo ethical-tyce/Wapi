@@ -148,10 +148,12 @@ void* Evaluator::requireTrackedHandle(long long handleValue, const std::string& 
 WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
     if (call->name == "findProcessPID") {
         checkArgCount(call, 1);
+        enforcePolicy(call->name, "proc.list");
         return wapi_findProcessPID(asString(call->args[0], call->name, 0));
     }
     if (call->name == "listProcesses") {
         checkArgCount(call, 0);
+        enforcePolicy(call->name, "proc.list");
         return wapi_listProcesses();
     }
     if (call->name == "openProcess") {
@@ -176,6 +178,7 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
     }
     if (call->name == "readMemory") {
         checkArgCount(call, 2);
+        enforcePolicy(call->name, "mem.read");
         return wapi_readMemory(
             asLongLong(call->args[0], call->name, 0),
             asLongLong(call->args[1], call->name, 1)
@@ -208,10 +211,12 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
     }
     if (call->name == "closeHandle") {
         checkArgCount(call, 1);
+        enforcePolicy(call->name, "proc.handle.close");
         return wapi_closeHandle(asLongLong(call->args[0], call->name, 0));
     }
     if (call->name == "findWindow") {
         checkArgCount(call, 1);
+        enforcePolicy(call->name, "window.find");
         return wapi_findWindow(asString(call->args[0], call->name, 0));
     }
     if (call->name == "injectDLL") {
