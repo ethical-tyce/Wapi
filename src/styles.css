@@ -98,21 +98,23 @@ button {
 .brand-block {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 62px;
-  margin-bottom: 20px;
+  gap: 7px;
+  padding: 10px 4px 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
 }
 
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 0;
   background: transparent;
   box-shadow: none;
+  flex-shrink: 0;
 }
 
 .brand-mark img {
@@ -124,19 +126,15 @@ button {
 
 .brand-block h1 {
   margin: 0;
-  font-size: 17px;
-  line-height: 1.1;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
   letter-spacing: 0;
+  color: var(--text);
 }
 
 .brand-block p {
-  max-width: 150px;
-  margin: 5px 0 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: none;
 }
 
 .sidebar section + section {
