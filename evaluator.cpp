@@ -176,6 +176,14 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         enforcePolicy(call->name, "proc.resume");
         return wapi_resumeProcess(asLongLong(call->args[0], call->name, 0));
     }
+    if (call->name == "closeProcess") {
+        checkArgCount(call, 1);
+        enforcePolicy(call->name, "proc.close");
+        return wapi_closeProcess(asInt(call->args[0], call->name, 0));
+    }
+
+
+
     if (call->name == "readMemory") {
         checkArgCount(call, 2);
         enforcePolicy(call->name, "mem.read");
@@ -209,16 +217,25 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
             asLongLong(call->args[1], call->name, 1)
         );
     }
+
+
+
     if (call->name == "closeHandle") {
         checkArgCount(call, 1);
         enforcePolicy(call->name, "proc.handle.close");
         return wapi_closeHandle(asLongLong(call->args[0], call->name, 0));
     }
+
+
+
     if (call->name == "findWindow") {
         checkArgCount(call, 1);
         enforcePolicy(call->name, "window.find");
         return wapi_findWindow(asString(call->args[0], call->name, 0));
     }
+
+
+
     if (call->name == "injectDLL") {
         checkArgCount(call, 2);
         enforcePolicy(call->name, "inject.dll", true);
@@ -235,6 +252,25 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
 
     throw std::runtime_error("E_UNKNOWN_FUNCTION:" + call->name);
 }
+
+
+/*
+██╗███╗   ███╗██████╗ ██╗     ███████╗███╗   ███╗███████╗███╗   ██╗████████╗ █████╗ ████████╗██╗ ██████╗ ███╗   ██╗
+██║████╗ ████║██╔══██╗██║     ██╔════╝████╗ ████║██╔════╝████╗  ██║╚══██╔══╝██╔══██╗╚══██╔══╝██║██╔═══██╗████╗  ██║
+██║██╔████╔██║██████╔╝██║     █████╗  ██╔████╔██║█████╗  ██╔██╗ ██║   ██║   ███████║   ██║   ██║██║   ██║██╔██╗ ██║
+██║██║╚██╔╝██║██╔═══╝ ██║     ██╔══╝  ██║╚██╔╝██║██╔══╝  ██║╚██╗██║   ██║   ██╔══██║   ██║   ██║██║   ██║██║╚██╗██║
+██║██║ ╚═╝ ██║██║     ███████╗███████╗██║ ╚═╝ ██║███████╗██║ ╚████║   ██║   ██║  ██║   ██║   ██║╚██████╔╝██║ ╚████║
+╚═╝╚═╝     ╚═╝╚═╝     ╚══════╝╚══════╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
+
+
+██████╗ ██████╗  ██████╗  ██████╗███████╗███████╗███████╗
+██╔══██╗██╔══██╗██╔═══██╗██╔════╝██╔════╝██╔════╝██╔════╝
+██████╔╝██████╔╝██║   ██║██║     █████╗  ███████╗███████╗
+██╔═══╝ ██╔══██╗██║   ██║██║     ██╔══╝  ╚════██║╚════██║
+██║     ██║  ██║╚██████╔╝╚██████╗███████╗███████║███████║
+╚═╝     ╚═╝  ╚═╝ ╚═════╝  ╚═════╝╚══════╝╚══════╝╚══════╝
+
+*/
 
 WapiValue Evaluator::wapi_findProcessPID(const std::string& name) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -352,6 +388,11 @@ WapiValue Evaluator::wapi_resumeProcess(long long handle) {
     LONG status = NtResumeProcess(hProcess);
     if (status != 0) throw WapiUnstableException("NtResumeProcess failed");
     return 0;
+}
+
+
+WapiValue Evaluator::wapi_closeProcess(int pid) {
+	throw WapiUnstableException("closeProcess is not implemented");
 }
 
 WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {

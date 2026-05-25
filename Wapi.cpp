@@ -118,7 +118,7 @@ void runStandardizedTests() {
     test("resumeProcess", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) resumeProcess(handle)", options);
     test("terminateProcess", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) terminateProcess(handle)", options);
 
-    std::cout << "\n[Memory] /UNSTABLE\\ ---------------------------------\n";
+    std::cout << "\n[Memory] --------------------------------------------\n";
     test("readMemory", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) int val = readMemory(handle, 0x1000)", options);
     test("writeMemory", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) writeMemory(handle, 0x1000, 42)", options);
     test("allocMemory", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) int addr = allocMemory(handle, 1024)", options);

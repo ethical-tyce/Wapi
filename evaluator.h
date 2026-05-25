@@ -63,7 +63,7 @@ private:
     WapiValue wapi_terminateProcess(long long handle);
     WapiValue wapi_suspendProcess(long long handle);
     WapiValue wapi_resumeProcess(long long handle);
-
+    WapiValue wapi_closeProcess(int pid);
 
 
     WapiValue wapi_readMemory(long long handle, long long address);
