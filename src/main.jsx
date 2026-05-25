@@ -17,9 +17,9 @@ import {
   Minus,
   Play,
   Save,
+  Search,
   Shield,
   Terminal,
-  TriangleAlert,
   X,
   XCircle
 } from "lucide-react";
@@ -64,81 +64,6 @@ void runPayload() {
 const payloadHeaderSource = `#pragma once
 
 void runPayload();`;
-
-const projectSections = [
-  {
-    name: "Scripts",
-    files: [
-      {
-        name: "main.wapi",
-        language: "wapi",
-        source: defaultSource
-      },
-      {
-        name: "inject-preflight.wapi",
-        language: "wapi",
-        source: `int pid = findProcessPID("notepad")
-testInjectDLL(pid)`
-      }
-    ]
-  },
-  {
-    name: "Custom DLL",
-    files: [
-      {
-        name: "dllmain.cpp",
-        language: "wapi-cpp",
-        source: dllMainSource
-      },
-      {
-        name: "payload.cpp",
-        language: "wapi-cpp",
-        source: payloadSource
-      },
-      {
-        name: "payload.h",
-        language: "wapi-cpp",
-        source: payloadHeaderSource
-      }
-    ]
-  },
-  {
-    name: "Build Output",
-    files: [
-      {
-        name: "x64/Debug/Wapi.exe",
-        language: "plaintext",
-        readonly: true,
-        source: "Build the Wapi Visual Studio project to refresh this executable."
-      },
-      {
-        name: "x64/Debug/TestDLL.dll",
-        language: "plaintext",
-        readonly: true,
-        source: "Build the TestDLL project when your script calls testInjectDLL(pid)."
-      }
-    ]
-  }
-];
-
-const apiGroups = [
-  {
-    title: "Process",
-    items: ["listProcesses", "findProcessPID", "openProcess", "terminateProcess", "suspendProcess", "resumeProcess"]
-  },
-  {
-    title: "Memory",
-    items: ["readMemory", "writeMemory", "allocMemory", "freeMemory"]
-  },
-  {
-    title: "Window",
-    items: ["findWindow"]
-  },
-  {
-    title: "Injection",
-    items: ["injectDLL", "testInjectDLL"]
-  }
-];
 
 const functionSignatures = {
   listProcesses: "listProcesses()",
@@ -215,6 +140,7 @@ const capabilities = [
 ];
 
 const allFunctions = Object.keys(functionSignatures);
+const pathDivider = /[\\/]/;
 const bridge = window.wapi ?? {
   execute: async () => ({
     ok: false,
@@ -224,6 +150,8 @@ const bridge = window.wapi ?? {
     exe: null
   }),
   locate: async () => null,
+  addFiles: async () => [],
+  loadProject: async () => ({ rootPath: null, files: [] }),
   openFile: async () => null,
   saveFile: async ({ filePath }) => ({ filePath: filePath || null }),
   window: {
@@ -384,6 +312,41 @@ function getLineColumnFromOffset(source, offset) {
   };
 }
 
+function languageFromFileName(fileName = "") {
+  return /\.(cpp|c|h|hpp)$/i.test(fileName) ? "wapi-cpp" : "wapi";
+}
+
+function normalizeProjectFile(file, fallback = {}) {
+  const name = file.name || file.filePath?.split(pathDivider).pop() || "untitled.wapi";
+  const id = file.id || file.filePath || `${fallback.prefix || "virtual"}:${name}:${Date.now()}`;
+  const relativePath = file.relativePath || name;
+  const parts = relativePath.split(pathDivider);
+  return {
+    id,
+    name,
+    relativePath,
+    section: parts.length > 1 ? parts.slice(0, -1).join("/") : fallback.section || "Loose Files",
+    filePath: file.filePath || null,
+    source: file.source || "",
+    language: file.language || languageFromFileName(name),
+    readonly: Boolean(file.readonly)
+  };
+}
+
+function groupProjectFiles(files) {
+  const groups = new Map();
+  files.forEach((file) => {
+    const section = file.section || "Loose Files";
+    if (!groups.has(section)) groups.set(section, []);
+    groups.get(section).push(file);
+  });
+
+  return [...groups.entries()].map(([name, groupedFiles]) => ({
+    name,
+    files: groupedFiles.sort((a, b) => a.name.localeCompare(b.name))
+  }));
+}
+
 function analyzeSource(source) {
   const markers = [];
   const knownWords = new Set([
@@ -513,7 +476,7 @@ function WindowControls() {
   );
 }
 
-function SolutionExplorer({ activeFile, onOpenVirtualFile, onNewScript, onNewDll }) {
+function SolutionExplorer({ activeFileId, projectSections, onOpenVirtualFile, onAddFiles, onLoadProject, onNewScript, onNewDll }) {
   return (
     <aside className="sidebar">
       <div className="brand-block">
@@ -532,8 +495,16 @@ function SolutionExplorer({ activeFile, onOpenVirtualFile, onNewScript, onNewDll
           <FolderTree size={14} />
         </div>
         <div className="explorer-actions">
-          <button onClick={onNewScript} type="button" title="New Wapi script">
+          <button onClick={onAddFiles} type="button" title="Add existing files">
             <FilePlus2 size={14} />
+            Add
+          </button>
+          <button onClick={onLoadProject} type="button" title="Load a project folder">
+            <FolderOpen size={14} />
+            Load
+          </button>
+          <button onClick={onNewScript} type="button" title="New Wapi script">
+            <Code2 size={14} />
             Wapi
           </button>
           <button onClick={onNewDll} type="button" title="New custom DLL file set">
@@ -544,33 +515,55 @@ function SolutionExplorer({ activeFile, onOpenVirtualFile, onNewScript, onNewDll
       </section>
 
       <section className="explorer-tree">
-        {projectSections.map((section) => (
-          <div className="explorer-folder" key={section.name}>
-            <div className="folder-row">
-              <Folder size={14} />
-              <span>{section.name}</span>
+        {projectSections.length === 0 ? (
+          <div className="empty-explorer">No files loaded.</div>
+        ) : (
+          projectSections.map((section) => (
+            <div className="explorer-folder" key={section.name}>
+              <div className="folder-row">
+                <Folder size={14} />
+                <span>{section.name}</span>
+              </div>
+              <div className="file-stack">
+                {section.files.map((file) => (
+                  <button
+                    key={file.id}
+                    className={activeFileId === file.id ? "selected" : ""}
+                    onClick={() => onOpenVirtualFile(file)}
+                    type="button"
+                  >
+                    <FileCode2 size={13} />
+                    <span>{file.name}</span>
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="file-stack">
-              {section.files.map((file) => (
-                <button
-                  key={`${section.name}-${file.name}`}
-                  className={activeFile === file.name ? "selected" : ""}
-                  onClick={() => onOpenVirtualFile(file)}
-                  type="button"
-                >
-                  <FileCode2 size={13} />
-                  <span>{file.name}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
+          ))
+        )}
       </section>
     </aside>
   );
 }
 
 function KnowledgeBase({ selectedCapabilities, onCapabilitiesChange, onInsertFunction }) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredGroups = useMemo(() => {
+    if (!normalizedQuery) return knowledgeGroups;
+    return knowledgeGroups
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((item) => {
+          const signature = functionSignatures[item.name] || item.name;
+          return [group.title, item.name, signature, item.requirement, item.note]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedQuery);
+        })
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [normalizedQuery]);
+
   return (
     <section className="knowledge-panel">
       <div className="panel-head">
@@ -580,6 +573,15 @@ function KnowledgeBase({ selectedCapabilities, onCapabilitiesChange, onInsertFun
         </div>
         <span>Wapi API</span>
       </div>
+      <label className="knowledge-search">
+        <Search size={14} />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search functions..."
+          type="search"
+        />
+      </label>
       <div className="knowledge-content">
         <div className="kb-block">
           <h2>
@@ -601,7 +603,9 @@ function KnowledgeBase({ selectedCapabilities, onCapabilitiesChange, onInsertFun
           <CapabilityPicker selected={selectedCapabilities} onChange={onCapabilitiesChange} />
         </div>
 
-        {knowledgeGroups.map((group) => (
+        {filteredGroups.length === 0 ? <div className="empty-explorer">No matching functions.</div> : null}
+
+        {filteredGroups.map((group) => (
           <div className="kb-group" key={group.title}>
             <h2>
               <Code2 size={14} />
@@ -681,9 +685,12 @@ function App() {
   const editorNode = useRef(null);
   const editorRef = useRef(null);
   const modelRef = useRef(null);
-  const [source, setSource] = useState(() => localStorage.getItem("wapi:source") || defaultSource);
+  const activeFileIdRef = useRef(null);
+  const [source, setSource] = useState("");
   const [filePath, setFilePath] = useState(null);
-  const [activeFile, setActiveFile] = useState("main.wapi");
+  const [activeFile, setActiveFile] = useState("untitled.wapi");
+  const [activeFileId, setActiveFileId] = useState(null);
+  const [projectFiles, setProjectFiles] = useState([]);
   const [currentLanguage, setCurrentLanguage] = useState("wapi");
   const [readOnly, setReadOnly] = useState(false);
   const [mode, setMode] = useState("safe");
@@ -695,6 +702,10 @@ function App() {
   const [result, setResult] = useState(null);
   const [executable, setExecutable] = useState(null);
   const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    activeFileIdRef.current = activeFileId;
+  }, [activeFileId]);
 
   useEffect(() => {
     installRendererIcon();
@@ -734,7 +745,10 @@ function App() {
       const value = model.getValue();
       setSource(value);
       setDirty(true);
-      localStorage.setItem("wapi:source", value);
+      const currentFileId = activeFileIdRef.current;
+      setProjectFiles((files) =>
+        currentFileId ? files.map((file) => (file.id === currentFileId ? { ...file, source: value } : file)) : files
+      );
       monaco.editor.setModelMarkers(model, "wapi", analyzeSource(value));
     });
 
@@ -747,19 +761,40 @@ function App() {
     };
   }, []);
 
+  const projectSections = useMemo(() => groupProjectFiles(projectFiles), [projectFiles]);
+
+  const mergeProjectFiles = useCallback((incomingFiles, options = {}) => {
+    const normalized = incomingFiles.map((file) => normalizeProjectFile(file, options));
+    setProjectFiles((files) => {
+      const byId = new Map(files.map((file) => [file.id, file]));
+      normalized.forEach((file) => byId.set(file.id, file));
+      return [...byId.values()];
+    });
+    return normalized;
+  }, []);
+
+  const replaceProjectFiles = useCallback((incomingFiles, options = {}) => {
+    const normalized = incomingFiles.map((file) => normalizeProjectFile(file, options));
+    setProjectFiles(normalized);
+    return normalized;
+  }, []);
+
   const replaceSource = useCallback((nextSource, options = {}) => {
     const model = modelRef.current;
     if (!model) return;
     const nextLanguage = options.language || "wapi";
     const nextReadOnly = Boolean(options.readOnly);
+    activeFileIdRef.current = options.fileId || null;
     model.pushEditOperations([], [{ range: model.getFullModelRange(), text: nextSource }], () => null);
     monaco.editor.setModelLanguage(model, nextLanguage);
     editorRef.current?.updateOptions({ readOnly: nextReadOnly });
     setCurrentLanguage(nextLanguage);
     setReadOnly(nextReadOnly);
     if (options.fileName) setActiveFile(options.fileName);
+    setActiveFileId(options.fileId || null);
     if (options.clearDiskFile) setFilePath(null);
     if (options.markDirty === false) setDirty(false);
+    if (options.markDirty === true) setDirty(true);
     editorRef.current?.focus();
   }, []);
 
@@ -794,58 +829,124 @@ function App() {
   const openFile = useCallback(async () => {
     const opened = await bridge.openFile();
     if (!opened) return;
+    const [file] = mergeProjectFiles([opened]);
     setFilePath(opened.filePath);
     replaceSource(opened.source, {
-      fileName: opened.filePath.split(/[\\/]/).pop(),
-      language: "wapi",
+      fileId: file.id,
+      fileName: file.name,
+      language: file.language,
       markDirty: false
     });
     setDirty(false);
-  }, [replaceSource]);
+  }, [mergeProjectFiles, replaceSource]);
+
+  const addFiles = useCallback(async () => {
+    const files = await bridge.addFiles();
+    if (!files?.length) return;
+    const [firstFile] = mergeProjectFiles(files);
+    if (firstFile && !activeFileId) {
+      setFilePath(firstFile.filePath);
+      replaceSource(firstFile.source, {
+        fileId: firstFile.id,
+        fileName: firstFile.name,
+        language: firstFile.language,
+        markDirty: false
+      });
+    }
+  }, [activeFileId, mergeProjectFiles, replaceSource]);
+
+  const loadProject = useCallback(async () => {
+    const project = await bridge.loadProject();
+    if (!project) return;
+    const files = replaceProjectFiles(project.files || [], { prefix: project.rootPath || "project" });
+    const firstFile = files[0];
+    if (firstFile) {
+      setFilePath(firstFile.filePath);
+      replaceSource(firstFile.source, {
+        fileId: firstFile.id,
+        fileName: firstFile.name,
+        language: firstFile.language,
+        markDirty: false
+      });
+    } else {
+      setFilePath(null);
+      replaceSource("", {
+        fileName: "untitled.wapi",
+        language: "wapi",
+        markDirty: false
+      });
+    }
+  }, [replaceProjectFiles, replaceSource]);
 
   const saveFile = useCallback(async () => {
     const saved = await bridge.saveFile({ filePath, source });
     if (!saved) return;
+    const name = saved.filePath.split(pathDivider).pop();
+    const savedFile = normalizeProjectFile({ filePath: saved.filePath, source, name });
     setFilePath(saved.filePath);
+    setActiveFile(name);
+    setProjectFiles((files) =>
+      activeFileId
+        ? files.map((file) =>
+            file.id === activeFileId ? { ...file, ...savedFile } : file
+          )
+        : [...files, savedFile]
+    );
+    activeFileIdRef.current = saved.filePath;
+    setActiveFileId(saved.filePath);
     setDirty(false);
-  }, [filePath, source]);
+  }, [activeFileId, filePath, source]);
 
   const openProjectFile = useCallback((file) => {
+    setFilePath(file.filePath);
     replaceSource(file.source, {
+      fileId: file.id,
       fileName: file.name,
       language: file.language,
       readOnly: file.readonly,
-      clearDiskFile: true,
+      clearDiskFile: !file.filePath,
       markDirty: false
     });
   }, [replaceSource]);
 
   const newScript = useCallback(() => {
-    replaceSource(`int pid = findProcessPID("notepad")
-int handle = openProcess(pid)`, {
-      fileName: "new-script.wapi",
+    const [file] = mergeProjectFiles([{ name: "new-script.wapi", source: defaultSource, language: "wapi" }], {
+      prefix: "new-script",
+      section: "Unsaved"
+    });
+    replaceSource(file.source, {
+      fileId: file.id,
+      fileName: file.name,
       language: "wapi",
       clearDiskFile: true,
       markDirty: true
     });
-  }, [replaceSource]);
+  }, [mergeProjectFiles, replaceSource]);
 
   const newDll = useCallback(() => {
-    replaceSource(dllMainSource, {
-      fileName: "custom-dll/dllmain.cpp",
+    const [file] = mergeProjectFiles([{ name: "dllmain.cpp", relativePath: "custom-dll/dllmain.cpp", source: dllMainSource, language: "wapi-cpp" }], {
+      prefix: "new-dll",
+      section: "Unsaved"
+    });
+    replaceSource(file.source, {
+      fileId: file.id,
+      fileName: file.name,
       language: "wapi-cpp",
       clearDiskFile: true,
       markDirty: true
     });
-  }, [replaceSource]);
+  }, [mergeProjectFiles, replaceSource]);
 
   const fileLabel = filePath ? filePath.split(/[\\/]/).pop() : activeFile;
 
   return (
     <main className="app-shell">
       <SolutionExplorer
-        activeFile={fileLabel}
+        activeFileId={activeFileId}
+        projectSections={projectSections}
         onOpenVirtualFile={openProjectFile}
+        onAddFiles={addFiles}
+        onLoadProject={loadProject}
         onNewScript={newScript}
         onNewDll={newDll}
       />
