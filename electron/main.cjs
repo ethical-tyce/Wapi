@@ -5,6 +5,7 @@ const { spawn } = require("node:child_process");
 
 const isDev = Boolean(process.env.WAPI_IDE_DEV_SERVER_URL);
 const appIcon = path.join(app.getAppPath(), "icon.ico");
+const projectFileExtensions = new Set([".wapi", ".txt", ".cpp", ".c", ".h", ".hpp"]);
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -70,6 +71,31 @@ async function resolveWapiExecutable() {
     if (await fileExists(candidate)) return candidate;
   }
   return null;
+}
+
+async function readIdeFile(filePath, rootPath = null) {
+  const source = await fs.readFile(filePath, "utf8");
+  return {
+    filePath,
+    source,
+    name: path.basename(filePath),
+    relativePath: rootPath ? path.relative(rootPath, filePath) : path.basename(filePath)
+  };
+}
+
+async function collectProjectFiles(rootPath, dirPath = rootPath, files = []) {
+  const entries = await fs.readdir(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const nextPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      if (![".git", "node_modules", "dist", "build", "x64", "ARM64"].includes(entry.name)) {
+        await collectProjectFiles(rootPath, nextPath, files);
+      }
+    } else if (projectFileExtensions.has(path.extname(entry.name).toLowerCase())) {
+      files.push(await readIdeFile(nextPath, rootPath));
+    }
+  }
+  return files;
 }
 
 function buildArgs(command, source, options = {}) {
@@ -141,6 +167,31 @@ ipcMain.handle("wapi:execute", async (_event, payload) => {
 
 ipcMain.handle("wapi:locate", async () => resolveWapiExecutable());
 
+ipcMain.handle("wapi:addFiles", async () => {
+  const result = await dialog.showOpenDialog({
+    title: "Add files to solution",
+    filters: [
+      { name: "Wapi and source files", extensions: ["wapi", "txt", "cpp", "c", "h", "hpp"] },
+      { name: "All files", extensions: ["*"] }
+    ],
+    properties: ["openFile", "multiSelections"]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) return [];
+  return Promise.all(result.filePaths.map((filePath) => readIdeFile(filePath)));
+});
+
+ipcMain.handle("wapi:loadProject", async () => {
+  const result = await dialog.showOpenDialog({
+    title: "Load project folder",
+    properties: ["openDirectory"]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) return null;
+  const rootPath = result.filePaths[0];
+  return { rootPath, files: await collectProjectFiles(rootPath) };
+});
+
 ipcMain.handle("window:minimize", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.minimize();
 });
@@ -171,8 +222,7 @@ ipcMain.handle("wapi:openFile", async () => {
 
   if (result.canceled || result.filePaths.length === 0) return null;
   const filePath = result.filePaths[0];
-  const source = await fs.readFile(filePath, "utf8");
-  return { filePath, source };
+  return readIdeFile(filePath);
 });
 
 ipcMain.handle("wapi:saveFile", async (_event, payload) => {
