@@ -414,6 +414,15 @@ WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
     return buffer;
 }
 
+/*
+███╗   ███╗███████╗███╗   ███╗ ██████╗ ██████╗ ██╗   ██╗
+████╗ ████║██╔════╝████╗ ████║██╔═══██╗██╔══██╗╚██╗ ██╔╝
+██╔████╔██║█████╗  ██╔████╔██║██║   ██║██████╔╝ ╚████╔╝
+██║╚██╔╝██║██╔══╝  ██║╚██╔╝██║██║   ██║██╔══██╗  ╚██╔╝
+██║ ╚═╝ ██║███████╗██║ ╚═╝ ██║╚██████╔╝██║  ██║   ██║
+╚═╝     ╚═╝╚══════╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝
+*/
+
 WapiValue Evaluator::wapi_writeMemory(long long handle, long long address, int value) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "writeMemory"));
     if (address <= 0) throw WapiUnstableException("Invalid memory address");
@@ -465,6 +474,15 @@ WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
     return 0;
 }
 
+/*
+██╗  ██╗ █████╗ ███╗   ██╗██████╗ ██╗     ███████╗    ███╗   ███╗ █████╗ ███╗   ██╗ █████╗  ██████╗ ███████╗███╗   ███╗███████╗███╗   ██╗████████╗
+██║  ██║██╔══██╗████╗  ██║██╔══██╗██║     ██╔════╝    ████╗ ████║██╔══██╗████╗  ██║██╔══██╗██╔════╝ ██╔════╝████╗ ████║██╔════╝████╗  ██║╚══██╔══╝
+███████║███████║██╔██╗ ██║██║  ██║██║     █████╗      ██╔████╔██║███████║██╔██╗ ██║███████║██║  ███╗█████╗  ██╔████╔██║█████╗  ██╔██╗ ██║   ██║
+██╔══██║██╔══██║██║╚██╗██║██║  ██║██║     ██╔══╝      ██║╚██╔╝██║██╔══██║██║╚██╗██║██╔══██║██║   ██║██╔══╝  ██║╚██╔╝██║██╔══╝  ██║╚██╗██║   ██║
+██║  ██║██║  ██║██║ ╚████║██████╔╝███████╗███████╗    ██║ ╚═╝ ██║██║  ██║██║ ╚████║██║  ██║╚██████╔╝███████╗██║ ╚═╝ ██║███████╗██║ ╚████║   ██║
+╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚══════╝╚══════╝    ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝   ╚═╝
+*/
+
 WapiValue Evaluator::wapi_closeHandle(long long handle) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "closeHandle"));
 
@@ -479,6 +497,15 @@ WapiValue Evaluator::wapi_closeHandle(long long handle) {
     return 0;
 }
 
+/*
+██╗    ██╗██╗███╗   ██╗██████╗  ██████╗ ██╗    ██╗
+██║    ██║██║████╗  ██║██╔══██╗██╔═══██╗██║    ██║
+██║ █╗ ██║██║██╔██╗ ██║██║  ██║██║   ██║██║ █╗ ██║
+██║███╗██║██║██║╚██╗██║██║  ██║██║   ██║██║███╗██║
+╚███╔███╔╝██║██║ ╚████║██████╔╝╚██████╔╝╚███╔███╔╝
+ ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝╚═════╝  ╚═════╝  ╚══╝╚══╝
+*/
+
 WapiValue Evaluator::wapi_findWindow(const std::string& name) {
     if (options.checkOnly) {
         emitAudit("findWindow", "window.find", "allow", "checkOnly no side-effects");
@@ -488,6 +515,15 @@ WapiValue Evaluator::wapi_findWindow(const std::string& name) {
     if (!hwnd) return 0;
     return static_cast<long long>(reinterpret_cast<uintptr_t>(hwnd));
 }
+
+/*
+██████╗ ██╗     ██╗         ██╗███╗   ██╗     ██╗███████╗ ██████╗████████╗██╗ ██████╗ ███╗   ██╗
+██╔══██╗██║     ██║         ██║████╗  ██║     ██║██╔════╝██╔════╝╚══██╔══╝██║██╔═══██╗████╗  ██║
+██║  ██║██║     ██║         ██║██╔██╗ ██║     ██║█████╗  ██║        ██║   ██║██║   ██║██╔██╗ ██║
+██║  ██║██║     ██║         ██║██║╚██╗██║██   ██║██╔══╝  ██║        ██║   ██║██║   ██║██║╚██╗██║
+██████╔╝███████╗███████╗    ██║██║ ╚████║╚█████╔╝███████╗╚██████╗   ██║   ██║╚██████╔╝██║ ╚████║
+╚═════╝ ╚══════╝╚══════╝    ╚═╝╚═╝  ╚═══╝ ╚════╝ ╚══════╝ ╚═════╝   ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
+*/
 
 WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
@@ -516,15 +552,7 @@ WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
         throw WapiUnstableException("Failed to write memory");
     }
 
-    HANDLE hThread = CreateRemoteThread(
-        hProcess,
-        nullptr,
-        0,
-        reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA")),
-        remote,
-        0,
-        nullptr
-    );
+    HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA")), remote, 0, nullptr);
 
     if (!hThread) {
         VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
@@ -559,3 +587,4 @@ WapiValue Evaluator::wapi_testInjectDLL(int pid) {
 
     return wapi_injectDLL(pid, dllPath);
 }
+
