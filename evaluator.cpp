@@ -179,7 +179,7 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
     if (call->name == "closeProcess") {
         checkArgCount(call, 1);
         enforcePolicy(call->name, "proc.close");
-        return wapi_closeProcess(asInt(call->args[0], call->name, 0));
+        return wapi_closeProcess(asLongLong(call->args[0], call->name, 0));
     }
 
 
@@ -390,10 +390,28 @@ WapiValue Evaluator::wapi_resumeProcess(long long handle) {
     return 0;
 }
 
+WapiValue Evaluator::wapi_closeProcess(long long handle) {
+    HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "closeProcess"));
 
-WapiValue Evaluator::wapi_closeProcess(int pid) {
-	throw WapiUnstableException("closeProcess is not implemented");
+    if (options.checkOnly) {
+        emitAudit("closeProcess", "proc.close", "allow", "checkOnly no side-effects");
+        trackedHandles.erase(handle);
+        return 0;
+    }
+
+    CloseHandle(hProcess);
+    trackedHandles.erase(handle);
+    return 0;
 }
+
+/*
+███╗   ███╗███████╗███╗   ███╗ ██████╗ ██████╗ ██╗   ██╗
+████╗ ████║██╔════╝████╗ ████║██╔═══██╗██╔══██╗╚██╗ ██╔╝
+██╔████╔██║█████╗  ██╔████╔██║██║   ██║██████╔╝ ╚████╔╝
+██║╚██╔╝██║██╔══╝  ██║╚██╔╝██║██║   ██║██╔══██╗  ╚██╔╝
+██║ ╚═╝ ██║███████╗██║ ╚═╝ ██║╚██████╔╝██║  ██║   ██║
+╚═╝     ╚═╝╚══════╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝
+*/
 
 WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "readMemory"));
@@ -413,15 +431,6 @@ WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
     std::cout << "Read " << bytesRead << " bytes from address 0x" << std::hex << address << ": " << std::dec << buffer << "\n";
     return buffer;
 }
-
-/*
-███╗   ███╗███████╗███╗   ███╗ ██████╗ ██████╗ ██╗   ██╗
-████╗ ████║██╔════╝████╗ ████║██╔═══██╗██╔══██╗╚██╗ ██╔╝
-██╔████╔██║█████╗  ██╔████╔██║██║   ██║██████╔╝ ╚████╔╝
-██║╚██╔╝██║██╔══╝  ██║╚██╔╝██║██║   ██║██╔══██╗  ╚██╔╝
-██║ ╚═╝ ██║███████╗██║ ╚═╝ ██║╚██████╔╝██║  ██║   ██║
-╚═╝     ╚═╝╚══════╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝
-*/
 
 WapiValue Evaluator::wapi_writeMemory(long long handle, long long address, int value) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "writeMemory"));
