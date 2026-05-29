@@ -220,6 +220,14 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
 
 
 
+    if (call->name == "listModules") {
+        checkArgCount(call, 1);
+        enforcePolicy(call->name, "proc.modules");
+        return wapi_listModules(asInt(call->args[0], call->name, 0));
+    }
+
+
+
     if (call->name == "closeHandle") {
         checkArgCount(call, 1);
         enforcePolicy(call->name, "proc.handle.close");
@@ -482,6 +490,47 @@ WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
     std::cout << "Freed memory\n";
     return 0;
 }
+
+/*
+███╗   ███╗ ██████╗ ██████╗ ██╗   ██╗██╗     ███████╗███████╗
+████╗ ████║██╔═══██╗██╔══██╗██║   ██║██║     ██╔════╝██╔════╝
+██╔████╔██║██║   ██║██║  ██║██║   ██║██║     █████╗  ███████╗
+██║╚██╔╝██║██║   ██║██║  ██║██║   ██║██║     ██╔══╝  ╚════██║
+██║ ╚═╝ ██║╚██████╔╝██████╔╝╚██████╔╝███████╗███████╗███████║
+╚═╝     ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚══════╝╚══════╝╚══════╝
+*/
+WapiValue Evaluator::wapi_listModules(int pid) {
+    // 1. Initialize your custom return variable at the start
+    WapiValue result;
+
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        std::cerr << "Failed to create snapshot. Error: " << GetLastError() << std::endl;
+        return result; // Fix: Must return WapiValue, not empty return;
+    }
+
+    MODULEENTRY32W me32;
+    me32.dwSize = sizeof(MODULEENTRY32W);
+
+    if (!Module32FirstW(hSnapshot, &me32)) {
+        std::cerr << "Failed to get first module. Error: " << GetLastError() << std::endl;
+        CloseHandle(hSnapshot);
+        return result; // Fix: Must return WapiValue, not empty return;
+    }
+
+    do {
+        // TODO: Populate 'result' with 'me32.szModule' and 'me32.szExePath'
+        // Example if WapiValue has an append method:
+        // result.append(me32.szModule);
+    } while (Module32NextW(hSnapshot, &me32));
+
+    CloseHandle(hSnapshot);
+
+    return result; // Fix: Return the populated object instead of 0
+}
+
+
 
 /*
 ██╗  ██╗ █████╗ ███╗   ██╗██████╗ ██╗     ███████╗    ███╗   ███╗ █████╗ ███╗   ██╗ █████╗  ██████╗ ███████╗███╗   ███╗███████╗███╗   ██╗████████╗

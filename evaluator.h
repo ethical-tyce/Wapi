@@ -72,6 +72,8 @@ private:
     WapiValue wapi_freeMemory(long long handle, long long address);
 
 
+    WapiValue wapi_listModules(int pid);
+
 
     WapiValue wapi_closeHandle(long long handle);
 
