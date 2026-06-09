@@ -6,6 +6,18 @@ const { spawn } = require("node:child_process");
 const isDev = Boolean(process.env.WAPI_IDE_DEV_SERVER_URL);
 const appIcon = path.join(app.getAppPath(), "icon.ico");
 const projectFileExtensions = new Set([".wapi", ".txt", ".cpp", ".c", ".h", ".hpp"]);
+const shellCwdMarker = "__WAPI_CWD__";
+const terminalSessions = new Map();
+
+function terminalSessionKey(event) {
+  return event.sender.id;
+}
+
+function emitTerminalData(webContents, payload) {
+  if (!webContents.isDestroyed()) {
+    webContents.send("wapi:terminal:data", payload);
+  }
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -146,6 +158,179 @@ function runProcess(exe, args) {
   });
 }
 
+function stripShellMarker(stdout) {
+  const lines = stdout.replace(/\r\n/g, "\n").split("\n");
+  let cwd = null;
+  const outputLines = [];
+
+  for (const line of lines) {
+    if (line.startsWith(shellCwdMarker)) {
+      cwd = line.slice(shellCwdMarker.length).trim();
+    } else {
+      outputLines.push(line);
+    }
+  }
+
+  return {
+    cwd,
+    stdout: outputLines.join("\n").replace(/\n+$/, "")
+  };
+}
+
+async function resolveShellCwd(cwd) {
+  const fallback = process.cwd();
+  if (typeof cwd !== "string" || !cwd.trim()) return fallback;
+
+  try {
+    const stat = await fs.stat(cwd);
+    return stat.isDirectory() ? cwd : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function runShellCommand(payload = {}) {
+  const shell = payload.shell === "cmd" ? "cmd" : "powershell";
+  const command = typeof payload.command === "string" ? payload.command.trim() : "";
+  const cwd = await resolveShellCwd(payload.cwd);
+
+  if (!command) {
+    return { ok: true, code: 0, stdout: "", stderr: "", cwd, shell };
+  }
+
+  const exe = shell === "cmd" ? "cmd.exe" : "powershell.exe";
+  const powershellScript = [
+    "$Error.Clear()",
+    command,
+    "$wapiExitCode = if ($global:LASTEXITCODE -ne $null) { $global:LASTEXITCODE } elseif ($Error.Count) { 1 } else { 0 }",
+    `Write-Output "${shellCwdMarker}$((Get-Location).Path)"`,
+    "exit $wapiExitCode"
+  ].join("; ");
+  const args = shell === "cmd"
+    ? ["/v:on", "/d", "/s", "/c", `${command} & set __WAPI_EXIT__=!ERRORLEVEL! & echo ${shellCwdMarker}%CD% & exit /b !__WAPI_EXIT__`]
+    : ["-NoLogo", "-NoProfile", "-EncodedCommand", Buffer.from(powershellScript, "utf16le").toString("base64")];
+
+  return new Promise((resolve) => {
+    const child = spawn(exe, args, {
+      cwd,
+      windowsHide: true
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      stderr += "\nCommand timed out after 30 seconds.";
+    }, 30000);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      resolve({
+        ok: false,
+        code: null,
+        stdout: "",
+        stderr: error.message,
+        cwd,
+        shell
+      });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      const parsed = stripShellMarker(stdout);
+      resolve({
+        ok: code === 0,
+        code,
+        stdout: parsed.stdout,
+        stderr: stderr.trimEnd(),
+        cwd: parsed.cwd || cwd,
+        shell
+      });
+    });
+  });
+}
+
+function stopTerminalSession(key) {
+  const session = terminalSessions.get(key);
+  if (!session) return;
+  session.child.kill();
+  terminalSessions.delete(key);
+}
+
+async function startTerminalSession(event, payload = {}) {
+  const key = terminalSessionKey(event);
+  stopTerminalSession(key);
+
+  const shell = payload.shell === "cmd" ? "cmd" : "powershell";
+  const cwd = await resolveShellCwd(payload.cwd);
+  const exe = shell === "cmd" ? "cmd.exe" : "powershell.exe";
+  const args = shell === "cmd"
+    ? ["/d", "/q", "/k"]
+    : ["-NoLogo", "-NoProfile", "-NoExit"];
+
+  const child = spawn(exe, args, {
+    cwd,
+    windowsHide: true
+  });
+
+  const session = { child, cwd, shell };
+  terminalSessions.set(key, session);
+
+  child.stdout.on("data", (chunk) => {
+    emitTerminalData(event.sender, {
+      type: "stdout",
+      shell,
+      text: chunk.toString()
+    });
+  });
+  child.stderr.on("data", (chunk) => {
+    emitTerminalData(event.sender, {
+      type: "stderr",
+      shell,
+      text: chunk.toString()
+    });
+  });
+  child.on("error", (error) => {
+    emitTerminalData(event.sender, {
+      type: "stderr",
+      shell,
+      text: error.message
+    });
+  });
+  child.on("close", (code) => {
+    terminalSessions.delete(key);
+    emitTerminalData(event.sender, {
+      type: "exit",
+      shell,
+      text: `\n${shell} exited with code ${code ?? "unknown"}.\n`
+    });
+  });
+
+  return { ok: true, shell, cwd };
+}
+
+function sendTerminalInput(event, payload = {}) {
+  const key = terminalSessionKey(event);
+  const session = terminalSessions.get(key);
+  const command = typeof payload.command === "string" ? payload.command : "";
+
+  if (!session || session.child.killed) {
+    return { ok: false, stderr: "Terminal session is not running." };
+  }
+
+  const markerCommand = session.shell === "cmd"
+    ? `echo ${shellCwdMarker}%CD%`
+    : `Write-Output "${shellCwdMarker}$((Get-Location).Path)"`;
+
+  session.child.stdin.write(`${command}\r\n${markerCommand}\r\n`);
+  return { ok: true };
+}
+
 ipcMain.handle("wapi:execute", async (_event, payload) => {
   const command = payload?.command === "run" ? "run" : "check";
   const source = typeof payload?.source === "string" ? payload.source : "";
@@ -166,6 +351,14 @@ ipcMain.handle("wapi:execute", async (_event, payload) => {
 });
 
 ipcMain.handle("wapi:locate", async () => resolveWapiExecutable());
+
+ipcMain.handle("wapi:shell", async (_event, payload) => runShellCommand(payload));
+ipcMain.handle("wapi:terminal:start", async (event, payload) => startTerminalSession(event, payload));
+ipcMain.handle("wapi:terminal:send", (event, payload) => sendTerminalInput(event, payload));
+ipcMain.handle("wapi:terminal:stop", (event) => {
+  stopTerminalSession(terminalSessionKey(event));
+  return { ok: true };
+});
 
 ipcMain.handle("wapi:addFiles", async () => {
   const result = await dialog.showOpenDialog({
@@ -255,5 +448,6 @@ app.on("activate", () => {
 });
 
 app.on("window-all-closed", () => {
+  for (const key of terminalSessions.keys()) stopTerminalSession(key);
   if (process.platform !== "darwin") app.quit();
 });

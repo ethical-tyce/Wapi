@@ -10,6 +10,7 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 Evaluator::Evaluator(const WapiRuntimeOptions& options) : options(options) {}
 
@@ -146,119 +147,139 @@ void* Evaluator::requireTrackedHandle(long long handleValue, const std::string& 
 }
 
 WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
-    if (call->name == "findProcessPID") {
-        checkArgCount(call, 1);
-        enforcePolicy(call->name, "proc.list");
-        return wapi_findProcessPID(asString(call->args[0], call->name, 0));
-    }
-    if (call->name == "listProcesses") {
-        checkArgCount(call, 0);
-        enforcePolicy(call->name, "proc.list");
-        return wapi_listProcesses();
-    }
-    if (call->name == "openProcess") {
-        checkArgCount(call, 1);
-        enforcePolicy(call->name, "proc.open.all_access");
-        return wapi_openProcess(asInt(call->args[0], call->name, 0));
-    }
-    if (call->name == "terminateProcess") {
-        checkArgCount(call, 1);
-        enforcePolicy(call->name, "proc.terminate");
-        return wapi_terminateProcess(asLongLong(call->args[0], call->name, 0));
-    }
-    if (call->name == "suspendProcess") {
-        checkArgCount(call, 1);
-        enforcePolicy(call->name, "proc.suspend");
-        return wapi_suspendProcess(asLongLong(call->args[0], call->name, 0));
-    }
-    if (call->name == "resumeProcess") {
-        checkArgCount(call, 1);
-        enforcePolicy(call->name, "proc.resume");
-        return wapi_resumeProcess(asLongLong(call->args[0], call->name, 0));
-    }
-    if (call->name == "closeProcess") {
-        checkArgCount(call, 1);
-        enforcePolicy(call->name, "proc.close");
-        return wapi_closeProcess(asLongLong(call->args[0], call->name, 0));
+    using FunctionInvoker = WapiValue(*)(Evaluator&, const std::shared_ptr<FunctionCall>&);
+
+    struct FunctionBinding {
+        size_t argCount;
+        const char* capability;
+        bool requiresInjectionFlag;
+        FunctionInvoker invoke;
+    };
+
+    static const std::unordered_map<std::string, FunctionBinding> functions = {
+        {
+            "findProcessPID",
+            {1, "proc.list", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_findProcessPID(evaluator.asString(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "listProcesses",
+            {0, "proc.list", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>&) -> WapiValue {
+                return evaluator.wapi_listProcesses();
+            }}
+        },
+        {
+            "openProcess",
+            {1, "proc.open.all_access", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_openProcess(evaluator.asInt(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "terminateProcess",
+            {1, "proc.terminate", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_terminateProcess(evaluator.asLongLong(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "suspendProcess",
+            {1, "proc.suspend", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_suspendProcess(evaluator.asLongLong(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "resumeProcess",
+            {1, "proc.resume", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_resumeProcess(evaluator.asLongLong(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "closeProcess",
+            {1, "proc.close", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_closeProcess(evaluator.asLongLong(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "readMemory",
+            {2, "mem.read", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_readMemory(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
+            "writeMemory",
+            {3, "mem.write", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_writeMemory(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1),
+                    evaluator.asInt(call->args[2], call->name, 2)
+                );
+            }}
+        },
+        {
+            "allocMemory",
+            {2, "mem.alloc", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_allocMemory(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asInt(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
+            "freeMemory",
+            {2, "mem.free", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_freeMemory(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
+            "listModules",
+            {1, "proc.modules", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_listModules(evaluator.asInt(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "closeHandle",
+            {1, "proc.handle.close", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_closeHandle(evaluator.asLongLong(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "findWindow",
+            {1, "window.find", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_findWindow(evaluator.asString(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "injectDLL",
+            {2, "inject.dll", true, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_injectDLL(
+                    evaluator.asInt(call->args[0], call->name, 0),
+                    evaluator.asString(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
+            "testInjectDLL",
+            {1, "inject.dll", true, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_testInjectDLL(evaluator.asInt(call->args[0], call->name, 0));
+            }}
+        }
+    };
+
+    auto found = functions.find(call->name);
+    if (found == functions.end()) {
+        throw std::runtime_error("E_UNKNOWN_FUNCTION:" + call->name);
     }
 
-
-
-    if (call->name == "readMemory") {
-        checkArgCount(call, 2);
-        enforcePolicy(call->name, "mem.read");
-        return wapi_readMemory(
-            asLongLong(call->args[0], call->name, 0),
-            asLongLong(call->args[1], call->name, 1)
-        );
-    }
-    if (call->name == "writeMemory") {
-        checkArgCount(call, 3);
-        enforcePolicy(call->name, "mem.write");
-        return wapi_writeMemory(
-            asLongLong(call->args[0], call->name, 0),
-            asLongLong(call->args[1], call->name, 1),
-            asInt(call->args[2], call->name, 2)
-        );
-    }
-    if (call->name == "allocMemory") {
-        checkArgCount(call, 2);
-        enforcePolicy(call->name, "mem.alloc");
-        return wapi_allocMemory(
-            asLongLong(call->args[0], call->name, 0),
-            asInt(call->args[1], call->name, 1)
-        );
-    }
-    if (call->name == "freeMemory") {
-        checkArgCount(call, 2);
-        enforcePolicy(call->name, "mem.free");
-        return wapi_freeMemory(
-            asLongLong(call->args[0], call->name, 0),
-            asLongLong(call->args[1], call->name, 1)
-        );
-    }
-
-
-
-    if (call->name == "listModules") {
-        checkArgCount(call, 1);
-        enforcePolicy(call->name, "proc.modules");
-        return wapi_listModules(asInt(call->args[0], call->name, 0));
-    }
-
-
-
-    if (call->name == "closeHandle") {
-        checkArgCount(call, 1);
-        enforcePolicy(call->name, "proc.handle.close");
-        return wapi_closeHandle(asLongLong(call->args[0], call->name, 0));
-    }
-
-
-
-    if (call->name == "findWindow") {
-        checkArgCount(call, 1);
-        enforcePolicy(call->name, "window.find");
-        return wapi_findWindow(asString(call->args[0], call->name, 0));
-    }
-
-
-
-    if (call->name == "injectDLL") {
-        checkArgCount(call, 2);
-        enforcePolicy(call->name, "inject.dll", true);
-        return wapi_injectDLL(
-            asInt(call->args[0], call->name, 0),
-            asString(call->args[1], call->name, 1)
-        );
-    }
-    if (call->name == "testInjectDLL") {
-        checkArgCount(call, 1);
-        enforcePolicy(call->name, "inject.dll", true);
-        return wapi_testInjectDLL(asInt(call->args[0], call->name, 0));
-    }
-
-    throw std::runtime_error("E_UNKNOWN_FUNCTION:" + call->name);
+    const FunctionBinding& binding = found->second;
+    checkArgCount(call, binding.argCount);
+    enforcePolicy(call->name, binding.capability, binding.requiresInjectionFlag);
+    return binding.invoke(*this, call);
 }
 
 
