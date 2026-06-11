@@ -13,5 +13,8 @@
   "devDependencies": {
     "electron": "^33.3.1",
     "vite": "^6.0.7"
+  },
+  "dependencies": {
+    "monaco-editor": "^0.55.1"
   }
 }

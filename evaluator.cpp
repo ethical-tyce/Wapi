@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cwctype>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -240,6 +241,24 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
             "listModules",
             {1, "proc.modules", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
                 return evaluator.wapi_listModules(evaluator.asInt(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "getModuleBase",
+            {2, "proc.modules", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_getModuleBaseAddress(
+                    evaluator.asInt(call->args[0], call->name, 0),
+                    evaluator.asString(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
+            "getModuleBaseAddress",
+            {2, "proc.modules", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_getModuleBaseAddress(
+                    evaluator.asInt(call->args[0], call->name, 0),
+                    evaluator.asString(call->args[1], call->name, 1)
+                );
             }}
         },
         {
@@ -521,36 +540,99 @@ WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
 ╚═╝     ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚══════╝╚══════╝╚══════╝
 */
 WapiValue Evaluator::wapi_listModules(int pid) {
-    // 1. Initialize your custom return variable at the start
-    WapiValue result;
+    if (pid <= 0) throw WapiUnstableException("Invalid pid");
+
+    if (options.checkOnly) {
+        emitAudit("listModules", "proc.modules", "allow", "checkOnly no side-effects");
+        return 0;
+    }
 
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
 
     if (hSnapshot == INVALID_HANDLE_VALUE) {
-        std::cerr << "Failed to create snapshot. Error: " << GetLastError() << std::endl;
-        return result; // Fix: Must return WapiValue, not empty return;
+        throw WapiUnstableException("Failed to create module snapshot");
     }
 
-    MODULEENTRY32W me32;
-    me32.dwSize = sizeof(MODULEENTRY32W);
+    MODULEENTRY32W me32{};
+    me32.dwSize = sizeof(me32);
 
     if (!Module32FirstW(hSnapshot, &me32)) {
-        std::cerr << "Failed to get first module. Error: " << GetLastError() << std::endl;
         CloseHandle(hSnapshot);
-        return result; // Fix: Must return WapiValue, not empty return;
+        throw WapiUnstableException("Failed to read first module");
     }
 
     do {
-        // TODO: Populate 'result' with 'me32.szModule' and 'me32.szExePath'
-        // Example if WapiValue has an append method:
-        // result.append(me32.szModule);
+        std::wstring moduleName(me32.szModule);
+        std::wstring modulePath(me32.szExePath);
+        std::cout
+            << me32.th32ProcessID << " - "
+            << std::string(moduleName.begin(), moduleName.end())
+            << " @ 0x" << std::hex << reinterpret_cast<uintptr_t>(me32.modBaseAddr)
+            << " size=" << std::dec << me32.modBaseSize
+            << " path=" << std::string(modulePath.begin(), modulePath.end())
+            << "\n";
     } while (Module32NextW(hSnapshot, &me32));
 
     CloseHandle(hSnapshot);
 
-    return result; // Fix: Return the populated object instead of 0
+    return 0;
 }
 
+WapiValue Evaluator::wapi_getModuleBaseAddress(int pid, const std::string& moduleName) {
+    if (pid <= 0) throw WapiUnstableException("Invalid pid");
+    if (moduleName.empty()) throw WapiUnstableException("Module name is empty");
+
+    if (options.checkOnly) {
+        emitAudit("getModuleBaseAddress", "proc.modules", "check_only", "PID: " + std::to_string(pid));
+        return static_cast<long long>(0);
+    }
+
+    std::wstring target(moduleName.begin(), moduleName.end());
+    std::transform(target.begin(), target.end(), target.begin(), ::towlower);
+
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        emitAudit("getModuleBaseAddress", "proc.modules", "failure", "snapshot_failed_pid_" + std::to_string(pid));
+        throw WapiUnstableException("Failed to create module snapshot");
+    }
+
+    MODULEENTRY32W modEntry{};
+    modEntry.dwSize = sizeof(modEntry);
+
+    if (Module32FirstW(hSnapshot, &modEntry)) {
+        do {
+            std::wstring current(modEntry.szModule);
+            std::transform(current.begin(), current.end(), current.begin(), ::towlower);
+
+            if (current == target) {
+                const long long baseAddress = static_cast<long long>(reinterpret_cast<uintptr_t>(modEntry.modBaseAddr));
+                CloseHandle(hSnapshot);
+                emitAudit("getModuleBaseAddress", "proc.modules", "success", moduleName + " base located");
+                return baseAddress;
+            }
+
+            std::wstring path(modEntry.szExePath);
+            std::transform(path.begin(), path.end(), path.begin(), ::towlower);
+            if (path.size() >= target.size() && path.compare(path.size() - target.size(), target.size(), target) == 0) {
+                const long long baseAddress = static_cast<long long>(reinterpret_cast<uintptr_t>(modEntry.modBaseAddr));
+                CloseHandle(hSnapshot);
+                emitAudit("getModuleBaseAddress", "proc.modules", "success", moduleName + " base located");
+                return baseAddress;
+            }
+        } while (Module32NextW(hSnapshot, &modEntry));
+    }
+    else {
+        const DWORD error = GetLastError();
+        CloseHandle(hSnapshot);
+        emitAudit("getModuleBaseAddress", "proc.modules", "failure", "module_walk_failed_pid_" + std::to_string(pid));
+        throw WapiUnstableException("Failed to read process modules, error=" + std::to_string(error));
+    }
+
+    CloseHandle(hSnapshot);
+
+    emitAudit("getModuleBaseAddress", "proc.modules", "failure", "module_not_found_" + moduleName);
+    throw std::runtime_error("E_MODULE_NOT_FOUND: " + moduleName + " in PID " + std::to_string(pid));
+}
 
 
 /*

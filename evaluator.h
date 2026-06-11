@@ -73,6 +73,8 @@ private:
 
 
     WapiValue wapi_listModules(int pid);
+	WapiValue wapi_getModuleBaseAddress(int pid, const std::string& moduleName);
+
 
 
     WapiValue wapi_closeHandle(long long handle);
