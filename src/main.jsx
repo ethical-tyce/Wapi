@@ -1,5 +1,6 @@
 import wapiIconUrl from "../wapi.png";
 import bannerIconUrl from "../banner icon.png";
+import evaluatorSource from "../evaluator.cpp?raw";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 
@@ -39,6 +40,89 @@ const uiState = {
 };
 
 const welcomeSource = "";
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parseCppParams(paramsSource) {
+  const source = paramsSource.trim();
+  if (!source || source === "void") return [];
+
+  return source.split(",").map((part, index) => {
+    const normalized = part.trim().replace(/\s+/g, " ");
+    const nameMatch = normalized.match(/([a-zA-Z_]\w*)\s*(?:=[^=]*)?$/);
+    if (!nameMatch) return { name: `arg${index + 1}`, type: "value" };
+
+    const name = nameMatch[1];
+    const type = normalized
+      .slice(0, nameMatch.index)
+      .replace(/\bconst\b/g, "")
+      .replace(/\bstd::/g, "")
+      .replace(/[&*]/g, "")
+      .trim()
+      .replace(/\s+/g, " ") || "value";
+    return { name, type };
+  });
+}
+
+function parseEvaluatorMethodParams(source) {
+  const methods = new Map();
+  const methodPattern = /WapiValue\s+Evaluator::(wapi_[a-zA-Z_]\w*)\s*\(([^)]*)\)/g;
+  for (const match of source.matchAll(methodPattern)) {
+    methods.set(match[1], parseCppParams(match[2]));
+  }
+  return methods;
+}
+
+function genericParams(count) {
+  return Array.from({ length: count }, (_, index) => ({ name: `arg${index + 1}`, type: "value" }));
+}
+
+function parseEvaluatorFunctionRegistry(source) {
+  const registryStart = source.indexOf("static const std::unordered_map<std::string, FunctionBinding> functions");
+  const registryEnd = registryStart === -1 ? -1 : source.indexOf("\n    auto found", registryStart);
+  const registrySource = registryStart === -1 || registryEnd === -1
+    ? source
+    : source.slice(registryStart, registryEnd);
+  const methods = parseEvaluatorMethodParams(source);
+  const entryPattern = /\{\s*"([a-zA-Z_]\w*)"\s*,\s*\{\s*(\d+)\s*,\s*"([^"]+)"\s*,\s*(true|false)\s*,/g;
+  const entries = [...registrySource.matchAll(entryPattern)];
+
+  return entries.map((entry, index) => {
+    const nextEntry = entries[index + 1];
+    const body = registrySource.slice(entry.index, nextEntry?.index ?? registrySource.length);
+    const methodName = body.match(/evaluator\.(wapi_[a-zA-Z_]\w*)\s*\(/)?.[1] ?? "";
+    const argCount = Number(entry[2]);
+    const params = (methods.get(methodName) ?? genericParams(argCount)).slice(0, argCount);
+
+    return {
+      name: entry[1],
+      argCount,
+      capability: entry[3],
+      requiresInjectionFlag: entry[4] === "true",
+      params: params.length === argCount ? params : genericParams(argCount)
+    };
+  });
+}
+
+const wapiRuntimeFunctions = parseEvaluatorFunctionRegistry(evaluatorSource);
+const wapiFunctionNameRegex = wapiRuntimeFunctions.length
+  ? new RegExp(`\\b(?:${wapiRuntimeFunctions.map((fn) => escapeRegExp(fn.name)).join("|")})\\b`)
+  : /(?!)/;
+
+function wapiFunctionSignature(fn) {
+  const params = fn.params.map((param) => `${param.name}: ${param.type}`).join(", ");
+  return `${fn.name}(${params})`;
+}
+
+function wapiFunctionSnippet(fn) {
+  if (fn.params.length === 0) return `${fn.name}()`;
+  const params = fn.params
+    .map((param, index) => "${" + `${index + 1}:${param.name}` + "}")
+    .join(", ");
+  return `${fn.name}(${params})`;
+}
 
 function activeExplorerFile() {
   return explorerState.projectFiles.find((file) => file.id === explorerState.activeFileId) ?? null;
@@ -285,7 +369,7 @@ function installMonacoLanguage() {
         [/"([^"\\]|\\.)*$/, "string.invalid"],
         [/"/, "string", "@string"],
         [/\b(?:print|let|if|else|while|for|return|true|false|null|check|run)\b/, "keyword"],
-        [/\b(?:openProcess|allocateMemory|writeMemory|createRemoteThread|loadLibrary|closeHandle)\b/, "type.identifier"],
+        [wapiFunctionNameRegex, "type.identifier"],
         [/\b\d+(?:\.\d+)?\b/, "number"],
         [/[{}()[\]]/, "@brackets"],
         [/[a-zA-Z_]\w*/, "identifier"]
@@ -306,6 +390,33 @@ function installMonacoLanguage() {
       { open: "(", close: ")" },
       { open: '"', close: '"' }
     ]
+  });
+  monaco.languages.registerCompletionItemProvider("wapi", {
+    provideCompletionItems(model, position) {
+      const word = model.getWordUntilPosition(position);
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn
+      };
+
+      return {
+        suggestions: wapiRuntimeFunctions.map((fn) => ({
+          label: fn.name,
+          kind: monaco.languages.CompletionItemKind.Function,
+          detail: wapiFunctionSignature(fn),
+          documentation: [
+            `Capability: ${fn.capability}`,
+            fn.requiresInjectionFlag ? "Requires --allow-injection outside unsafe mode." : ""
+          ].filter(Boolean).join("\n"),
+          insertText: wapiFunctionSnippet(fn),
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          range,
+          sortText: `0_${fn.name}`
+        }))
+      };
+    }
   });
   monaco.editor.defineTheme("wapi-dark", {
     base: "vs-dark",
