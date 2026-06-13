@@ -15,6 +15,10 @@
 
 Evaluator::Evaluator(const WapiRuntimeOptions& options) : options(options) {}
 
+Evaluator::~Evaluator() {
+    cleanupTrackedResources();
+}
+
 void Evaluator::run(std::shared_ptr<Program> program) {
     for (auto& stmt : program->statements) {
         evalNode(stmt);
@@ -145,6 +149,45 @@ void* Evaluator::requireTrackedHandle(long long handleValue, const std::string& 
         throw std::runtime_error("E_HANDLE_UNKNOWN:" + functionName + " handle_not_tracked");
     }
     return reinterpret_cast<void*>(static_cast<uintptr_t>(handleValue));
+}
+
+void Evaluator::releaseTrackedAllocations(long long handleValue) noexcept {
+    auto found = trackedAllocations.find(handleValue);
+    if (found == trackedAllocations.end()) return;
+
+    if (!options.checkOnly) {
+        HANDLE hProcess = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(handleValue));
+        for (long long address : found->second) {
+            if (address > 0) {
+                VirtualFreeEx(hProcess, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(address)), 0, MEM_RELEASE);
+            }
+        }
+    }
+
+    trackedAllocations.erase(found);
+}
+
+void Evaluator::closeTrackedHandle(long long handleValue) noexcept {
+    if (!trackedHandles.count(handleValue)) {
+        trackedAllocations.erase(handleValue);
+        return;
+    }
+
+    releaseTrackedAllocations(handleValue);
+    if (!options.checkOnly) {
+        HANDLE hProcess = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(handleValue));
+        CloseHandle(hProcess);
+    }
+    trackedHandles.erase(handleValue);
+}
+
+void Evaluator::cleanupTrackedResources() noexcept {
+    std::vector<long long> handles(trackedHandles.begin(), trackedHandles.end());
+    for (long long handleValue : handles) {
+        closeTrackedHandle(handleValue);
+    }
+    trackedHandles.clear();
+    trackedAllocations.clear();
 }
 
 WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
@@ -393,8 +436,7 @@ WapiValue Evaluator::wapi_terminateProcess(long long handle) {
 
     if (!TerminateProcess(hProcess, 0)) throw WapiUnstableException("Failed to terminate process");
 
-    CloseHandle(hProcess);
-    trackedHandles.erase(handle);
+    closeTrackedHandle(handle);
     return 0;
 }
 
@@ -439,16 +481,15 @@ WapiValue Evaluator::wapi_resumeProcess(long long handle) {
 }
 
 WapiValue Evaluator::wapi_closeProcess(long long handle) {
-    HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "closeProcess"));
+    requireTrackedHandle(handle, "closeProcess");
 
     if (options.checkOnly) {
         emitAudit("closeProcess", "proc.close", "allow", "checkOnly no side-effects");
-        trackedHandles.erase(handle);
+        closeTrackedHandle(handle);
         return 0;
     }
 
-    CloseHandle(hProcess);
-    trackedHandles.erase(handle);
+    closeTrackedHandle(handle);
     return 0;
 }
 
@@ -510,8 +551,10 @@ WapiValue Evaluator::wapi_allocMemory(long long handle, int size) {
     LPVOID addr = VirtualAllocEx(hProcess, nullptr, static_cast<SIZE_T>(size), MEM_COMMIT, PAGE_READWRITE);
     if (!addr) throw WapiUnstableException("Failed to allocate memory");
 
+    const long long trackedAddress = static_cast<long long>(reinterpret_cast<uintptr_t>(addr));
+    trackedAllocations[handle].insert(trackedAddress);
     std::cout << "Allocated " << size << " bytes\n";
-    return static_cast<long long>(reinterpret_cast<uintptr_t>(addr));
+    return trackedAddress;
 }
 
 WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
@@ -527,6 +570,11 @@ WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
         throw WapiUnstableException("Failed to free memory");
     }
 
+    auto found = trackedAllocations.find(handle);
+    if (found != trackedAllocations.end()) {
+        found->second.erase(address);
+        if (found->second.empty()) trackedAllocations.erase(found);
+    }
     std::cout << "Freed memory\n";
     return 0;
 }
@@ -645,16 +693,15 @@ WapiValue Evaluator::wapi_getModuleBaseAddress(int pid, const std::string& modul
 */
 
 WapiValue Evaluator::wapi_closeHandle(long long handle) {
-    HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "closeHandle"));
+    requireTrackedHandle(handle, "closeHandle");
 
     if (options.checkOnly) {
         emitAudit("closeHandle", "proc.open.all_access", "allow", "checkOnly no side-effects");
-        trackedHandles.erase(handle);
+        closeTrackedHandle(handle);
         return 0;
     }
 
-    CloseHandle(hProcess);
-    trackedHandles.erase(handle);
+    closeTrackedHandle(handle);
     return 0;
 }
 

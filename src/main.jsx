@@ -9,45 +9,62 @@ self.MonacoEnvironment = {
 };
 
 const bridge = window.wapi ?? {
+  execute: async (payload = {}) => ({
+    ok: false,
+    code: null,
+    stdout: "",
+    stderr: `Native Wapi ${payload.command ?? "run"} is available in the Electron app, not the browser preview.`,
+    exe: null
+  }),
+  locate: async () => null,
   addFiles: async () => [],
   createProject: async (payload = {}) => ({
     rootPath: null,
+    config: payload.config ?? null,
     files: payload.files ?? []
   }),
   loadProject: async () => null,
+  openFile: async () => null,
+  saveFile: async (payload = {}) => ({ filePath: payload.filePath ?? "browser-preview.wapi" }),
+  saveFiles: async (files = []) => files.map((file) => ({ ok: true, filePath: file.filePath })),
+  readProjectConfig: async () => null,
+  writeProjectConfig: async (_rootPath, config) => config,
+  listRecentProjects: async () => [],
+  addRecentProject: async () => [],
+  shell: async () => ({ ok: true, stdout: "", stderr: "" }),
+  terminal: {
+    start: async () => ({ ok: true, shell: "powershell", cwd: "" }),
+    send: async () => ({ ok: true }),
+    stop: async () => ({ ok: true }),
+    onData: () => () => null
+  },
   window: {
     minimize: async () => null,
     toggleMaximize: async () => null,
-    close: async () => null
+    close: async () => null,
+    setDirtyState: async () => null
   }
 };
 
-const explorerState = {
-  projectFiles: [],
-  activeFileId: null,
-  projectRoot: null,
-  searchQuery: ""
-};
-
-const editorState = {
-  editor: null,
-  model: null,
-  changeDisposable: null,
-  cursorDisposable: null
-};
-
-const uiState = {
-  activePanel: "explorer",
-  terminalCollapsed: false,
-  terminalHidden: false,
-  menuOpen: false,
-  projectDialogOpen: false
-};
-
+const visibleExtensions = new Set([".wapi", ".txt", ".json", ".cpp", ".c", ".h", ".hpp"]);
+const maxPanelLines = 300;
 const welcomeSource = "";
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizePath(value = "") {
+  return String(value).replace(/\\/g, "/");
+}
+
+function fileExtension(path = "") {
+  const match = String(path).toLowerCase().match(/\.[^.\\/]+$/);
+  return match ? match[0] : "";
+}
+
+function fileName(path = "") {
+  return normalizePath(path).split("/").filter(Boolean).pop() || "Untitled";
 }
 
 function parseCppParams(paramsSource) {
@@ -108,13 +125,15 @@ function parseEvaluatorFunctionRegistry(source) {
       requiresInjectionFlag: entry[4] === "true",
       params: params.length === argCount ? params : genericParams(argCount)
     };
-  });
+  }).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 const wapiRuntimeFunctions = parseEvaluatorFunctionRegistry(evaluatorSource);
+const wapiRuntimeFunctionMap = new Map(wapiRuntimeFunctions.map((fn) => [fn.name, fn]));
 const wapiFunctionNameRegex = wapiRuntimeFunctions.length
   ? new RegExp(`\\b(?:${wapiRuntimeFunctions.map((fn) => escapeRegExp(fn.name)).join("|")})\\b`)
   : /(?!)/;
+const runtimeCapabilities = [...new Set(wapiRuntimeFunctions.map((fn) => fn.capability))].sort();
 
 function wapiFunctionSignature(fn) {
   const params = fn.params.map((param) => `${param.name}: ${param.type}`).join(", ");
@@ -129,19 +148,155 @@ function wapiFunctionSnippet(fn) {
   return `${fn.name}(${params})`;
 }
 
-function activeExplorerFile() {
-  return explorerState.projectFiles.find((file) => file.id === explorerState.activeFileId) ?? null;
+function wapiFunctionDocs(fn) {
+  return [
+    `Capability: ${fn.capability}`,
+    `Arguments: ${fn.argCount}`,
+    fn.requiresInjectionFlag ? "Requires allow injection outside unsafe mode." : "No injection flag required."
+  ].join("\n");
+}
+
+function defaultProjectConfig(name = "WapiProject") {
+  return {
+    name,
+    entryFile: "main.wapi",
+    defaultMode: "safe",
+    strictPermissions: true,
+    allowInjection: false,
+    capabilities: ["proc.list", "proc.modules"]
+  };
+}
+
+function normalizeProjectConfig(config = {}, fallbackName = "WapiProject") {
+  const next = { ...defaultProjectConfig(fallbackName), ...(config ?? {}) };
+  next.name = String(next.name || fallbackName).trim() || fallbackName;
+  next.entryFile = normalizePath(next.entryFile || "main.wapi").replace(/^\/+/, "") || "main.wapi";
+  if (next.defaultMode === "audit") next.defaultMode = "dev";
+  next.defaultMode = ["safe", "dev", "unsafe"].includes(next.defaultMode) ? next.defaultMode : "safe";
+  next.strictPermissions = Boolean(next.strictPermissions);
+  next.allowInjection = Boolean(next.allowInjection);
+  next.capabilities = Array.isArray(next.capabilities)
+    ? [...new Set(next.capabilities.map((cap) => String(cap).trim()).filter(Boolean))]
+    : defaultProjectConfig(fallbackName).capabilities;
+  return next;
+}
+
+function templateConfig(name, templateId) {
+  const base = defaultProjectConfig(name);
+  if (templateId === "process-inspector") {
+    return {
+      ...base,
+      capabilities: ["proc.list", "proc.modules"]
+    };
+  }
+  if (templateId === "memory-sandbox") {
+    return {
+      ...base,
+      strictPermissions: true,
+      allowInjection: false,
+      capabilities: [
+        "proc.list",
+        "proc.open.all_access",
+        "mem.alloc",
+        "mem.write",
+        "mem.read",
+        "mem.free",
+        "proc.handle.close"
+      ]
+    };
+  }
+  return { ...base, capabilities: ["proc.list"] };
+}
+
+const projectTemplates = [
+  {
+    id: "empty",
+    name: "Empty",
+    note: "A clean Wapi entry file with check-first defaults.",
+    source: (name) => [
+      `// ${name}`,
+      "// Check before running runtime actions.",
+      "listProcesses()",
+      ""
+    ].join("\n")
+  },
+  {
+    id: "process-inspector",
+    name: "Process Inspector",
+    note: "Process discovery plus module inspection APIs.",
+    source: (name) => [
+      `// ${name} - Process Inspector`,
+      "int pid = findProcessPID(\"notepad\")",
+      "listModules(pid)",
+      "int base = getModuleBaseAddress(pid, \"kernel32.dll\")",
+      ""
+    ].join("\n")
+  },
+  {
+    id: "memory-sandbox",
+    name: "Memory Sandbox",
+    note: "Memory allocation/read/write flow using allocMemory.",
+    source: (name) => [
+      `// ${name} - Memory Sandbox`,
+      "int pid = findProcessPID(\"notepad\")",
+      "int handle = openProcess(pid)",
+      "int address = allocMemory(handle, 64)",
+      "writeMemory(handle, address, 1234)",
+      "int value = readMemory(handle, address)",
+      "freeMemory(handle, address)",
+      "closeHandle(handle)",
+      ""
+    ].join("\n")
+  }
+];
+
+const ideState = {
+  files: [],
+  activeFileId: null,
+  openFileIds: [],
+  collapsedFolders: new Set(),
+  projectRoot: null,
+  projectConfig: defaultProjectConfig(),
+  searchQuery: "",
+  recentProjects: [],
+  activePanel: "explorer",
+  activeTool: "output",
+  menuOpen: false,
+  projectDialogOpen: false,
+  selectedTemplate: "empty",
+  dirty: false,
+  outputLines: [],
+  auditLines: [],
+  terminalLines: [],
+  problems: [],
+  terminalRunning: false,
+  terminalInput: ""
+};
+
+const editorState = {
+  editor: null,
+  model: null,
+  changeDisposable: null,
+  cursorDisposable: null,
+  diagnosticsTimer: null,
+  diagnosticsToken: 0
+};
+
+function runtimeOptions() {
+  return {
+    mode: ideState.projectConfig.defaultMode,
+    strictPermissions: ideState.projectConfig.strictPermissions,
+    allowInjection: ideState.projectConfig.allowInjection,
+    capabilities: ideState.projectConfig.capabilities
+  };
 }
 
 function languageForFile(file) {
   const path = (file?.name || file?.relativePath || "").toLowerCase();
   if (path.endsWith(".cpp") || path.endsWith(".c") || path.endsWith(".h") || path.endsWith(".hpp")) return "cpp";
+  if (path.endsWith(".json")) return "json";
   if (path.endsWith(".txt")) return "plaintext";
   return "wapi";
-}
-
-function normalizePath(value = "") {
-  return String(value).replace(/\\/g, "/");
 }
 
 function normalizeProjectFile(file = {}) {
@@ -149,33 +304,79 @@ function normalizeProjectFile(file = {}) {
   const relativePath = normalizePath(
     typeof file.relativePath === "string" && file.relativePath
       ? file.relativePath
-      : filePath.split(/[\\/]/).pop() || file.name || "Untitled"
+      : filePath
+        ? fileName(filePath)
+        : file.name || "Untitled.wapi"
   );
-  const name = file.name || relativePath.split("/").pop() || "Untitled";
+  const name = file.name || fileName(relativePath);
   const id = filePath || relativePath || name;
-  return { ...file, id, filePath, name, relativePath };
+  const source = typeof file.source === "string" ? file.source : "";
+  const originalSource = typeof file.originalSource === "string" ? file.originalSource : source;
+  return {
+    ...file,
+    id,
+    filePath,
+    name,
+    relativePath,
+    source,
+    originalSource,
+    dirty: Boolean(file.dirty) || source !== originalSource
+  };
 }
 
-function starterProjectFiles(projectName = "WapiProject") {
-  const safeName = projectName.trim() || "WapiProject";
+function visibleProjectFiles(files = []) {
+  return files
+    .map(normalizeProjectFile)
+    .filter((file) => visibleExtensions.has(fileExtension(file.relativePath || file.name)))
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+function activeFile() {
+  return ideState.files.find((file) => file.id === ideState.activeFileId) ?? null;
+}
+
+function isDirty(file) {
+  return Boolean(file?.dirty) || (file ? file.source !== file.originalSource : false);
+}
+
+function projectDisplayName() {
+  if (ideState.projectConfig?.name) return ideState.projectConfig.name;
+  if (ideState.projectRoot) return fileName(ideState.projectRoot);
+  return "WapiProject";
+}
+
+function relativePathForFilePath(filePath) {
+  const normalized = normalizePath(filePath);
+  const root = normalizePath(ideState.projectRoot || "");
+  if (root && normalized.toLowerCase().startsWith(`${root.toLowerCase()}/`)) {
+    return normalized.slice(root.length + 1);
+  }
+  return fileName(filePath);
+}
+
+function starterProjectFiles(projectName = "WapiProject", templateId = "empty") {
+  const template = projectTemplates.find((item) => item.id === templateId) ?? projectTemplates[0];
+  const config = templateConfig(projectName, template.id);
   return [
     {
       name: "main.wapi",
       relativePath: "main.wapi",
-      source: [
-        `// ${safeName}`,
-        "listProcesses()",
-        ""
-      ].join("\n")
+      source: template.source(projectName)
+    },
+    {
+      name: "project.json",
+      relativePath: ".wapi/project.json",
+      source: `${JSON.stringify(config, null, 2)}\n`
     },
     {
       name: "README.txt",
       relativePath: "README.txt",
       source: [
-        safeName,
+        projectName,
         "",
-        "Created with Wapi IDE.",
-        "Start in main.wapi."
+        `Template: ${template.name}`,
+        "Use Check before Run. Runtime settings live in .wapi/project.json.",
+        ""
       ].join("\n")
     }
   ];
@@ -183,68 +384,92 @@ function starterProjectFiles(projectName = "WapiProject") {
 
 function mergeProjectFiles(existingFiles, incomingFiles) {
   const filesById = new Map(existingFiles.map((file) => [file.id, file]));
-  for (const file of incomingFiles.map(normalizeProjectFile)) {
+  for (const file of visibleProjectFiles(incomingFiles)) {
     filesById.set(file.id, file);
   }
   return [...filesById.values()].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
 
-function explorerGroups(files) {
-  const groups = new Map();
+function buildProjectTree(files) {
+  const root = { name: "", path: "", folders: new Map(), files: [] };
   for (const file of files) {
-    const parts = file.relativePath.split("/");
-    const groupName = parts.length > 1 ? parts.slice(0, -1).join("/") : "Loose Files";
-    if (!groups.has(groupName)) groups.set(groupName, []);
-    groups.get(groupName).push(file);
+    const parts = file.relativePath.split("/").filter(Boolean);
+    let node = root;
+    parts.slice(0, -1).forEach((part, index) => {
+      const folderPath = parts.slice(0, index + 1).join("/");
+      if (!node.folders.has(part)) node.folders.set(part, { name: part, path: folderPath, folders: new Map(), files: [] });
+      node = node.folders.get(part);
+    });
+    node.files.push(file);
   }
-  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+  return root;
 }
 
-function filteredExplorerFiles() {
-  const query = explorerState.searchQuery.trim().toLowerCase();
-  if (!query) return explorerState.projectFiles;
-  return explorerState.projectFiles.filter((file) => {
-    const searchable = [
-      file.name,
-      file.relativePath,
-      file.relativePath.split("/").slice(0, -1).join("/")
-    ].join(" ").toLowerCase();
-    return searchable.includes(query);
+function filteredTreeFiles() {
+  const query = ideState.searchQuery.trim().toLowerCase();
+  if (!query || ideState.activePanel !== "explorer") return ideState.files;
+  return ideState.files.filter((file) => `${file.name} ${file.relativePath}`.toLowerCase().includes(query));
+}
+
+function searchResults() {
+  const query = ideState.searchQuery.trim().toLowerCase();
+  if (!query) return [];
+  const results = [];
+  for (const file of ideState.files) {
+    const lines = file.source.replace(/\r\n/g, "\n").split("\n");
+    lines.forEach((line, index) => {
+      const column = line.toLowerCase().indexOf(query);
+      if (column !== -1) {
+        results.push({
+          file,
+          line: index + 1,
+          column: column + 1,
+          text: line.trim() || "(blank line)"
+        });
+      }
+    });
+  }
+  return results.slice(0, 120);
+}
+
+function outlineEntries(file = activeFile()) {
+  if (!file) return [];
+  const entries = [];
+  const lines = file.source.replace(/\r\n/g, "\n").split("\n");
+  lines.forEach((line, index) => {
+    const declaration = line.match(/^\s*(?:int|string|bool|float|double|long)\s+([a-zA-Z_]\w*)/);
+    if (declaration) {
+      entries.push({ type: "variable", label: declaration[1], line: index + 1 });
+    }
+    for (const match of line.matchAll(/\b([a-zA-Z_]\w*)\s*\(/g)) {
+      const fn = wapiRuntimeFunctionMap.get(match[1]);
+      if (fn) entries.push({ type: "function", label: fn.name, line: index + 1, capability: fn.capability });
+    }
   });
+  return entries.slice(0, 100);
 }
 
-function replaceProject(project, message) {
-  explorerState.projectFiles = project.files.map(normalizeProjectFile)
-    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-  explorerState.activeFileId = explorerState.projectFiles[0]?.id ?? null;
-  explorerState.projectRoot = project.rootPath ?? null;
-  explorerState.searchQuery = "";
-  uiState.activePanel = "explorer";
-  uiState.menuOpen = false;
-  renderSolutionExplorer();
-  setEditorModel(activeExplorerFile());
-  updateStartSurface();
-  if (message) setStatusMessage(message);
+function splitLines(value = "") {
+  return String(value).replace(/\r\n/g, "\n").split("\n").filter((line) => line.length > 0);
 }
 
-function projectDisplayName() {
-  if (!explorerState.projectRoot) return "WapiProject";
-  const normalized = normalizePath(explorerState.projectRoot);
-  return normalized.split("/").filter(Boolean).pop() || "WapiProject";
+function appendLines(target, lines, kind = "info") {
+  for (const line of lines) target.push({ text: line, kind, at: new Date().toLocaleTimeString() });
+  if (target.length > maxPanelLines) target.splice(0, target.length - maxPanelLines);
 }
 
-function setStatusMessage(message) {
-  const statusInstance = document.getElementById("statusInstance");
-  if (!statusInstance) return;
-  statusInstance.textContent = message;
-  statusInstance.classList.remove("is-live");
-  statusInstance.offsetWidth;
-  statusInstance.classList.add("is-live");
-  window.clearTimeout(setStatusMessage.timeoutId);
-  setStatusMessage.timeoutId = window.setTimeout(() => {
-    statusInstance.textContent = "No Instance";
-    statusInstance.classList.remove("is-live");
-  }, 1800);
+function setStatus(message, timeout = 1800) {
+  const node = document.getElementById("statusInstance");
+  if (!node) return;
+  node.textContent = message;
+  node.classList.remove("is-live");
+  node.offsetWidth;
+  node.classList.add("is-live");
+  window.clearTimeout(setStatus.timeoutId);
+  setStatus.timeoutId = window.setTimeout(() => {
+    node.textContent = ideState.dirty ? "Unsaved" : "Ready";
+    node.classList.remove("is-live");
+  }, timeout);
 }
 
 function updateCursorStatus() {
@@ -254,218 +479,227 @@ function updateCursorStatus() {
   cursor.textContent = position ? `Ln ${position.lineNumber}, Col ${position.column}` : "Ln 1, Col 1";
 }
 
-function setActivePanel(panel) {
-  uiState.activePanel = panel;
-  uiState.menuOpen = false;
-  renderSolutionExplorer();
-  document.querySelectorAll(".activity-button[data-panel]").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.panel === panel);
-  });
-}
-
-function renderPanelEmpty(sectionName, message) {
-  const tree = document.getElementById("explorerFileTree");
-  if (!tree) return;
-  const sectionTitle = document.createElement("div");
-  sectionTitle.className = "explorer-section-title";
-  sectionTitle.textContent = sectionName;
-  const empty = document.createElement("div");
-  empty.className = "explorer-empty";
-  empty.textContent = message;
-  tree.append(sectionTitle, empty);
-}
-
-function renderFileGroups(files, emptySection = "FILES", emptyMessage = "No files found") {
-  const tree = document.getElementById("explorerFileTree");
-  if (!tree) return;
-  if (files.length === 0) {
-    renderPanelEmpty(emptySection, emptyMessage);
-    return;
+function syncDirtyState(render = true) {
+  ideState.dirty = ideState.files.some(isDirty);
+  bridge.window.setDirtyState(ideState.dirty);
+  const statusDirty = document.getElementById("statusDirty");
+  if (statusDirty) {
+    statusDirty.textContent = ideState.dirty ? "Unsaved changes" : "Saved";
+    statusDirty.classList.toggle("is-dirty", ideState.dirty);
   }
-
-  for (const [groupName, groupFiles] of explorerGroups(files)) {
-    const section = document.createElement("section");
-    section.className = "explorer-section";
-
-    const title = document.createElement("div");
-    title.className = "explorer-section-title";
-    title.textContent = groupName;
-    section.appendChild(title);
-
-    for (const file of groupFiles) {
-      const item = document.createElement("button");
-      item.className = `explorer-file${file.id === explorerState.activeFileId ? " is-active" : ""}`;
-      item.type = "button";
-      item.dataset.fileId = file.id;
-      item.title = file.relativePath;
-      item.innerHTML = `
-        <svg class="file-document-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M7 3h7l5 5v13H7z"></path>
-          <path d="M14 3v5h5"></path>
-          <path d="M10 13h6"></path>
-          <path d="M10 17h4"></path>
-        </svg>
-        <span class="explorer-file-name"></span>
-      `;
-      item.querySelector(".explorer-file-name").textContent = file.name;
-      section.appendChild(item);
-    }
-
-    tree.appendChild(section);
+  if (render) {
+    renderDocumentTabs();
+    renderSidePanel();
   }
 }
 
-function renderStaticPanel(sectionName, message, actions = []) {
-  const tree = document.getElementById("explorerFileTree");
-  if (!tree) return;
-  renderPanelEmpty(sectionName, message);
-  if (actions.length === 0) return;
-
-  const card = document.createElement("div");
-  card.className = "panel-card";
-  for (const action of actions) {
-    const button = document.createElement("button");
-    button.className = "panel-button";
-    button.type = "button";
-    button.dataset.action = action.id;
-    button.textContent = action.label;
-    card.appendChild(button);
-  }
-  tree.appendChild(card);
+function confirmDiscardUnsaved() {
+  if (!ideState.dirty) return true;
+  return window.confirm("This project has unsaved changes. Discard them?");
 }
 
-function renderSolutionExplorer() {
-  const meta = document.getElementById("explorerMeta");
-  const title = document.getElementById("explorerTitle");
-  const actions = document.getElementById("explorerActions");
-  const searchbar = document.getElementById("explorerSearchbar");
-  const searchInput = document.getElementById("explorerSearch");
-  const tree = document.getElementById("explorerFileTree");
-  if (!meta || !tree) return;
+async function persistProjectConfig() {
+  if (!ideState.projectRoot) return;
+  await bridge.writeProjectConfig(ideState.projectRoot, ideState.projectConfig);
+  const configFile = ideState.files.find((file) => normalizePath(file.relativePath) === ".wapi/project.json");
+  if (configFile) {
+    configFile.source = `${JSON.stringify(ideState.projectConfig, null, 2)}\n`;
+    configFile.originalSource = configFile.source;
+    configFile.dirty = false;
+    if (activeFile()?.id === configFile.id) setEditorModel(configFile, true);
+  }
+  syncDirtyState();
+}
 
-  const files = explorerState.projectFiles;
-  const visibleFiles = filteredExplorerFiles();
-  const panel = uiState.activePanel;
+async function replaceProject(project, message = "Project loaded") {
+  let config = project.config ?? null;
+  if (!config && project.rootPath) config = await bridge.readProjectConfig(project.rootPath);
+  config = normalizeProjectConfig(config, project.rootPath ? fileName(project.rootPath) : "WapiProject");
 
-  const panelLabels = {
-    explorer: "EXPLORER",
-    search: "SEARCH",
-    source: "SOURCE CONTROL",
-    account: "ACCOUNT",
-    settings: "SETTINGS"
+  ideState.files = visibleProjectFiles(project.files ?? []);
+  ideState.projectRoot = project.rootPath ?? null;
+  ideState.projectConfig = config;
+  ideState.openFileIds = [];
+  ideState.activeFileId = null;
+  ideState.searchQuery = "";
+  ideState.collapsedFolders = new Set();
+  ideState.problems = [];
+  ideState.outputLines = [];
+  ideState.auditLines = [];
+  ideState.activePanel = "explorer";
+  ideState.activeTool = "output";
+
+  const entryFile = ideState.files.find((file) => normalizePath(file.relativePath) === normalizePath(config.entryFile));
+  const firstWapi = ideState.files.find((file) => file.relativePath.endsWith(".wapi"));
+  const firstFile = entryFile ?? firstWapi ?? ideState.files[0] ?? null;
+  if (firstFile) openFileInEditor(firstFile.id, false);
+
+  if (ideState.projectRoot) {
+    ideState.recentProjects = await bridge.addRecentProject(ideState.projectRoot);
+  }
+
+  renderAll();
+  setEditorModel(activeFile());
+  syncDirtyState();
+  setStatus(message);
+}
+
+function openFileInEditor(fileId, render = true) {
+  const file = ideState.files.find((item) => item.id === fileId);
+  if (!file) return;
+  ideState.activeFileId = file.id;
+  if (!ideState.openFileIds.includes(file.id)) ideState.openFileIds.push(file.id);
+  if (render) {
+    renderAll();
+    setEditorModel(file);
+  }
+}
+
+function closeDocumentTab(fileId) {
+  ideState.openFileIds = ideState.openFileIds.filter((id) => id !== fileId);
+  if (ideState.activeFileId === fileId) {
+    ideState.activeFileId = ideState.openFileIds.at(-1) ?? null;
+  }
+  renderAll();
+  setEditorModel(activeFile());
+}
+
+function markerProblemsForModel(model = editorState.model) {
+  if (!model) return [];
+  const file = activeFile();
+  if (!file) return [];
+  return ideState.problems
+    .filter((problem) => problem.fileId === file.id)
+    .map((problem) => ({
+      severity: problem.severity === "warning" ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error,
+      message: problem.message,
+      startLineNumber: problem.line,
+      startColumn: problem.column,
+      endLineNumber: problem.line,
+      endColumn: problem.wholeFile ? model.getLineMaxColumn(problem.line) : Math.max(problem.column + 1, problem.column),
+      source: "wapi check"
+    }));
+}
+
+function applyMarkers() {
+  if (!editorState.model) return;
+  monaco.editor.setModelMarkers(editorState.model, "wapi", markerProblemsForModel(editorState.model));
+}
+
+function inferProblemLocation(text) {
+  const match = text.match(/\b(?:line|Line)\s+(\d+)(?:\D+(?:column|col|Col)\s+(\d+))?/);
+  return {
+    line: match ? Math.max(1, Number(match[1])) : 1,
+    column: match?.[2] ? Math.max(1, Number(match[2])) : 1,
+    wholeFile: !match
   };
-  if (title) title.textContent = panelLabels[panel] ?? "EXPLORER";
-  actions?.classList.toggle("is-hidden", panel !== "explorer");
-  searchbar?.classList.toggle("is-hidden", !["explorer", "search"].includes(panel));
-  document.getElementById("explorerActionMenu")?.classList.toggle("is-open", uiState.menuOpen);
-  document.getElementById("explorerMoreActions")?.setAttribute("aria-expanded", String(uiState.menuOpen));
-
-  if (searchInput && searchInput.value !== explorerState.searchQuery) {
-    searchInput.value = explorerState.searchQuery;
-  }
-  if (searchInput) {
-    searchInput.placeholder = panel === "search" ? "Search workspace" : "Search files";
-  }
-
-  meta.textContent = files.length === 0
-    ? "No files loaded"
-    : explorerState.searchQuery
-      ? `${visibleFiles.length} match${visibleFiles.length === 1 ? "" : "es"}`
-    : `${files.length} file${files.length === 1 ? "" : "s"}`;
-
-  updateStartSurface();
-  tree.replaceChildren();
-
-  if (panel === "search") {
-    if (!explorerState.searchQuery.trim()) {
-      renderPanelEmpty("QUERY", "Type to search files");
-      return;
-    }
-    renderFileGroups(visibleFiles, "RESULTS", files.length === 0 ? "No files loaded" : "No results found");
-    return;
-  }
-
-  if (panel === "source") {
-    renderStaticPanel("CHANGES", "No source control changes");
-    return;
-  }
-
-  if (panel === "account") {
-    renderStaticPanel("PROFILE", "No account connected");
-    return;
-  }
-
-  if (panel === "settings") {
-    renderStaticPanel("EDITOR", "Editor preferences", [
-      { id: "toggle-minimap", label: "Toggle minimap" },
-      { id: "toggle-terminal", label: uiState.terminalHidden ? "Show terminal" : "Hide terminal" }
-    ]);
-    return;
-  }
-
-  if (files.length === 0) {
-    renderPanelEmpty("START", "Create or upload a project");
-    return;
-  }
-
-  if (visibleFiles.length === 0) {
-    renderPanelEmpty("FILES", "No matching files");
-    return;
-  }
-
-  renderFileGroups(visibleFiles);
-  updateStartSurface();
 }
 
-function updateStartSurface() {
-  const startSurface = document.getElementById("startSurface");
-  const monacoHost = document.getElementById("monacoEditor");
-  const editorSurface = document.querySelector(".editor-surface");
-  const projectName = document.getElementById("startProjectName");
-  const projectPath = document.getElementById("startProjectPath");
-  const showStart = explorerState.projectFiles.length === 0;
-
-  startSurface?.classList.toggle("is-visible", showStart);
-  monacoHost?.classList.toggle("is-start-hidden", showStart);
-  editorSurface?.classList.toggle("is-start-mode", showStart);
-
-  if (projectName) {
-    projectName.textContent = showStart ? "No project loaded" : projectDisplayName();
-  }
-  if (projectPath) {
-    projectPath.textContent = showStart
-      ? "Create a Wapi project or upload an existing folder."
-      : explorerState.projectRoot ?? `${explorerState.projectFiles.length} file${explorerState.projectFiles.length === 1 ? "" : "s"}`;
-  }
-}
-
-function setProjectDialogOpen(open) {
-  uiState.projectDialogOpen = open;
-  const dialog = document.getElementById("newProjectDialog");
-  const input = document.getElementById("newProjectName");
-  dialog?.classList.toggle("is-open", open);
-  dialog?.setAttribute("aria-hidden", String(!open));
-  if (open && input) {
-    input.value = "WapiProject";
-    input.focus();
-    input.select();
-  }
-}
-
-async function createProjectFromDialog() {
-  const input = document.getElementById("newProjectName");
-  const name = input?.value.trim() || "WapiProject";
-  const project = await bridge.createProject({
-    name,
-    files: starterProjectFiles(name)
+function problemsFromResult(result, file = activeFile()) {
+  if (!file) return [];
+  const errorLines = [
+    ...splitLines(result.stderr),
+    ...splitLines(result.stdout).filter((line) => /\b(error|exception|E_[A-Z_]+|failed)\b/i.test(line))
+  ];
+  if (result.ok && errorLines.length === 0) return [];
+  const lines = errorLines.length ? errorLines : [`Wapi ${result.code === null ? "process" : "check"} failed.`];
+  return lines.map((line) => {
+    const location = inferProblemLocation(line);
+    return {
+      fileId: file.id,
+      fileName: file.name,
+      relativePath: file.relativePath,
+      message: line,
+      severity: "error",
+      ...location
+    };
   });
-  if (!project || !Array.isArray(project.files) || project.files.length === 0) {
-    setProjectDialogOpen(false);
-    setStatusMessage("Project creation cancelled");
-    return;
+}
+
+function commandTargetFile(command) {
+  const active = activeFile();
+  const entryPath = normalizePath(ideState.projectConfig.entryFile || "main.wapi");
+  const entry = ideState.files.find((file) => normalizePath(file.relativePath) === entryPath);
+  if (entry && ["check", "run"].includes(command)) return entry;
+  if (active && languageForFile(active) === "wapi") return active;
+  return ideState.files.find((file) => languageForFile(file) === "wapi") ?? null;
+}
+
+function sourceForCommandFile(file) {
+  const active = activeFile();
+  if (file?.id === active?.id && editorState.model) {
+    file.source = editorState.model.getValue();
   }
-  setProjectDialogOpen(false);
-  replaceProject(project, "Project created");
+  return file?.source ?? "";
+}
+
+async function runWapiCommand(command, { silent = false } = {}) {
+  const active = activeFile();
+  const file = silent && active && languageForFile(active) === "wapi"
+    ? active
+    : commandTargetFile(command);
+  if (!file) {
+    if (!silent) {
+      ideState.activeTool = "output";
+      appendLines(ideState.outputLines, ["No Wapi entry file found. Create or open a .wapi file first."], "error");
+      renderToolWindow();
+    }
+    setStatus("No Wapi entry file");
+    return null;
+  }
+
+  const token = ++editorState.diagnosticsToken;
+  const source = sourceForCommandFile(file);
+  file.source = source;
+  if (!silent) {
+    ideState.activeTool = "output";
+    if (command === "run") ideState.outputLines = [];
+    appendLines(ideState.outputLines, [`> wapi.exe ${command} ${file.relativePath}`], "command");
+    appendLines(ideState.outputLines, [`Starting ${command} with mode=${runtimeOptions().mode}, strict=${runtimeOptions().strictPermissions ? "on" : "off"}`], "info");
+    renderToolWindow();
+  }
+
+  const result = await bridge.execute({ command, source, options: runtimeOptions() });
+  if (silent && token !== editorState.diagnosticsToken) return result;
+
+  const stdoutLines = splitLines(result.stdout);
+  const stderrLines = splitLines(result.stderr);
+  const auditLines = stdoutLines.filter((line) => line.includes("[WAPI_AUDIT]"));
+
+  if (!silent) {
+    appendLines(ideState.outputLines, stdoutLines, result.ok ? "info" : "error");
+    appendLines(ideState.outputLines, stderrLines, "error");
+    if (stdoutLines.length === 0 && stderrLines.length === 0) {
+      appendLines(ideState.outputLines, ["No stdout/stderr. The script ran, but the selected functions did not print output."], "warning");
+    }
+    appendLines(ideState.outputLines, [`Process ${result.ok ? "completed" : "failed"} with code ${result.code ?? "unknown"}`], result.ok ? "success" : "error");
+    if (auditLines.length) {
+      appendLines(ideState.auditLines, auditLines, "audit");
+    }
+  }
+
+  ideState.problems = problemsFromResult(result, file);
+  applyMarkers();
+  renderToolWindow();
+  setStatus(result.ok && ideState.problems.length === 0 ? `${command === "check" ? "Check" : "Run"} passed` : `${command === "check" ? "Check" : "Run"} found issues`);
+  return result;
+}
+
+function scheduleDiagnostics() {
+  window.clearTimeout(editorState.diagnosticsTimer);
+  const file = activeFile();
+  if (!file || languageForFile(file) !== "wapi") return;
+  editorState.diagnosticsTimer = window.setTimeout(() => runWapiCommand("check", { silent: true }), 850);
+}
+
+function formatWapi(source) {
+  return source
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd() + "\n";
 }
 
 function installMonacoLanguage() {
@@ -476,8 +710,9 @@ function installMonacoLanguage() {
         [/\/\/.*$/, "comment"],
         [/"([^"\\]|\\.)*$/, "string.invalid"],
         [/"/, "string", "@string"],
-        [/\b(?:print|let|if|else|while|for|return|true|false|null|check|run)\b/, "keyword"],
+        [/\b(?:print|let|if|else|while|for|return|true|false|null|check|run|int|string|bool|long)\b/, "keyword"],
         [wapiFunctionNameRegex, "type.identifier"],
+        [/\b0x[0-9a-fA-F]+\b/, "number.hex"],
         [/\b\d+(?:\.\d+)?\b/, "number"],
         [/[{}()[\]]/, "@brackets"],
         [/[a-zA-Z_]\w*/, "identifier"]
@@ -514,10 +749,7 @@ function installMonacoLanguage() {
           label: fn.name,
           kind: monaco.languages.CompletionItemKind.Function,
           detail: wapiFunctionSignature(fn),
-          documentation: [
-            `Capability: ${fn.capability}`,
-            fn.requiresInjectionFlag ? "Requires --allow-injection outside unsafe mode." : ""
-          ].filter(Boolean).join("\n"),
+          documentation: wapiFunctionDocs(fn),
           insertText: wapiFunctionSnippet(fn),
           insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
           range,
@@ -526,86 +758,113 @@ function installMonacoLanguage() {
       };
     }
   });
+  monaco.languages.registerHoverProvider("wapi", {
+    provideHover(model, position) {
+      const word = model.getWordAtPosition(position);
+      const fn = word ? wapiRuntimeFunctionMap.get(word.word) : null;
+      if (!fn) return null;
+      return {
+        range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+        contents: [
+          { value: "```wapi\n" + wapiFunctionSignature(fn) + "\n```" },
+          { value: wapiFunctionDocs(fn).replace(/\n/g, "  \n") }
+        ]
+      };
+    }
+  });
+  monaco.languages.registerSignatureHelpProvider("wapi", {
+    signatureHelpTriggerCharacters: ["(", ","],
+    provideSignatureHelp(model, position) {
+      const linePrefix = model.getValueInRange({
+        startLineNumber: position.lineNumber,
+        startColumn: 1,
+        endLineNumber: position.lineNumber,
+        endColumn: position.column
+      });
+      const match = [...linePrefix.matchAll(/([a-zA-Z_]\w*)\s*\(([^()]*)$/g)].pop();
+      const fn = match ? wapiRuntimeFunctionMap.get(match[1]) : null;
+      if (!fn) return null;
+      const activeParameter = match[2].trim() ? Math.min(match[2].split(",").length - 1, Math.max(fn.params.length - 1, 0)) : 0;
+      return {
+        value: {
+          signatures: [{
+            label: wapiFunctionSignature(fn),
+            documentation: wapiFunctionDocs(fn),
+            parameters: fn.params.map((param) => ({
+              label: param.name,
+              documentation: param.type
+            }))
+          }],
+          activeSignature: 0,
+          activeParameter
+        },
+        dispose() {}
+      };
+    }
+  });
+  monaco.languages.registerDocumentFormattingEditProvider("wapi", {
+    provideDocumentFormattingEdits(model) {
+      return [{ range: model.getFullModelRange(), text: formatWapi(model.getValue()) }];
+    }
+  });
   monaco.editor.defineTheme("wapi-dark", {
     base: "vs-dark",
     inherit: true,
     rules: [
-      { token: "comment", foreground: "6f6f6f" },
-      { token: "keyword", foreground: "ffffff", fontStyle: "bold" },
-      { token: "type.identifier", foreground: "cfcfcf" },
-      { token: "string", foreground: "d7d7d7" },
-      { token: "number", foreground: "b8b8b8" }
+      { token: "comment", foreground: "747a86" },
+      { token: "keyword", foreground: "f4f7fb", fontStyle: "bold" },
+      { token: "type.identifier", foreground: "82d8af" },
+      { token: "string", foreground: "c8d7ff" },
+      { token: "number", foreground: "f0c78a" }
     ],
     colors: {
-      "editor.background": "#18181c",
-      "editor.foreground": "#c6c9d2",
+      "editor.background": "#18191e",
+      "editor.foreground": "#ced3dc",
       "editorLineNumber.foreground": "#777d8a",
-      "editorLineNumber.activeForeground": "#aeb3c0",
-      "editorCursor.foreground": "#d9dde6",
-      "editor.selectionBackground": "#334052",
-      "editor.inactiveSelectionBackground": "#292d36",
-      "editor.lineHighlightBackground": "#202126",
-      "editorLineNumber.dimmedForeground": "#5d626e",
+      "editorLineNumber.activeForeground": "#d8dde6",
+      "editorCursor.foreground": "#dce2eb",
+      "editor.selectionBackground": "#314354",
+      "editor.inactiveSelectionBackground": "#292e37",
+      "editor.lineHighlightBackground": "#20222a",
       "editorIndentGuide.background1": "#2d3038",
-      "editorIndentGuide.activeBackground1": "#484e5c",
-      "editorWidget.background": "#1c1d22",
-      "editorWidget.border": "#343844",
-      "minimap.background": "#18181c",
-      "minimapGutter.addedBackground": "#2aa866",
-      "minimapGutter.modifiedBackground": "#6f84d9",
-      "minimapSlider.background": "#59606f33",
-      "minimapSlider.hoverBackground": "#6b73844d",
-      "minimapSlider.activeBackground": "#7b849866",
-      "input.background": "#25262d",
-      "input.border": "#323641"
+      "editorIndentGuide.activeBackground1": "#4b5260",
+      "editorWidget.background": "#1d1f26",
+      "editorWidget.border": "#373d49",
+      "input.background": "#252832",
+      "input.border": "#363c48"
     }
   });
 }
 
-function setEditorModel(file) {
+function setEditorModel(file, forceRefresh = false) {
   if (!editorState.editor) return;
-
   const source = file?.source ?? welcomeSource;
   const language = languageForFile(file);
   const uri = monaco.Uri.parse(`wapi://workspace/${encodeURIComponent(file?.id ?? "welcome.wapi")}`);
   const existing = monaco.editor.getModel(uri);
   const model = existing ?? monaco.editor.createModel(source, language, uri);
 
-  if (existing && existing.getValue() !== source && file) {
-    existing.setValue(source);
-  }
-
   editorState.changeDisposable?.dispose();
+  if ((forceRefresh || !existing) && model.getValue() !== source) {
+    model.setValue(source);
+  }
+  monaco.editor.setModelLanguage(model, language);
   editorState.model = model;
   editorState.editor.setModel(model);
-  editorState.editor.updateOptions({ readOnly: false });
-  const label = document.getElementById("editorTabLabel");
-  const labelText = document.getElementById("editorTabText");
-  const status = document.getElementById("editorStatus");
-  const statusFile = document.getElementById("statusFile");
-  const statusLanguage = document.getElementById("statusLanguage");
-  if (labelText) {
-    labelText.textContent = file?.name ?? "Welcome";
-  }
-  if (label) {
-    label.title = file?.relativePath ?? "Welcome";
-    label.classList.toggle("is-file-tab", Boolean(file));
-  }
-  if (status) {
-    status.textContent = language === "cpp" ? "C++" : language === "plaintext" ? "Text" : "Wapi";
-  }
-  if (statusFile) {
-    statusFile.textContent = `</> ${file?.name ?? "Welcome"}`;
-    statusFile.title = file?.relativePath ?? "Welcome";
-  }
-  if (statusLanguage) {
-    statusLanguage.textContent = language === "cpp" ? "C++" : language === "plaintext" ? "Text" : "Wapi";
-  }
-  updateCursorStatus();
+  editorState.editor.updateOptions({ readOnly: !file });
   editorState.changeDisposable = model.onDidChangeContent(() => {
-    const active = activeExplorerFile();
-    if (active && model === editorState.model) active.source = model.getValue();
+    const active = activeFile();
+    if (!active || model !== editorState.model) return;
+    active.source = model.getValue();
+    active.dirty = active.source !== active.originalSource;
+    syncDirtyState();
+    updateStatusLine();
+    renderDocumentTabs();
+    scheduleDiagnostics();
   });
+  updateStatusLine();
+  updateCursorStatus();
+  applyMarkers();
 }
 
 function createMonacoEditor() {
@@ -625,7 +884,7 @@ function createMonacoEditor() {
       size: "proportional",
       showSlider: "mouseover",
       renderCharacters: false,
-      maxColumn: 88
+      maxColumn: 92
     },
     scrollBeyondLastLine: false,
     renderLineHighlight: "line",
@@ -633,84 +892,629 @@ function createMonacoEditor() {
     cursorBlinking: "smooth",
     cursorSmoothCaretAnimation: "on",
     overviewRulerBorder: false,
-    hideCursorInOverviewRuler: true,
     fixedOverflowWidgets: true,
-    padding: { top: 14, bottom: 14 }
+    padding: { top: 14, bottom: 18 }
   });
   editorState.cursorDisposable?.dispose();
   editorState.cursorDisposable = editorState.editor.onDidChangeCursorPosition(updateCursorStatus);
-  setEditorModel(activeExplorerFile());
+  setEditorModel(activeFile());
+}
+
+function updateStatusLine() {
+  const file = activeFile();
+  const language = languageForFile(file);
+  const displayLanguage = language === "cpp" ? "C++" : language === "plaintext" ? "Text" : language === "json" ? "JSON" : "Wapi";
+  const statusFile = document.getElementById("statusFile");
+  const statusLanguage = document.getElementById("statusLanguage");
+  const editorStatus = document.getElementById("editorStatus");
+  if (statusFile) {
+    statusFile.textContent = file ? `</> ${file.relativePath}${isDirty(file) ? " *" : ""}` : "</> Welcome";
+    statusFile.title = file?.relativePath ?? "Welcome";
+  }
+  if (statusLanguage) statusLanguage.textContent = displayLanguage;
+  if (editorStatus) editorStatus.textContent = file ? `${displayLanguage}${isDirty(file) ? " - unsaved" : ""}` : "Start";
+}
+
+function renderDocumentTabs() {
+  const tabs = document.getElementById("documentTabs");
+  if (!tabs) return;
+  tabs.replaceChildren();
+  if (ideState.openFileIds.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "document-tab is-empty";
+    empty.textContent = "Welcome";
+    tabs.appendChild(empty);
+    return;
+  }
+  for (const fileId of ideState.openFileIds) {
+    const file = ideState.files.find((item) => item.id === fileId);
+    if (!file) continue;
+    const tab = document.createElement("button");
+    tab.className = `document-tab${file.id === ideState.activeFileId ? " is-active" : ""}${isDirty(file) ? " is-dirty" : ""}`;
+    tab.type = "button";
+    tab.dataset.tabFile = file.id;
+    tab.title = file.relativePath;
+    tab.innerHTML = `
+      <svg class="ui-icon tab-file-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M7 3h7l5 5v13H7z"></path>
+        <path d="M14 3v5h5"></path>
+      </svg>
+      <span class="document-tab-name"></span>
+      <span class="dirty-dot" aria-hidden="true"></span>
+      <span class="tab-close" data-close-tab="${file.id}" aria-label="Close tab">x</span>
+    `;
+    tab.querySelector(".document-tab-name").textContent = file.name;
+    tabs.appendChild(tab);
+  }
+}
+
+function renderProjectTreeNode(parent, node, depth = 0) {
+  const folders = [...node.folders.values()].sort((a, b) => a.name.localeCompare(b.name));
+  for (const folder of folders) {
+    const collapsed = ideState.collapsedFolders.has(folder.path);
+    const folderDirty = ideState.files.some((file) => file.relativePath.startsWith(`${folder.path}/`) && isDirty(file));
+    const button = document.createElement("button");
+    button.className = `tree-row tree-folder${collapsed ? " is-collapsed" : ""}${folderDirty ? " is-dirty" : ""}`;
+    button.type = "button";
+    button.dataset.folderPath = folder.path;
+    button.style.setProperty("--depth", depth);
+    button.innerHTML = `
+      <svg class="ui-icon chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg>
+      <svg class="ui-icon folder-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v10.5A2.5 2.5 0 0 1 18.5 21h-13A2.5 2.5 0 0 1 3 18.5z"></path></svg>
+      <span class="tree-label"></span>
+      <span class="dirty-dot" aria-hidden="true"></span>
+    `;
+    button.querySelector(".tree-label").textContent = folder.name;
+    parent.appendChild(button);
+    if (!collapsed) renderProjectTreeNode(parent, folder, depth + 1);
+  }
+
+  const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
+  for (const file of files) {
+    const row = document.createElement("button");
+    row.className = `tree-row tree-file${file.id === ideState.activeFileId ? " is-active" : ""}${isDirty(file) ? " is-dirty" : ""}`;
+    row.type = "button";
+    row.dataset.fileId = file.id;
+    row.style.setProperty("--depth", depth);
+    row.title = file.relativePath;
+    row.innerHTML = `
+      <span class="tree-spacer" aria-hidden="true"></span>
+      <svg class="ui-icon file-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M7 3h7l5 5v13H7z"></path>
+        <path d="M14 3v5h5"></path>
+        <path d="M10 13h6"></path>
+      </svg>
+      <span class="tree-label"></span>
+      <span class="dirty-dot" aria-hidden="true"></span>
+    `;
+    row.querySelector(".tree-label").textContent = file.name;
+    parent.appendChild(row);
+  }
+}
+
+function renderSidePanel() {
+  const title = document.getElementById("sideTitle");
+  const meta = document.getElementById("sideMeta");
+  const searchbar = document.getElementById("sideSearchbar");
+  const searchInput = document.getElementById("sideSearch");
+  const content = document.getElementById("sideContent");
+  const actions = document.getElementById("sideActions");
+  if (!content) return;
+
+  const panelLabels = {
+    explorer: "SOLUTION EXPLORER",
+    search: "SEARCH",
+    functions: "FUNCTIONS",
+    outline: "OUTLINE",
+    settings: "PROJECT"
+  };
+  if (title) title.textContent = panelLabels[ideState.activePanel] ?? "SOLUTION EXPLORER";
+  if (searchInput && searchInput.value !== ideState.searchQuery) searchInput.value = ideState.searchQuery;
+  if (searchInput) searchInput.placeholder = ideState.activePanel === "search" ? "Search project contents" : "Filter files";
+  searchbar?.classList.toggle("is-hidden", !["explorer", "search"].includes(ideState.activePanel));
+  actions?.classList.toggle("is-hidden", ideState.activePanel !== "explorer");
+  document.getElementById("sideActionMenu")?.classList.toggle("is-open", ideState.menuOpen);
+
+  document.querySelectorAll(".activity-button[data-panel]").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.panel === ideState.activePanel);
+  });
+
+  content.replaceChildren();
+
+  if (ideState.activePanel === "explorer") {
+    const files = filteredTreeFiles();
+    if (meta) meta.textContent = files.length ? `${files.length} file${files.length === 1 ? "" : "s"}` : "No project loaded";
+    if (files.length === 0) {
+      renderPanelEmpty(content, "START", "Create or upload a Wapi project.");
+      return;
+    }
+    renderProjectTreeNode(content, buildProjectTree(files));
+    return;
+  }
+
+  if (ideState.activePanel === "search") {
+    const results = searchResults();
+    if (meta) meta.textContent = ideState.searchQuery ? `${results.length} result${results.length === 1 ? "" : "s"}` : "Project search";
+    if (!ideState.searchQuery.trim()) {
+      renderPanelEmpty(content, "QUERY", "Type to search across project files.");
+      return;
+    }
+    if (results.length === 0) {
+      renderPanelEmpty(content, "RESULTS", "No matches found.");
+      return;
+    }
+    for (const result of results) {
+      const button = document.createElement("button");
+      button.className = "search-result";
+      button.type = "button";
+      button.dataset.searchFile = result.file.id;
+      button.dataset.searchLine = String(result.line);
+      button.innerHTML = `
+        <strong></strong>
+        <span class="search-line"></span>
+        <code></code>
+      `;
+      button.querySelector("strong").textContent = result.file.relativePath;
+      button.querySelector(".search-line").textContent = `Line ${result.line}, Col ${result.column}`;
+      button.querySelector("code").textContent = result.text;
+      content.appendChild(button);
+    }
+    return;
+  }
+
+  if (ideState.activePanel === "functions") {
+    if (meta) meta.textContent = `${wapiRuntimeFunctions.length} runtime functions`;
+    const grouped = Map.groupBy
+      ? Map.groupBy(wapiRuntimeFunctions, (fn) => fn.capability)
+      : wapiRuntimeFunctions.reduce((map, fn) => map.set(fn.capability, [...(map.get(fn.capability) ?? []), fn]), new Map());
+    for (const [capability, functions] of grouped) {
+      const section = document.createElement("section");
+      section.className = "side-section";
+      const heading = document.createElement("div");
+      heading.className = "side-section-title";
+      heading.textContent = capability;
+      section.appendChild(heading);
+      for (const fn of functions) {
+        const button = document.createElement("button");
+        button.className = "function-row";
+        button.type = "button";
+        button.dataset.insertFunction = fn.name;
+        button.innerHTML = `
+          <strong></strong>
+          <span></span>
+        `;
+        button.querySelector("strong").textContent = fn.name;
+        button.querySelector("span").textContent = wapiFunctionSignature(fn);
+        section.appendChild(button);
+      }
+      content.appendChild(section);
+    }
+    return;
+  }
+
+  if (ideState.activePanel === "outline") {
+    const entries = outlineEntries();
+    if (meta) meta.textContent = activeFile() ? activeFile().name : "No active file";
+    if (!activeFile()) {
+      renderPanelEmpty(content, "OUTLINE", "Open a file to see symbols.");
+      return;
+    }
+    if (entries.length === 0) {
+      renderPanelEmpty(content, "OUTLINE", "No symbols found.");
+      return;
+    }
+    for (const entry of entries) {
+      const button = document.createElement("button");
+      button.className = `outline-row outline-${entry.type}`;
+      button.type = "button";
+      button.dataset.gotoLine = String(entry.line);
+      button.innerHTML = `
+        <span class="outline-kind"></span>
+        <strong></strong>
+        <span></span>
+      `;
+      button.querySelector(".outline-kind").textContent = entry.type === "function" ? "fn" : "var";
+      button.querySelector("strong").textContent = entry.label;
+      button.querySelector("span:last-child").textContent = `Line ${entry.line}`;
+      content.appendChild(button);
+    }
+    return;
+  }
+
+  renderProjectSettings(content);
+  if (meta) meta.textContent = ideState.projectRoot ? "Project settings" : "Runtime defaults";
+}
+
+function renderPanelEmpty(parent, label, message) {
+  const wrap = document.createElement("div");
+  wrap.className = "panel-empty";
+  const title = document.createElement("strong");
+  title.textContent = label;
+  const text = document.createElement("span");
+  text.textContent = message;
+  wrap.append(title, text);
+  parent.appendChild(wrap);
+}
+
+function renderProjectSettings(parent) {
+  const config = ideState.projectConfig;
+  const section = document.createElement("section");
+  section.className = "settings-section";
+  section.innerHTML = `
+    <label class="settings-field">
+      <span>Mode</span>
+      <select id="settingsMode">
+        <option value="safe">Safe</option>
+        <option value="dev">Dev</option>
+        <option value="unsafe">Unsafe</option>
+      </select>
+    </label>
+    <label class="settings-toggle">
+      <input id="settingsStrict" type="checkbox">
+      <span>Strict permissions</span>
+    </label>
+    <label class="settings-toggle">
+      <input id="settingsInjection" type="checkbox">
+      <span>Allow injection</span>
+    </label>
+    <label class="settings-field">
+      <span>Capabilities</span>
+      <textarea id="settingsCapabilities" spellcheck="false"></textarea>
+    </label>
+    <div class="capability-cloud"></div>
+  `;
+  parent.appendChild(section);
+  section.querySelector("#settingsMode").value = config.defaultMode;
+  section.querySelector("#settingsStrict").checked = config.strictPermissions;
+  section.querySelector("#settingsInjection").checked = config.allowInjection;
+  section.querySelector("#settingsCapabilities").value = config.capabilities.join(", ");
+  const cloud = section.querySelector(".capability-cloud");
+  for (const capability of runtimeCapabilities) {
+    const button = document.createElement("button");
+    button.className = `capability-chip${config.capabilities.includes(capability) ? " is-active" : ""}`;
+    button.type = "button";
+    button.dataset.toggleCapability = capability;
+    button.textContent = capability;
+    cloud.appendChild(button);
+  }
+}
+
+function renderToolWindow() {
+  const tabs = document.getElementById("toolTabs");
+  const body = document.getElementById("toolBody");
+  if (!tabs || !body) return;
+  tabs.querySelectorAll("[data-tool]").forEach((tab) => {
+    tab.classList.toggle("is-active", tab.dataset.tool === ideState.activeTool);
+  });
+  body.replaceChildren();
+
+  if (ideState.activeTool === "problems") {
+    if (ideState.problems.length === 0) {
+      renderToolEmpty(body, "No problems found");
+      return;
+    }
+    for (const problem of ideState.problems) {
+      const button = document.createElement("button");
+      button.className = "problem-row";
+      button.type = "button";
+      button.dataset.problemFile = problem.fileId;
+      button.dataset.problemLine = String(problem.line);
+      button.innerHTML = `
+        <span class="problem-severity">error</span>
+        <strong></strong>
+        <span></span>
+      `;
+      button.querySelector("strong").textContent = problem.message;
+      button.querySelector("span:last-child").textContent = `${problem.relativePath}:${problem.wholeFile ? "file" : problem.line}`;
+      body.appendChild(button);
+    }
+    return;
+  }
+
+  if (ideState.activeTool === "audit") {
+    renderLogLines(body, ideState.auditLines, "No audit lines yet");
+    return;
+  }
+
+  if (ideState.activeTool === "terminal") {
+    const wrap = document.createElement("div");
+    wrap.className = "terminal-tool";
+    wrap.innerHTML = `
+      <div class="terminal-log"></div>
+      <form id="terminalForm" class="terminal-input-row">
+        <button id="terminalStart" class="tool-action" type="button">${ideState.terminalRunning ? "Restart" : "Start"}</button>
+        <input id="terminalInput" type="text" spellcheck="false" autocomplete="off" placeholder="PowerShell command">
+        <button class="tool-action tool-action-primary" type="submit">Send</button>
+      </form>
+    `;
+    body.appendChild(wrap);
+    renderLogLines(wrap.querySelector(".terminal-log"), ideState.terminalLines, "Terminal is idle");
+    const input = wrap.querySelector("#terminalInput");
+    input.value = ideState.terminalInput;
+    return;
+  }
+
+  renderLogLines(body, ideState.outputLines, "No output yet");
+}
+
+function renderToolEmpty(parent, message) {
+  const empty = document.createElement("div");
+  empty.className = "tool-empty";
+  empty.textContent = message;
+  parent.appendChild(empty);
+}
+
+function renderLogLines(parent, lines, emptyMessage) {
+  if (!lines.length) {
+    renderToolEmpty(parent, emptyMessage);
+    return;
+  }
+  for (const line of lines) {
+    const row = document.createElement("div");
+    row.className = `log-line log-${line.kind}`;
+    const time = document.createElement("span");
+    time.className = "log-time";
+    time.textContent = line.at;
+    const text = document.createElement("span");
+    text.textContent = line.text;
+    row.append(time, text);
+    parent.appendChild(row);
+  }
+  parent.scrollTop = parent.scrollHeight;
+}
+
+function renderStartSurface() {
+  const surface = document.getElementById("startSurface");
+  const monacoHost = document.getElementById("monacoEditor");
+  const workbench = document.querySelector(".editor-workbench");
+  const showStart = ideState.files.length === 0;
+  surface?.classList.toggle("is-visible", showStart);
+  monacoHost?.classList.toggle("is-start-hidden", showStart);
+  workbench?.classList.toggle("is-start-mode", showStart);
+
+  const recent = document.getElementById("recentProjects");
+  if (!recent) return;
+  recent.replaceChildren();
+  if (ideState.recentProjects.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "recent-empty";
+    empty.textContent = "No recent projects yet";
+    recent.appendChild(empty);
+    return;
+  }
+  for (const project of ideState.recentProjects.slice(0, 5)) {
+    const button = document.createElement("button");
+    button.className = "recent-project";
+    button.type = "button";
+    button.dataset.recentRoot = project.rootPath;
+    button.innerHTML = "<strong></strong><span></span>";
+    button.querySelector("strong").textContent = project.name || fileName(project.rootPath);
+    button.querySelector("span").textContent = project.rootPath;
+    recent.appendChild(button);
+  }
+}
+
+function renderToolbarState() {
+  const mode = document.getElementById("runtimeMode");
+  const strict = document.getElementById("runtimeStrict");
+  const injection = document.getElementById("runtimeInjection");
+  const caps = document.getElementById("runtimeCapabilities");
+  if (mode) mode.value = ideState.projectConfig.defaultMode;
+  if (strict) strict.checked = ideState.projectConfig.strictPermissions;
+  if (injection) injection.checked = ideState.projectConfig.allowInjection;
+  if (caps) caps.value = ideState.projectConfig.capabilities.join(", ");
+}
+
+function renderAll() {
+  renderDocumentTabs();
+  renderSidePanel();
+  renderToolWindow();
+  renderStartSurface();
+  renderToolbarState();
+  updateStatusLine();
+}
+
+function setActivePanel(panel) {
+  ideState.activePanel = panel;
+  ideState.menuOpen = false;
+  renderSidePanel();
+}
+
+function setActiveTool(tool) {
+  ideState.activeTool = tool;
+  renderToolWindow();
+}
+
+function setProjectDialogOpen(open) {
+  ideState.projectDialogOpen = open;
+  const dialog = document.getElementById("newProjectDialog");
+  const input = document.getElementById("newProjectName");
+  dialog?.classList.toggle("is-open", open);
+  dialog?.setAttribute("aria-hidden", String(!open));
+  if (open && input) {
+    input.value = "WapiProject";
+    ideState.selectedTemplate = "empty";
+    renderTemplatePicker();
+    input.focus();
+    input.select();
+  }
+}
+
+function renderTemplatePicker() {
+  const picker = document.getElementById("templatePicker");
+  if (!picker) return;
+  picker.replaceChildren();
+  for (const template of projectTemplates) {
+    const button = document.createElement("button");
+    button.className = `template-card${template.id === ideState.selectedTemplate ? " is-active" : ""}`;
+    button.type = "button";
+    button.dataset.templateId = template.id;
+    button.innerHTML = "<strong></strong><span></span>";
+    button.querySelector("strong").textContent = template.name;
+    button.querySelector("span").textContent = template.note;
+    picker.appendChild(button);
+  }
+}
+
+async function openCreateProjectDialog() {
+  if (!confirmDiscardUnsaved()) return;
+  setProjectDialogOpen(true);
+}
+
+async function createProjectFromDialog() {
+  const input = document.getElementById("newProjectName");
+  const name = input?.value.trim() || "WapiProject";
+  const config = templateConfig(name, ideState.selectedTemplate);
+  const project = await bridge.createProject({
+    name,
+    config,
+    files: starterProjectFiles(name, ideState.selectedTemplate)
+  });
+  if (!project || !Array.isArray(project.files) || project.files.length === 0) {
+    setProjectDialogOpen(false);
+    setStatus("Project creation cancelled");
+    return;
+  }
+  setProjectDialogOpen(false);
+  await replaceProject(project, "Project created");
+}
+
+async function uploadProjectIntoExplorer(rootPath = null) {
+  if (!confirmDiscardUnsaved()) return;
+  const project = await bridge.loadProject(rootPath);
+  if (!project || !Array.isArray(project.files)) {
+    setStatus("Project upload cancelled");
+    return;
+  }
+  await replaceProject(project, "Project uploaded");
 }
 
 async function addFilesToExplorer() {
   const files = await bridge.addFiles();
   if (!Array.isArray(files) || files.length === 0) {
-    setStatusMessage("No files added");
+    setStatus("No files added");
     return;
   }
-  const normalized = files.map(normalizeProjectFile);
-  explorerState.projectFiles = mergeProjectFiles(explorerState.projectFiles, normalized);
-  explorerState.activeFileId ||= normalized[0].id;
-  explorerState.projectRoot = null;
-  renderSolutionExplorer();
-  setEditorModel(activeExplorerFile());
-  updateStartSurface();
-  setStatusMessage(`${normalized.length} file${normalized.length === 1 ? "" : "s"} added`);
+  const normalized = visibleProjectFiles(files);
+  ideState.files = mergeProjectFiles(ideState.files, normalized);
+  if (!ideState.activeFileId && normalized[0]) openFileInEditor(normalized[0].id, false);
+  renderAll();
+  setEditorModel(activeFile());
+  setStatus(`${normalized.length} file${normalized.length === 1 ? "" : "s"} added`);
 }
 
-async function uploadProjectIntoExplorer() {
-  const project = await bridge.loadProject();
-  if (!project || !Array.isArray(project.files)) {
-    setStatusMessage("Project upload cancelled");
+async function saveFile(file, forceSaveAs = false) {
+  if (!file) return null;
+  const result = await bridge.saveFile({
+    filePath: forceSaveAs ? null : file.filePath,
+    source: file.source
+  });
+  if (!result?.filePath) {
+    setStatus("Save cancelled");
+    return null;
+  }
+  file.filePath = result.filePath;
+  file.relativePath = relativePathForFilePath(result.filePath);
+  file.name = fileName(file.relativePath);
+  file.originalSource = file.source;
+  file.dirty = false;
+  syncDirtyState();
+  renderAll();
+  setStatus(forceSaveAs ? "Saved as" : "Saved");
+  return file;
+}
+
+async function saveActiveFile(forceSaveAs = false) {
+  await saveFile(activeFile(), forceSaveAs);
+}
+
+async function saveAllFiles() {
+  const dirtyFiles = ideState.files.filter(isDirty);
+  if (dirtyFiles.length === 0) {
+    setStatus("All files saved");
     return;
   }
-  replaceProject(project, "Project uploaded");
-}
-
-function refreshExplorerPanel() {
-  explorerState.projectFiles = [...explorerState.projectFiles]
-    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-  renderSolutionExplorer();
-  setStatusMessage("Explorer refreshed");
-}
-
-function toggleExplorerMenu() {
-  uiState.menuOpen = !uiState.menuOpen;
-  renderSolutionExplorer();
-}
-
-function setTerminalState(nextState = {}) {
-  Object.assign(uiState, nextState);
-  const terminal = document.getElementById("terminalPanel");
-  const collapse = document.getElementById("terminalCollapse");
-  const statusTerminal = document.getElementById("statusTerminal");
-  terminal?.classList.toggle("is-collapsed", uiState.terminalCollapsed);
-  terminal?.classList.toggle("is-hidden", uiState.terminalHidden);
-  collapse?.setAttribute("aria-pressed", String(uiState.terminalCollapsed));
-  collapse?.classList.toggle("is-active", uiState.terminalCollapsed);
-  if (statusTerminal) {
-    statusTerminal.textContent = uiState.terminalHidden ? "Terminal hidden" : "Terminal";
-    statusTerminal.classList.toggle("is-active", !uiState.terminalHidden);
+  for (const file of dirtyFiles.filter((item) => !item.filePath)) {
+    await saveFile(file, true);
   }
-  editorState.editor?.layout();
+  const filesWithPaths = dirtyFiles.filter((file) => file.filePath);
+  const results = await bridge.saveFiles(filesWithPaths.map((file) => ({ filePath: file.filePath, source: file.source })));
+  for (const result of results) {
+    if (!result.ok) continue;
+    const file = ideState.files.find((item) => item.filePath === result.filePath);
+    if (file) {
+      file.originalSource = file.source;
+      file.dirty = false;
+    }
+  }
+  syncDirtyState();
+  renderAll();
+  setStatus("Save all complete");
 }
 
-function toggleMinimap() {
+function goToLine(line) {
   if (!editorState.editor) return;
-  const current = editorState.editor.getOption(monaco.editor.EditorOption.minimap).enabled;
-  editorState.editor.updateOptions({ minimap: { enabled: !current } });
-  setStatusMessage(!current ? "Minimap enabled" : "Minimap disabled");
+  editorState.editor.revealLineInCenter(line);
+  editorState.editor.setPosition({ lineNumber: line, column: 1 });
+  editorState.editor.focus();
 }
 
-function handlePanelAction(action) {
-  if (action === "toggle-minimap") {
-    toggleMinimap();
-    return;
-  }
-  if (action === "toggle-terminal") {
-    setTerminalState({ terminalHidden: !uiState.terminalHidden, terminalCollapsed: false });
-    renderSolutionExplorer();
-  }
+function insertFunctionSnippet(functionName) {
+  const fn = wapiRuntimeFunctionMap.get(functionName);
+  if (!fn || !editorState.editor) return;
+  editorState.editor.focus();
+  editorState.editor.trigger("keyboard", "editor.action.insertSnippet", { snippet: wapiFunctionSnippet(fn) });
+}
+
+function updateRuntimeFromControls(source = "toolbar") {
+  const prefix = source === "settings" ? "settings" : "runtime";
+  const mode = document.getElementById(`${prefix}Mode`)?.value ?? ideState.projectConfig.defaultMode;
+  const strict = document.getElementById(`${prefix}Strict`)?.checked ?? ideState.projectConfig.strictPermissions;
+  const injection = document.getElementById(`${prefix}Injection`)?.checked ?? ideState.projectConfig.allowInjection;
+  const capsValue = document.getElementById(`${prefix}Capabilities`)?.value ?? ideState.projectConfig.capabilities.join(", ");
+  ideState.projectConfig = normalizeProjectConfig({
+    ...ideState.projectConfig,
+    defaultMode: mode,
+    strictPermissions: strict,
+    allowInjection: injection,
+    capabilities: capsValue.split(",").map((cap) => cap.trim()).filter(Boolean)
+  }, projectDisplayName());
+  renderToolbarState();
+  if (source === "toolbar") renderSidePanel();
+  persistProjectConfig();
+  setStatus("Runtime settings updated");
+}
+
+async function startTerminal() {
+  const result = await bridge.terminal.start({ cwd: ideState.projectRoot || undefined, shell: "powershell" });
+  ideState.terminalRunning = Boolean(result?.ok);
+  appendLines(ideState.terminalLines, [`Terminal ${ideState.terminalRunning ? "started" : "failed"}${result?.cwd ? ` in ${result.cwd}` : ""}`], ideState.terminalRunning ? "success" : "error");
+  ideState.activeTool = "terminal";
+  renderToolWindow();
+}
+
+async function sendTerminalCommand(command) {
+  if (!command.trim()) return;
+  if (!ideState.terminalRunning) await startTerminal();
+  appendLines(ideState.terminalLines, [`PS> ${command}`], "command");
+  ideState.terminalInput = "";
+  await bridge.terminal.send({ command });
+  renderToolWindow();
+}
+
+function installTerminalListener() {
+  bridge.terminal.onData((payload = {}) => {
+    const kind = payload.type === "stderr" ? "error" : payload.type === "exit" ? "warning" : "info";
+    if (payload.type === "exit") ideState.terminalRunning = false;
+    appendLines(ideState.terminalLines, splitLines(payload.text), kind);
+    if (ideState.activeTool === "terminal") renderToolWindow();
+  });
+}
+
+async function requestWindowClose() {
+  if (!confirmDiscardUnsaved()) return;
+  await bridge.window.setDirtyState(false);
+  await bridge.window.close();
 }
 
 function installRendererIcon() {
@@ -728,948 +1532,672 @@ function installStyles() {
     :root {
       color-scheme: dark;
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-      background: #15161a;
-      --window-chrome-height: 38px;
-      --status-height: 23px;
-      --window-signature-height: 22px;
-      --window-signature-width: 82px;
-      --window-signature-image-height: 33.2px;
-      --window-signature-left: 14px;
-      --window-signature-inset: calc((var(--window-chrome-height) - var(--window-signature-height)) / 2);
-      --window-control-size: 30px;
-      --activity-width: 66px;
-      --explorer-width: 228px;
-      --accent: #39c987;
-      --accent-soft: rgba(57, 201, 135, 0.13);
-      --accent-blue: #6679d8;
-      --panel: #17181c;
-      --panel-raised: #1b1c21;
-      --line: rgba(218, 224, 238, 0.055);
-      --text-main: #c5c9d3;
-      --text-muted: #8f96a5;
-      --text-soft: #aab0be;
-      --focus-ring: 0 0 0 1px rgba(57, 201, 135, 0.42), 0 0 0 4px rgba(57, 201, 135, 0.1);
-      --shadow-soft: 0 14px 36px rgba(0, 0, 0, 0.28);
-      --motion-fast: 120ms cubic-bezier(.2, .7, .2, 1);
-      --motion-med: 180ms cubic-bezier(.2, .7, .2, 1);
-      --motion-slow: 260ms cubic-bezier(.16, 1, .3, 1);
+      --chrome-height: 38px;
+      --status-height: 24px;
+      --activity-width: 58px;
+      --side-width: 286px;
+      --tool-height: 190px;
+      --accent: #37c685;
+      --accent-blue: #73a7ff;
+      --danger: #e26b6b;
+      --warning: #e2b86b;
+      --bg: #15161b;
+      --panel: #191a20;
+      --panel-2: #1f2129;
+      --panel-3: #252833;
+      --line: rgba(230, 235, 246, 0.075);
+      --line-strong: rgba(230, 235, 246, 0.14);
+      --text: #d7dce6;
+      --text-soft: #aab2c2;
+      --text-muted: #7f8797;
+      --shadow: 0 18px 46px rgba(0, 0, 0, 0.32);
+      --focus: 0 0 0 1px rgba(55, 198, 133, 0.5), 0 0 0 4px rgba(55, 198, 133, 0.12);
+      --fast: 120ms cubic-bezier(.2, .7, .2, 1);
+      --med: 190ms cubic-bezier(.2, .7, .2, 1);
+      --slow: 280ms cubic-bezier(.16, 1, .3, 1);
     }
 
-    * {
-      box-sizing: border-box;
-    }
-
-    html,
-    body,
-    #root {
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      overflow: hidden;
-    }
-
+    * { box-sizing: border-box; }
+    html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
     body {
-      color: var(--text-main);
-      background: #15161a;
+      color: var(--text);
+      background: var(--bg);
       -webkit-user-select: none;
       user-select: none;
     }
-
-    ::selection {
-      color: #f4fff9;
-      background: rgba(57, 201, 135, 0.34);
-    }
-
-    button,
-    input {
-      font: inherit;
-    }
-
-    button:focus-visible,
-    input:focus-visible {
+    button, input, select, textarea { font: inherit; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
       outline: none;
-      box-shadow: var(--focus-ring);
+      box-shadow: var(--focus);
     }
 
     @keyframes surfaceIn {
-      from {
-        opacity: 0;
-        transform: translateY(6px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
     }
-
     @keyframes menuIn {
-      from {
-        opacity: 0;
-        transform: translateY(-6px) scale(0.98);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0) scale(1);
-      }
+      from { opacity: 0; transform: translateY(-6px) scale(.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
     }
-
-    @keyframes statusPulse {
-      0%,
-      100% {
-        box-shadow: 0 0 8px rgba(199, 76, 76, 0.3);
-      }
-      50% {
-        box-shadow: 0 0 14px rgba(199, 76, 76, 0.58);
-      }
-    }
-
-    @keyframes statusFlash {
-      0% {
-        color: #f4fff9;
-        text-shadow: 0 0 10px rgba(57, 201, 135, 0.44);
-      }
-      100% {
-        color: inherit;
-        text-shadow: none;
-      }
+    @keyframes livePulse {
+      0% { color: #f6fff9; text-shadow: 0 0 12px rgba(55, 198, 133, .46); }
+      100% { color: inherit; text-shadow: none; }
     }
 
     .app-shell {
+      display: grid;
+      grid-template-rows: var(--chrome-height) 1fr var(--status-height);
       width: 100%;
       height: 100%;
-      background: linear-gradient(180deg, #17181d 0%, #141519 100%);
+      background: linear-gradient(180deg, #18191f, #14151a);
     }
 
     #windowChrome {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      z-index: 10;
-      display: flex;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
       align-items: center;
-      justify-content: space-between;
-      height: var(--window-chrome-height);
-      min-height: var(--window-chrome-height);
-      padding: 0 16px 0 var(--window-signature-left);
+      height: var(--chrome-height);
       border: 1px solid var(--line);
-      border-bottom-color: rgba(255, 255, 255, 0.06);
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(0, 0, 0, 0)),
-        #17181c;
-      box-shadow:
-        inset 0 -1px rgba(0, 0, 0, 0.8),
-        0 10px 28px rgba(0, 0, 0, 0.14);
+      border-bottom-color: var(--line-strong);
+      background: linear-gradient(180deg, rgba(255,255,255,.025), transparent), #17181e;
       -webkit-app-region: drag;
     }
-
-    #windowTitleGroup {
-      display: flex;
-      align-items: center;
-      min-width: 0;
-      max-width: calc(100% - 132px);
-      height: 100%;
-      pointer-events: none;
-    }
-
-    #windowAppTitle {
-      position: absolute;
-      left: 50%;
-      top: 50%;
-      overflow: hidden;
-      max-width: 220px;
-      color: var(--text-soft);
-      font-size: 12px;
-      font-weight: 600;
-      line-height: 1;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      transform: translate(-50%, -50%);
-      pointer-events: none;
-    }
-
     #windowBannerFrame {
       position: relative;
-      display: block;
-      width: var(--window-signature-width);
-      height: var(--window-signature-height);
+      width: 82px;
+      height: 22px;
+      margin-left: 14px;
       overflow: hidden;
-      flex: 0 1 auto;
     }
-
     #windowBannerIcon {
       position: absolute;
-      left: -0.2px;
-      top: -0.5px;
-      display: block;
+      left: 0;
+      top: -5px;
+      height: 33px;
       width: auto;
-      height: var(--window-signature-image-height);
-      max-width: none;
     }
-
+    #windowAppTitle {
+      justify-self: center;
+      color: var(--text-soft);
+      font-size: 12px;
+      font-weight: 650;
+    }
     #windowButtons {
+      justify-self: end;
       display: flex;
-      align-items: center;
       gap: 8px;
-      height: 100%;
+      padding-right: 10px;
       -webkit-app-region: no-drag;
     }
-
     .window-btn {
       position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 var(--window-control-size);
-      width: var(--window-control-size);
-      height: var(--window-control-size);
-      margin: 0;
-      padding: 0;
-      border: none;
-      outline: none;
-      border-radius: 4px;
-      color: #9da3b1;
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 5px;
+      color: #9ca4b4;
       background: transparent;
       cursor: pointer;
-      line-height: 1;
-      transition:
-        color var(--motion-fast),
-        background-color var(--motion-fast),
-        transform var(--motion-fast);
+      transition: color var(--fast), background var(--fast), transform var(--fast);
     }
-
     .window-btn:hover {
-      color: #d9dde6;
-      background: rgba(218, 224, 238, 0.055);
+      color: #eef2f8;
+      background: rgba(230, 235, 246, .07);
       transform: translateY(-1px);
     }
-
-    .window-btn:active {
-      transform: translateY(0) scale(0.95);
-    }
-
-    .window-btn-close:hover {
-      color: #f0f2f7;
-      background: #a43b3b;
-    }
-
-    .window-icon {
+    .window-btn:active { transform: translateY(0) scale(.95); }
+    .window-btn-close:hover { background: #a63d42; }
+    .window-icon, .window-icon::before, .window-icon::after {
       position: absolute;
       left: 50%;
       top: 50%;
-      display: block;
-      width: 12px;
-      height: 12px;
+      content: "";
       transform: translate(-50%, -50%);
-      pointer-events: none;
-      transition: transform var(--motion-fast);
     }
-
-    .window-btn:hover .window-icon {
-      transform: translate(-50%, -50%) scale(1.08);
-    }
-
     .window-icon-min::before {
-      position: absolute;
-      left: 1px;
-      right: 1px;
-      top: 50%;
+      width: 12px;
       height: 1.6px;
       border-radius: 2px;
       background: currentColor;
-      content: "";
-      transform: translateY(-50%);
     }
-
     .window-icon-max::before {
-      position: absolute;
-      inset: 1px;
-      border: 1.8px solid currentColor;
-      border-radius: 1.5px;
-      content: "";
+      width: 11px;
+      height: 11px;
+      border: 1.6px solid currentColor;
+      border-radius: 2px;
     }
-
-    .window-icon-close::before,
-    .window-icon-close::after {
-      position: absolute;
-      left: 0;
-      top: 50%;
-      width: 12px;
-      height: 1.4px;
-      border-radius: 1px;
+    .window-icon-close::before, .window-icon-close::after {
+      width: 13px;
+      height: 1.5px;
+      border-radius: 2px;
       background: currentColor;
-      content: "";
-      transform-origin: center;
     }
+    .window-icon-close::before { transform: translate(-50%, -50%) rotate(45deg); }
+    .window-icon-close::after { transform: translate(-50%, -50%) rotate(-45deg); }
 
-    .window-icon-close::before {
-      transform: rotate(45deg);
-    }
-
-    .window-icon-close::after {
-      transform: rotate(-45deg);
-    }
-
-    .blank-stage {
-      display: flex;
-      gap: 0;
-      width: 100%;
-      height: 100%;
-      padding-top: var(--window-chrome-height);
-      padding-bottom: var(--status-height);
-      background:
-        linear-gradient(90deg, rgba(255, 255, 255, 0.012), transparent 34%),
-        #15161a;
+    .workspace {
+      display: grid;
+      grid-template-columns: var(--activity-width) var(--side-width) 1fr;
       min-height: 0;
-      animation: surfaceIn 240ms ease-out both;
+      background: var(--bg);
     }
-
     .activity-bar {
       display: flex;
-      flex: 0 0 var(--activity-width);
       flex-direction: column;
-      align-items: stretch;
-      height: 100%;
-      padding: 14px 0 12px;
+      gap: 8px;
+      padding: 12px 0;
       border-right: 1px solid var(--line);
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(0, 0, 0, 0.06)),
-        #17181c;
+      background: linear-gradient(180deg, rgba(255,255,255,.018), rgba(0,0,0,.05)), #17181e;
     }
-
+    .activity-spacer { flex: 1; }
     .activity-button {
       position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 46px;
-      width: 46px;
-      height: 46px;
-      margin: 0;
+      display: grid;
+      width: 44px;
+      height: 44px;
       margin-inline: auto;
-      padding: 0;
+      place-items: center;
       border: 0;
-      border-radius: 9px;
-      color: #8d94a4;
+      border-radius: 8px;
+      color: #8f98aa;
       background: transparent;
       cursor: pointer;
-      -webkit-app-region: no-drag;
-      transition:
-        color var(--motion-fast),
-        background-color var(--motion-fast),
-        box-shadow var(--motion-med),
-        transform var(--motion-fast);
+      transition: color var(--fast), background var(--fast), transform var(--fast), box-shadow var(--med);
     }
-
     .activity-button::before {
       position: absolute;
-      left: -10px;
+      left: -7px;
       top: 50%;
       width: 3px;
       height: 18px;
-      border-radius: 999px;
+      border-radius: 99px;
       background: var(--accent);
       content: "";
       opacity: 0;
-      transform: translateY(-50%) scaleY(0.45);
-      transition:
-        opacity var(--motion-fast),
-        transform var(--motion-med);
+      transform: translateY(-50%) scaleY(.45);
+      transition: opacity var(--fast), transform var(--med);
     }
-
-    .activity-button:hover,
-    .activity-button.is-active {
-      color: #e1e5ed;
-    }
-
     .activity-button:hover {
-      background: rgba(218, 224, 238, 0.052);
+      color: #edf2f8;
+      background: rgba(230, 235, 246, .06);
       transform: translateY(-1px);
     }
-
     .activity-button.is-active {
-      background:
-        linear-gradient(135deg, rgba(57, 201, 135, 0.88) 0%, rgba(75, 155, 205, 0.86) 100%);
-      box-shadow:
-        0 8px 22px rgba(57, 201, 135, 0.14),
-        inset 0 1px rgba(255, 255, 255, 0.14);
+      color: #101713;
+      background: linear-gradient(135deg, var(--accent), var(--accent-blue));
+      box-shadow: 0 10px 28px rgba(55, 198, 133, .15);
     }
-
     .activity-button.is-active::before {
       opacity: 1;
       transform: translateY(-50%) scaleY(1);
     }
-
-    .activity-button:active {
-      transform: translateY(0) scale(0.96);
-    }
-
-    .activity-spacer {
-      flex: 1 1 auto;
-    }
+    .activity-button:active { transform: scale(.96); }
 
     .ui-icon {
       display: block;
-      flex: 0 0 auto;
-      width: 16px;
-      height: 16px;
+      width: 17px;
+      height: 17px;
       fill: none;
       stroke: currentColor;
-      stroke-width: 1.75;
+      stroke-width: 1.8;
       stroke-linecap: round;
       stroke-linejoin: round;
       vector-effect: non-scaling-stroke;
+      transition: transform var(--fast), color var(--fast);
     }
+    .activity-button .ui-icon { width: 23px; height: 23px; stroke-width: 1.55; }
+    button:hover > .ui-icon { transform: scale(1.06); }
 
-    .activity-button .ui-icon {
-      width: 24px;
-      height: 24px;
-      stroke-width: 1.55;
-      transition: transform var(--motion-med), stroke-width var(--motion-fast);
-    }
-
-    .activity-button:hover .ui-icon,
-    .activity-button.is-active .ui-icon {
-      transform: scale(1.04);
-    }
-
-    #solutionExplorer {
+    .side-panel {
       position: relative;
       display: flex;
-      flex: 0 0 var(--explorer-width);
-      flex-direction: column;
       min-width: 0;
-      height: 100%;
-      margin: 0;
-      border: 0;
-      border-right: 1px solid var(--line);
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.014), rgba(0, 0, 0, 0.018)),
-        var(--panel);
-      box-shadow: none;
       min-height: 0;
+      flex-direction: column;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
     }
-
-    #solutionExplorer::after {
-      position: absolute;
-      top: 0;
-      right: 0;
-      bottom: 0;
-      width: 1px;
-      background: var(--line);
-      content: "";
-      pointer-events: none;
-    }
-
-    .explorer-topbar {
+    .side-topbar {
+      position: relative;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      flex: 0 0 58px;
-      min-width: 0;
-      padding: 0 14px;
-      border-bottom: 0;
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.012), transparent),
-        var(--panel);
+      min-height: 56px;
+      padding: 0 13px;
     }
-
-    .explorer-title-block {
-      min-width: 0;
-    }
-
-    .explorer-title {
+    .side-title {
       overflow: hidden;
-      color: var(--text-main);
+      color: #f0f3f8;
       font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 1.2px;
-      line-height: 1.1;
+      font-weight: 760;
+      letter-spacing: 1px;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-
-    .explorer-meta {
-      display: none;
+    .side-meta {
+      margin-top: 4px;
+      color: var(--text-muted);
+      font-size: 11px;
     }
-
-    .explorer-actions {
+    .side-actions {
       display: flex;
-      align-items: center;
-      gap: 8px;
-      flex: 0 0 auto;
-      margin-left: 10px;
+      gap: 6px;
     }
-
-    .explorer-actions.is-hidden,
-    .explorer-searchbar.is-hidden {
-      display: none;
-    }
-
-    .explorer-action {
-      position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 22px;
-      height: 22px;
-      margin: 0;
-      padding: 0;
-      border: 0;
-      border-radius: 5px;
-      color: #969dac;
+    .side-actions.is-hidden, .side-searchbar.is-hidden { display: none; }
+    .icon-button, .toolbar-button, .tool-action {
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: #b7bfce;
       background: transparent;
       cursor: pointer;
-      -webkit-app-region: no-drag;
-      transition:
-        border-color var(--motion-fast),
-        color var(--motion-fast),
-        background-color var(--motion-fast),
-        box-shadow var(--motion-fast),
-        transform var(--motion-fast);
+      transition: color var(--fast), border-color var(--fast), background var(--fast), transform var(--fast), box-shadow var(--fast);
     }
-
-    .explorer-action:hover,
-    .explorer-action[aria-expanded="true"] {
-      color: #dde1ea;
-      background: rgba(218, 224, 238, 0.06);
+    .icon-button {
+      display: grid;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      place-items: center;
+    }
+    .icon-button:hover, .toolbar-button:hover, .tool-action:hover {
+      color: #f3f7fc;
+      border-color: rgba(230, 235, 246, .12);
+      background: rgba(230, 235, 246, .065);
       transform: translateY(-1px);
     }
-
-    .explorer-action:active {
-      transform: translateY(0) scale(0.94);
-    }
-
-    .explorer-action .ui-icon {
-      width: 16px;
-      height: 16px;
-      stroke-width: 1.75;
-      transition: transform var(--motion-fast);
-    }
-
-    .explorer-action:hover .ui-icon,
-    .explorer-action[aria-expanded="true"] .ui-icon {
-      transform: scale(1.08);
-    }
-
-    .explorer-action-menu {
+    .icon-button:active, .toolbar-button:active, .tool-action:active { transform: scale(.97); }
+    .side-action-menu {
       position: absolute;
-      top: 48px;
-      right: 9px;
-      z-index: 4;
+      top: 46px;
+      right: 10px;
+      z-index: 8;
       display: none;
-      min-width: 142px;
+      width: 162px;
       padding: 5px;
-      border: 1px solid var(--line);
-      border-radius: 7px;
-      background: #202129;
-      box-shadow: var(--shadow-soft);
-      transform-origin: 92% 0;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #22242d;
+      box-shadow: var(--shadow);
+      transform-origin: 95% 0;
     }
-
-    .explorer-action-menu.is-open {
+    .side-action-menu.is-open {
       display: grid;
       gap: 2px;
-      animation: menuIn var(--motion-slow) both;
+      animation: menuIn var(--slow) both;
     }
-
-    .menu-item,
-    .panel-button {
-      width: 100%;
-      min-height: 26px;
-      padding: 0 9px;
+    .menu-item {
+      min-height: 28px;
       border: 0;
-      border-radius: 4px;
-      color: #c2c6d0;
+      border-radius: 5px;
+      color: #c9d0dc;
       background: transparent;
       cursor: pointer;
-      font: inherit;
       font-size: 12px;
       text-align: left;
-      -webkit-app-region: no-drag;
-      transition:
-        color var(--motion-fast),
-        background-color var(--motion-fast),
-        padding-left var(--motion-fast),
-        transform var(--motion-fast);
+      transition: color var(--fast), background var(--fast), padding-left var(--fast);
     }
-
-    .menu-item:hover,
-    .panel-button:hover {
-      color: #dde1ea;
-      background: rgba(218, 224, 238, 0.06);
+    .menu-item:hover {
+      color: #f1f5fb;
+      background: rgba(230, 235, 246, .07);
       padding-left: 12px;
     }
-
-    .menu-item:active,
-    .panel-button:active {
-      transform: scale(0.985);
+    .side-searchbar {
+      padding: 0 13px 12px;
     }
-
-    .explorer-searchbar {
-      display: flex;
-      align-items: center;
-      flex: 0 0 58px;
-      padding: 8px 16px 12px 14px;
-      border-bottom: 0;
-      background: var(--panel);
-    }
-
-    .explorer-search-wrap {
-      position: relative;
-      width: 100%;
-      height: 32px;
-      transition: transform var(--motion-fast);
-    }
-
-    .explorer-search-wrap:focus-within {
-      transform: translateY(-1px);
-    }
-
-    .explorer-search-icon {
+    .search-wrap { position: relative; }
+    .search-wrap .ui-icon {
       position: absolute;
-      left: 12px;
+      left: 10px;
       top: 50%;
       width: 14px;
       height: 14px;
-      color: #838b9c;
+      color: #838c9d;
       transform: translateY(-50%);
-      pointer-events: none;
-      transition:
-        color var(--motion-fast),
-        transform var(--motion-fast);
     }
-
-    .explorer-search-wrap:focus-within .explorer-search-icon {
-      color: var(--accent);
-      transform: translateY(-50%) scale(1.08);
-    }
-
-    #explorerSearch {
+    .side-searchbar input {
       width: 100%;
-      height: 100%;
-      padding: 0 12px 0 36px;
-      border: 1px solid rgba(255, 255, 255, 0.055);
+      height: 32px;
+      padding: 0 10px 0 32px;
+      border: 1px solid rgba(230, 235, 246, .08);
       border-radius: 6px;
-      outline: none;
-      color: #c7cbd5;
-      background: #202129;
-      font: inherit;
+      color: #dce2eb;
+      background: #22242c;
       font-size: 12px;
-      line-height: 32px;
-      -webkit-app-region: no-drag;
-      transition:
-        border-color var(--motion-fast),
-        background-color var(--motion-fast),
-        box-shadow var(--motion-fast);
+      transition: border-color var(--fast), background var(--fast), box-shadow var(--fast);
     }
-
-    #explorerSearch::placeholder {
-      color: #858c9b;
+    .side-searchbar input:focus {
+      border-color: rgba(55, 198, 133, .42);
+      background: #252832;
     }
-
-    #explorerSearch:focus {
-      border-color: rgba(57, 201, 135, 0.38);
-      background: #22232b;
-      box-shadow:
-        0 0 0 1px rgba(57, 201, 135, 0.14),
-        0 8px 20px rgba(0, 0, 0, 0.18);
-    }
-
-    .explorer-tree {
-      flex: 1 1 auto;
+    .side-content {
+      flex: 1;
       min-height: 0;
       overflow: auto;
-      padding: 2px 14px 14px;
+      padding: 0 10px 12px;
       scrollbar-width: thin;
-      scrollbar-color: rgba(126, 133, 148, 0.52) transparent;
+      scrollbar-color: rgba(133, 142, 160, .55) transparent;
     }
-
-    .explorer-tree::-webkit-scrollbar {
-      width: 8px;
-    }
-
-    .explorer-tree::-webkit-scrollbar-thumb {
+    .side-content::-webkit-scrollbar, .tool-body::-webkit-scrollbar { width: 8px; }
+    .side-content::-webkit-scrollbar-thumb, .tool-body::-webkit-scrollbar-thumb {
       border: 2px solid transparent;
-      border-radius: 999px;
-      background: rgba(126, 133, 148, 0.52);
+      border-radius: 99px;
+      background: rgba(133, 142, 160, .55);
       background-clip: padding-box;
     }
 
-    .explorer-empty {
+    .tree-row {
       position: relative;
-      margin: 10px 0;
-      padding: 0 8px;
-      border: 0;
-      color: var(--text-muted);
-      font-size: 12px;
-      line-height: 1.35;
-      animation: surfaceIn var(--motion-slow) both;
-    }
-
-    .panel-card {
       display: grid;
+      grid-template-columns: 16px 18px minmax(0, 1fr) 10px;
       gap: 6px;
-      margin-top: 12px;
-      animation: surfaceIn var(--motion-slow) both;
-    }
-
-    .explorer-section {
-      animation: surfaceIn var(--motion-slow) both;
-    }
-
-    .explorer-section + .explorer-section {
-      margin-top: 12px;
-    }
-
-    .explorer-section-title {
-      margin: 8px 0 12px;
-      overflow: hidden;
-      color: var(--text-soft);
-      font-size: 10px;
-      font-weight: 650;
-      line-height: 1.2;
-      letter-spacing: 1px;
-      text-overflow: ellipsis;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
-
-    .explorer-file {
-      position: relative;
-      display: flex;
       align-items: center;
-      gap: 8px;
       width: 100%;
       min-height: 28px;
-      margin: 0;
-      padding: 0 9px;
-      overflow: hidden;
+      padding: 0 8px 0 calc(8px + var(--depth) * 16px);
       border: 1px solid transparent;
       border-radius: 5px;
-      color: #c2c6d0;
+      color: #c2c9d6;
       background: transparent;
       cursor: pointer;
-      font: inherit;
       font-size: 12px;
-      line-height: 26px;
       text-align: left;
-      -webkit-app-region: no-drag;
-      box-shadow: inset 0 0 0 0 rgba(57, 201, 135, 0);
-      transition:
-        border-color var(--motion-fast),
-        color var(--motion-fast),
-        background-color var(--motion-fast),
-        box-shadow var(--motion-fast),
-        transform var(--motion-fast);
+      transition: color var(--fast), background var(--fast), box-shadow var(--fast), transform var(--fast);
+      animation: surfaceIn var(--slow) both;
     }
-
-    .file-document-icon {
-      display: block;
-      flex: 0 0 auto;
-      width: 15px;
-      height: 15px;
-      color: #a4abb9;
-      fill: none;
-      stroke: currentColor;
-      stroke-width: 1.55;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-      transition:
-        color var(--motion-fast),
-        transform var(--motion-fast);
+    .tree-row:hover, .search-result:hover, .function-row:hover, .outline-row:hover, .problem-row:hover, .recent-project:hover {
+      color: #f0f4fa;
+      background: rgba(230, 235, 246, .06);
+      transform: translateX(2px);
     }
-
-    .explorer-file-name {
+    .tree-row.is-active {
+      color: #f1f6fb;
+      background: rgba(55, 198, 133, .13);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+    .tree-label, .document-tab-name {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-
-    .explorer-file:hover .file-document-icon,
-    .explorer-file.is-active .file-document-icon {
-      color: #c8ced9;
-    }
-
-    .explorer-file::before {
+    .tree-folder .chevron { width: 13px; height: 13px; transform: rotate(90deg); }
+    .tree-folder.is-collapsed .chevron { transform: rotate(0); }
+    .tree-spacer { width: 13px; }
+    .dirty-dot {
       display: none;
-      position: absolute;
-      left: 11px;
-      top: 8px;
-      width: 10px;
-      height: 12px;
-      border: 1px solid rgba(218, 224, 238, 0.14);
-      border-radius: 2px;
-      content: "";
-    }
-
-    .explorer-file::after {
-      display: none;
-      position: absolute;
-      left: 13px;
-      top: 12px;
       width: 6px;
-      height: 1px;
-      border-radius: 1px;
-      background: rgba(218, 224, 238, 0.12);
-      content: "";
+      height: 6px;
+      border-radius: 99px;
+      background: var(--accent);
+      box-shadow: 0 0 12px rgba(55, 198, 133, .38);
+    }
+    .is-dirty > .dirty-dot, .document-tab.is-dirty .dirty-dot { display: block; }
+
+    .panel-empty, .tool-empty {
+      display: grid;
+      gap: 8px;
+      padding: 16px 8px;
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.45;
+      animation: surfaceIn var(--slow) both;
+    }
+    .panel-empty strong {
+      color: var(--text-soft);
+      font-size: 10px;
+      letter-spacing: 1px;
+    }
+    .search-result, .function-row, .outline-row, .problem-row, .recent-project {
+      display: grid;
+      width: 100%;
+      gap: 4px;
+      min-height: 46px;
+      padding: 8px 9px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: #c8cfdb;
+      background: transparent;
+      cursor: pointer;
+      font-size: 12px;
+      text-align: left;
+      transition: color var(--fast), background var(--fast), transform var(--fast);
+      animation: surfaceIn var(--slow) both;
+    }
+    .search-result strong, .function-row strong, .outline-row strong, .recent-project strong {
+      overflow: hidden;
+      color: #edf2f8;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .search-result span, .function-row span, .outline-row span, .recent-project span {
+      overflow: hidden;
+      color: var(--text-muted);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .search-result code {
+      overflow: hidden;
+      color: #bfc8da;
+      font-family: "Cascadia Code", Consolas, monospace;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .side-section + .side-section { margin-top: 14px; }
+    .side-section-title {
+      margin: 8px 5px;
+      color: var(--text-soft);
+      font-size: 10px;
+      font-weight: 760;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .outline-row {
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      min-height: 32px;
+      align-items: center;
+    }
+    .outline-kind {
+      display: grid;
+      height: 18px;
+      place-items: center;
+      border-radius: 4px;
+      color: #111714;
+      background: var(--accent);
+      font-size: 10px;
+      font-weight: 800;
     }
 
-    .explorer-file:hover {
-      color: #dde1ea;
-      background: rgba(218, 224, 238, 0.052);
-      transform: translateX(2px);
+    .settings-section {
+      display: grid;
+      gap: 12px;
+      padding: 6px 4px 20px;
+      animation: surfaceIn var(--slow) both;
     }
-
-    .explorer-file:hover .file-document-icon {
+    .settings-field, .settings-toggle {
+      display: grid;
+      gap: 7px;
+      color: var(--text-soft);
+      font-size: 12px;
+      font-weight: 640;
+    }
+    .settings-toggle {
+      grid-template-columns: 18px 1fr;
+      align-items: center;
+    }
+    .settings-field select, .settings-field textarea {
+      width: 100%;
+      border: 1px solid rgba(230,235,246,.09);
+      border-radius: 6px;
+      color: #dce2eb;
+      background: #242731;
+      font-size: 12px;
+    }
+    .settings-field select { height: 32px; padding: 0 9px; }
+    .settings-field textarea {
+      min-height: 74px;
+      padding: 8px 9px;
+      resize: vertical;
+    }
+    .capability-cloud {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .capability-chip {
+      min-height: 25px;
+      border: 1px solid rgba(230,235,246,.09);
+      border-radius: 5px;
+      color: #aeb7c8;
+      background: #22242d;
+      cursor: pointer;
+      font-size: 11px;
+      transition: color var(--fast), border-color var(--fast), background var(--fast), transform var(--fast);
+    }
+    .capability-chip:hover, .capability-chip.is-active {
+      color: #101713;
+      border-color: transparent;
+      background: var(--accent);
       transform: translateY(-1px);
     }
 
-    .explorer-file.is-active {
-      border-color: transparent;
-      color: #e2e6ee;
-      background: var(--accent-soft);
-      box-shadow: inset 2px 0 0 var(--accent);
-    }
-
-    .explorer-file:active {
-      transform: translateX(1px) scale(0.99);
-    }
-
     .editor-surface {
-      display: flex;
-      flex-direction: column;
-      flex: 1 1 auto;
+      display: grid;
+      grid-template-rows: 35px 40px 1fr var(--tool-height);
       min-width: 0;
       min-height: 0;
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.014), rgba(0, 0, 0, 0.018)),
-        #18181c;
+      background: #18191e;
     }
-
-    .editor-tabs {
+    .menu-strip {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      flex: 0 0 39px;
-      min-width: 0;
+      gap: 4px;
+      padding: 0 10px;
       border-bottom: 1px solid var(--line);
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.014), transparent),
-        #17181c;
+      background: #17181e;
     }
-
-    .editor-tab {
-      position: relative;
+    .menu-strip-label {
+      margin-right: 8px;
+      color: #f0f3f8;
+      font-size: 12px;
+      font-weight: 720;
+    }
+    .toolbar-button {
+      min-height: 25px;
+      padding: 0 9px;
+      font-size: 12px;
+    }
+    .toolbar-button-primary {
+      color: #101713;
+      border-color: transparent;
+      background: linear-gradient(135deg, var(--accent), var(--accent-blue));
+      font-weight: 760;
+    }
+    .toolbar-separator {
+      width: 1px;
+      height: 18px;
+      margin: 0 5px;
+      background: var(--line-strong);
+    }
+    .runtime-controls {
       display: flex;
       align-items: center;
       gap: 8px;
-      max-width: min(340px, 48vw);
-      height: 100%;
-      padding: 0 14px;
-      overflow: hidden;
-      border-right: 1px solid var(--line);
-      color: #dfe3eb;
-      font-size: 12px;
-      line-height: 38px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      background: #18181c;
-      transition:
-        color var(--motion-fast),
-        background-color var(--motion-fast);
-    }
-
-    .editor-tab::after {
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      height: 1px;
-      background: linear-gradient(90deg, var(--accent), rgba(102, 121, 216, 0.78));
-      content: "";
-      opacity: 0.8;
-    }
-
-    .editor-tab-icon {
-      display: block;
-      flex: 0 0 auto;
-      width: 15px;
-      height: 15px;
-      fill: none;
-      stroke: currentColor;
-      stroke-width: 1.65;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-
-    .tab-icon-globe {
-      color: var(--accent);
-    }
-
-    .tab-icon-document {
-      display: none;
-      color: #a4abb9;
-    }
-
-    .editor-tab.is-file-tab .tab-icon-globe {
-      display: none;
-    }
-
-    .editor-tab.is-file-tab .tab-icon-document {
-      display: block;
-    }
-
-    .editor-tab-text {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .editor-status {
-      flex: 0 0 auto;
-      padding: 0 14px;
-      color: #8f96a5;
-      font-size: 11px;
-      line-height: 38px;
-    }
-
-    .editor-body {
-      display: flex;
-      flex: 1 1 auto;
-      flex-direction: column;
       min-width: 0;
-      min-height: 0;
+      margin-left: auto;
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+    .runtime-controls select, .runtime-controls input[type="text"] {
+      height: 26px;
+      border: 1px solid rgba(230,235,246,.09);
+      border-radius: 5px;
+      color: #dce2eb;
+      background: #22242d;
+      font-size: 11px;
+    }
+    .runtime-controls select { width: 76px; padding: 0 7px; }
+    .runtime-controls input[type="text"] { width: min(280px, 22vw); padding: 0 8px; }
+    .runtime-toggle {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+    }
+
+    .document-tabs {
+      display: flex;
+      min-width: 0;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--line);
+      background: #17181e;
+      scrollbar-width: none;
+    }
+    .document-tabs::-webkit-scrollbar { display: none; }
+    .document-tab {
+      display: grid;
+      grid-template-columns: 16px minmax(50px, 1fr) 8px 16px;
+      gap: 8px;
+      align-items: center;
+      min-width: 132px;
+      max-width: 230px;
+      height: 39px;
+      padding: 0 10px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      color: #acb5c5;
+      background: #17181e;
+      cursor: pointer;
+      font-size: 12px;
+      text-align: left;
+      transition: color var(--fast), background var(--fast);
+    }
+    .document-tab:hover {
+      color: #f0f4fa;
+      background: #1f2129;
+    }
+    .document-tab.is-active {
+      color: #f4f7fb;
+      background: #18191e;
+      box-shadow: inset 0 -2px 0 var(--accent);
+    }
+    .document-tab.is-empty {
+      display: flex;
+      cursor: default;
+    }
+    .tab-close {
+      display: grid;
+      width: 16px;
+      height: 16px;
+      place-items: center;
+      border-radius: 4px;
+      color: #8790a2;
+      font-size: 12px;
+      line-height: 1;
+      transition: color var(--fast), background var(--fast);
+    }
+    .tab-close:hover {
+      color: #f0f4fa;
+      background: rgba(230,235,246,.09);
     }
 
     .editor-workbench {
       position: relative;
-      display: flex;
-      flex: 1 1 auto;
       min-width: 0;
       min-height: 0;
       overflow: hidden;
       background:
-        linear-gradient(135deg, rgba(57, 201, 135, 0.035), transparent 34%),
-        linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(0, 0, 0, 0.02)),
-        #18181c;
+        linear-gradient(135deg, rgba(55,198,133,.035), transparent 36%),
+        #18191e;
     }
-
     #monacoEditor {
       position: absolute;
       inset: 0;
-      flex: 1 1 auto;
-      min-width: 0;
-      min-height: 0;
       opacity: 1;
-      transition: opacity var(--motion-med);
+      transition: opacity var(--med);
     }
-
     #monacoEditor.is-start-hidden {
       opacity: 0;
       pointer-events: none;
     }
-
     .start-surface {
       position: absolute;
       inset: 0;
@@ -1677,92 +2205,73 @@ function installStyles() {
       display: none;
       align-items: center;
       justify-content: center;
-      padding: 38px;
       overflow: auto;
-      color: #dfe3eb;
-      background:
-        linear-gradient(135deg, rgba(24, 24, 28, 0.96), rgba(20, 21, 25, 0.98)),
-        #18181c;
+      padding: 34px;
+      background: linear-gradient(135deg, rgba(24,25,30,.98), rgba(20,21,26,.99));
     }
-
     .start-surface.is-visible {
       display: flex;
-      animation: surfaceIn var(--motion-slow) both;
+      animation: surfaceIn var(--slow) both;
     }
-
     .start-shell {
       display: grid;
-      grid-template-columns: minmax(240px, 0.82fr) minmax(320px, 1fr);
+      grid-template-columns: minmax(260px, .8fr) minmax(320px, 1fr);
       gap: 44px;
-      width: min(860px, 100%);
-      align-items: center;
+      width: min(940px, 100%);
+      align-items: start;
     }
-
-    .start-identity {
-      min-width: 0;
-    }
-
     .start-mark {
       display: grid;
-      width: 48px;
-      height: 48px;
-      margin-bottom: 20px;
+      width: 52px;
+      height: 52px;
       place-items: center;
-      border: 1px solid rgba(57, 201, 135, 0.38);
       border-radius: 10px;
-      color: #0f1714;
-      background: linear-gradient(135deg, #39c987, #89a9ff);
-      box-shadow: 0 18px 46px rgba(57, 201, 135, 0.18);
-      font-size: 20px;
-      font-weight: 800;
+      color: #101713;
+      background: linear-gradient(135deg, var(--accent), var(--accent-blue));
+      box-shadow: 0 22px 60px rgba(55,198,133,.18);
+      font-size: 21px;
+      font-weight: 850;
     }
-
     .start-title {
-      margin: 0;
-      color: #f1f4f8;
+      margin: 20px 0 0;
+      color: #f4f7fb;
       font-size: 34px;
-      font-weight: 680;
-      line-height: 1.08;
+      font-weight: 760;
       letter-spacing: 0;
+      line-height: 1.08;
     }
-
     .start-subtitle {
-      max-width: 330px;
-      margin: 14px 0 0;
-      color: #9ca4b4;
+      max-width: 360px;
+      margin: 12px 0 28px;
+      color: #a2acbd;
       font-size: 13px;
       line-height: 1.6;
     }
-
-    .start-project-meta {
+    .recent-title {
+      margin: 0 0 8px;
+      color: var(--text-soft);
+      font-size: 10px;
+      font-weight: 760;
+      letter-spacing: 1px;
+    }
+    .recent-list {
       display: grid;
-      gap: 4px;
-      margin-top: 32px;
-      color: #8f96a5;
+      gap: 6px;
+    }
+    .recent-project {
+      min-height: 48px;
+      border-radius: 7px;
+      background: rgba(255,255,255,.018);
+    }
+    .recent-empty {
+      color: var(--text-muted);
       font-size: 12px;
     }
-
-    .start-project-meta strong {
-      color: #c8ced9;
-      font-size: 13px;
-      font-weight: 600;
-    }
-
-    .start-project-meta span {
-      overflow: hidden;
-      max-width: 360px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
     .start-actions-panel {
       display: grid;
       gap: 10px;
-      min-width: 0;
     }
-
     .start-action {
-      position: relative;
       display: grid;
       grid-template-columns: 42px 1fr auto;
       gap: 14px;
@@ -1770,32 +2279,21 @@ function installStyles() {
       width: 100%;
       min-height: 76px;
       padding: 14px 16px;
-      border: 1px solid rgba(218, 224, 238, 0.08);
+      border: 1px solid rgba(230,235,246,.09);
       border-radius: 8px;
-      color: #dfe3eb;
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.006)),
-        #1d1e24;
+      color: #dfe5ee;
+      background: linear-gradient(180deg, rgba(255,255,255,.028), rgba(255,255,255,.006)), #20222a;
       cursor: pointer;
       text-align: left;
-      transition:
-        border-color var(--motion-fast),
-        background-color var(--motion-fast),
-        box-shadow var(--motion-med),
-        transform var(--motion-fast);
+      transition: border-color var(--fast), background var(--fast), transform var(--fast), box-shadow var(--med);
     }
-
     .start-action:hover {
-      border-color: rgba(57, 201, 135, 0.32);
-      background-color: #22242b;
-      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.23);
+      border-color: rgba(55,198,133,.35);
+      background: #242731;
+      box-shadow: var(--shadow);
       transform: translateY(-2px);
     }
-
-    .start-action:active {
-      transform: translateY(0) scale(0.99);
-    }
-
+    .start-action:active { transform: scale(.99); }
     .start-action-icon {
       display: grid;
       width: 42px;
@@ -1803,45 +2301,183 @@ function installStyles() {
       place-items: center;
       border-radius: 7px;
       color: var(--accent);
-      background: rgba(57, 201, 135, 0.11);
+      background: rgba(55,198,133,.11);
     }
-
     .start-action-primary .start-action-icon {
-      color: #121915;
-      background: linear-gradient(135deg, #39c987, #89a9ff);
+      color: #101713;
+      background: linear-gradient(135deg, var(--accent), var(--accent-blue));
     }
-
-    .start-action-copy {
-      min-width: 0;
-    }
-
     .start-action-title {
       display: block;
-      color: #f0f3f8;
+      color: #f4f7fb;
       font-size: 14px;
-      font-weight: 650;
-      line-height: 1.2;
+      font-weight: 720;
     }
-
     .start-action-note {
       display: block;
       margin-top: 5px;
-      overflow: hidden;
-      color: #9da5b5;
+      color: #98a2b3;
       font-size: 12px;
-      line-height: 1.4;
+    }
+    .start-action-arrow { color: #8993a4; }
+    .start-action:hover .start-action-arrow { transform: translateX(3px); color: #eef2f8; }
+
+    .tool-window {
+      display: grid;
+      grid-template-rows: 34px 1fr;
+      min-height: 0;
+      border-top: 1px solid var(--line);
+      background: #15161b;
+    }
+    .is-start-mode + .tool-window, .editor-workbench.is-start-mode ~ .tool-window {
+      display: none;
+    }
+    .tool-tabs {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 0 8px;
+      border-bottom: 1px solid var(--line);
+      background: #17181e;
+    }
+    .tool-tab {
+      height: 28px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 5px;
+      color: #8f98aa;
+      background: transparent;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 680;
+      letter-spacing: .2px;
+      transition: color var(--fast), background var(--fast), transform var(--fast);
+    }
+    .tool-tab:hover, .tool-tab.is-active {
+      color: #eef2f8;
+      background: rgba(230,235,246,.07);
+      transform: translateY(-1px);
+    }
+    .tool-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 8px 10px 12px;
+      font-family: "Cascadia Code", "SF Mono", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .log-line {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 10px;
+      min-height: 22px;
+      color: #c5ccd8;
+      white-space: pre-wrap;
+      animation: surfaceIn var(--slow) both;
+    }
+    .log-time { color: #697386; }
+    .log-error { color: #f0a0a0; }
+    .log-success { color: #8ce0b5; }
+    .log-warning { color: #e3c482; }
+    .log-command { color: #a7c3ff; }
+    .problem-row {
+      grid-template-columns: 68px minmax(0, 1fr) auto;
+      min-height: 32px;
+      align-items: center;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    }
+    .problem-severity {
+      display: grid;
+      height: 20px;
+      place-items: center;
+      border-radius: 4px;
+      color: #1c0f0f;
+      background: var(--danger);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .terminal-tool {
+      display: grid;
+      grid-template-rows: 1fr 34px;
+      height: 100%;
+      min-height: 0;
+    }
+    .terminal-log {
+      min-height: 0;
+      overflow: auto;
+    }
+    .terminal-input-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 8px;
+      align-items: center;
+      padding-top: 6px;
+    }
+    .terminal-input-row input {
+      height: 28px;
+      border: 1px solid rgba(230,235,246,.09);
+      border-radius: 6px;
+      color: #dce2eb;
+      background: #22242d;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      padding: 0 9px;
+    }
+    .tool-action {
+      min-height: 28px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+    .tool-action-primary {
+      color: #101713;
+      border-color: transparent;
+      background: var(--accent);
+      font-weight: 760;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-width: 0;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-top-color: var(--line-strong);
+      color: #9da6b7;
+      background: #17181e;
+      font-size: 11px;
+    }
+    .status-left, .status-right {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      min-width: 0;
+    }
+    .status-item {
+      overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-
-    .start-action-arrow {
-      color: #838b9c;
-      transition: transform var(--motion-fast), color var(--motion-fast);
+    .status-button {
+      height: 100%;
+      padding: 0;
+      border: 0;
+      color: inherit;
+      background: transparent;
+      cursor: pointer;
+      font: inherit;
+      transition: color var(--fast), transform var(--fast);
     }
-
-    .start-action:hover .start-action-arrow {
-      color: #dfe3eb;
-      transform: translateX(3px);
+    .status-button:hover { color: #edf2f8; transform: translateY(-1px); }
+    .status-item.is-live { animation: livePulse 900ms ease-out both; }
+    #statusDirty.is-dirty { color: var(--warning); }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 99px;
+      background: var(--accent);
+      box-shadow: 0 0 10px rgba(55,198,133,.38);
     }
 
     .project-dialog {
@@ -1852,324 +2488,115 @@ function installStyles() {
       align-items: center;
       justify-content: center;
       padding: 26px;
-      background: rgba(6, 7, 10, 0.58);
+      background: rgba(6, 7, 10, .62);
       backdrop-filter: blur(14px);
     }
-
     .project-dialog.is-open {
       display: flex;
-      animation: surfaceIn var(--motion-slow) both;
+      animation: surfaceIn var(--slow) both;
     }
-
     .project-dialog-card {
-      width: min(460px, 100%);
+      width: min(620px, 100%);
       padding: 20px;
-      border: 1px solid rgba(218, 224, 238, 0.09);
+      border: 1px solid rgba(230,235,246,.1);
       border-radius: 9px;
-      background: #1d1e24;
-      box-shadow: var(--shadow-soft);
+      background: #1f2129;
+      box-shadow: var(--shadow);
     }
-
     .project-dialog-card h2 {
-      margin: 0 0 16px;
-      color: #f0f3f8;
+      margin: 0 0 15px;
+      color: #f4f7fb;
       font-size: 18px;
-      font-weight: 680;
-      letter-spacing: 0;
+      font-weight: 760;
     }
-
     .project-field {
       display: grid;
       gap: 8px;
-      color: #aeb5c2;
+      color: var(--text-soft);
       font-size: 12px;
-      font-weight: 600;
+      font-weight: 680;
     }
-
     #newProjectName {
       height: 36px;
       padding: 0 11px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(230,235,246,.1);
       border-radius: 6px;
-      color: #e4e8f0;
-      background: #24262e;
-      font-size: 13px;
-      transition:
-        border-color var(--motion-fast),
-        box-shadow var(--motion-fast),
-        background-color var(--motion-fast);
+      color: #e4e9f2;
+      background: #262934;
     }
-
-    #newProjectName:focus {
-      border-color: rgba(57, 201, 135, 0.42);
-      background: #282a33;
+    .template-picker {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 9px;
+      margin-top: 14px;
     }
-
+    .template-card {
+      display: grid;
+      gap: 6px;
+      min-height: 92px;
+      padding: 11px;
+      border: 1px solid rgba(230,235,246,.09);
+      border-radius: 8px;
+      color: #c8cfdb;
+      background: #242731;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color var(--fast), background var(--fast), transform var(--fast), box-shadow var(--fast);
+    }
+    .template-card:hover, .template-card.is-active {
+      border-color: rgba(55,198,133,.42);
+      background: #292d38;
+      transform: translateY(-1px);
+    }
+    .template-card.is-active { box-shadow: inset 0 0 0 1px rgba(55,198,133,.18); }
+    .template-card strong { color: #f1f5fb; font-size: 13px; }
+    .template-card span { color: #98a2b3; font-size: 12px; line-height: 1.4; }
     .project-dialog-actions {
       display: flex;
       justify-content: flex-end;
       gap: 9px;
-      margin-top: 20px;
+      margin-top: 18px;
     }
-
     .dialog-button {
       min-width: 86px;
       height: 32px;
-      padding: 0 13px;
-      border: 1px solid rgba(218, 224, 238, 0.09);
+      border: 1px solid rgba(230,235,246,.1);
       border-radius: 6px;
-      color: #cbd1dd;
-      background: #24262d;
+      color: #cbd3df;
+      background: #252832;
       cursor: pointer;
       font-size: 12px;
-      transition:
-        border-color var(--motion-fast),
-        background-color var(--motion-fast),
-        transform var(--motion-fast);
+      transition: border-color var(--fast), background var(--fast), transform var(--fast);
     }
-
     .dialog-button:hover {
-      border-color: rgba(218, 224, 238, 0.18);
-      background: #2a2d35;
+      border-color: rgba(230,235,246,.18);
+      background: #2b2f3a;
       transform: translateY(-1px);
     }
-
     .dialog-button-primary {
-      border-color: rgba(57, 201, 135, 0.42);
+      border-color: transparent;
       color: #101713;
-      background: linear-gradient(135deg, #39c987, #89a9ff);
-      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--accent-blue));
+      font-weight: 760;
     }
 
+    @media (max-width: 980px) {
+      :root { --side-width: 240px; --activity-width: 50px; --tool-height: 170px; }
+      .runtime-controls input[type="text"] { display: none; }
+      .start-shell { grid-template-columns: 1fr; gap: 28px; }
+      .template-picker { grid-template-columns: 1fr; }
+    }
     @media (max-width: 760px) {
-      .start-surface {
-        align-items: flex-start;
-        padding: 28px 20px;
-      }
-
-      .start-shell {
-        grid-template-columns: 1fr;
-        gap: 26px;
-      }
-
-      .start-title {
-        font-size: 28px;
-      }
-
-      .start-action {
-        grid-template-columns: 38px 1fr;
-      }
-
-      .start-action-arrow {
-        display: none;
-      }
+      .workspace { grid-template-columns: var(--activity-width) 1fr; }
+      .side-panel { display: none; }
+      .editor-surface { grid-template-rows: auto 40px 1fr var(--tool-height); }
+      .menu-strip { flex-wrap: wrap; min-height: 70px; padding-block: 6px; }
+      .runtime-controls { width: 100%; margin-left: 0; }
+      .runtime-toggle span { display: none; }
+      .start-surface { align-items: flex-start; padding: 22px; }
     }
-
-    .terminal-panel {
-      display: flex;
-      flex: 0 0 172px;
-      flex-direction: column;
-      min-height: 120px;
-      border-top: 1px solid var(--line);
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(0, 0, 0, 0.018)),
-        #18181c;
-      transition:
-        flex-basis var(--motion-med),
-        min-height var(--motion-med),
-        opacity var(--motion-med);
-    }
-
-    .editor-surface.is-start-mode .terminal-panel {
-      display: none;
-    }
-
-    .terminal-panel.is-collapsed {
-      flex-basis: 34px;
-      min-height: 34px;
-    }
-
-    .terminal-panel.is-hidden {
-      display: none;
-    }
-
-    .terminal-panel.is-collapsed .terminal-empty {
-      display: none;
-    }
-
-    .terminal-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex: 0 0 34px;
-      padding: 0 16px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.045);
-      color: var(--text-soft);
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 1px;
-    }
-
-    .terminal-actions {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      color: #7f8797;
-    }
-
-    .terminal-action {
-      display: grid;
-      width: 18px;
-      height: 18px;
-      place-items: center;
-      border: 0;
-      border-radius: 4px;
-      color: inherit;
-      background: transparent;
-      cursor: pointer;
-      -webkit-app-region: no-drag;
-      rotate: 0deg;
-      transition:
-        color var(--motion-fast),
-        background-color var(--motion-fast),
-        transform var(--motion-fast),
-        rotate var(--motion-med);
-    }
-
-    .terminal-action:hover {
-      color: #dde1ea;
-      background: rgba(218, 224, 238, 0.055);
-      transform: translateY(-1px);
-    }
-
-    .terminal-action.is-active {
-      color: #c6cbd8;
-      background: rgba(218, 224, 238, 0.045);
-    }
-
-    #terminalCollapse.is-active {
-      rotate: 180deg;
-    }
-
-    .terminal-action:active {
-      transform: translateY(0) scale(0.94);
-    }
-
-    #terminalCollapse .ui-icon {
-      transform-box: fill-box;
-      transform-origin: center;
-      transition: transform var(--motion-med);
-    }
-
-    #terminalCollapse.is-active .ui-icon {
-      transform: rotate(180deg);
-    }
-
-    .terminal-empty {
-      display: grid;
-      flex: 1 1 auto;
-      place-items: center;
-      color: #858d9d;
-      font-family: "Cascadia Code", "SF Mono", Consolas, monospace;
-      text-align: center;
-      animation: surfaceIn var(--motion-slow) both;
-    }
-
-    .terminal-empty strong {
-      display: block;
-      margin-bottom: 10px;
-      color: var(--text-soft);
-      font-size: 12px;
-      font-weight: 500;
-    }
-
-    .terminal-empty span {
-      display: block;
-      font-size: 11px;
-      opacity: 0.68;
-    }
-
-    .status-bar {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      z-index: 11;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      height: var(--status-height);
-      padding: 0 9px;
-      border: 1px solid var(--line);
-      border-top-color: rgba(255, 255, 255, 0.055);
-      color: #9fa6b5;
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.014), transparent),
-        #17181c;
-      font-size: 11px;
-      line-height: var(--status-height);
-    }
-
-    .status-left,
-    .status-right {
-      display: flex;
-      align-items: center;
-      gap: 13px;
-      min-width: 0;
-    }
-
-    .status-item {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .status-button {
-      display: inline-flex;
-      align-items: center;
-      height: 100%;
-      padding: 0;
-      border: 0;
-      color: inherit;
-      background: transparent;
-      cursor: pointer;
-      font: inherit;
-      -webkit-app-region: no-drag;
-      transition:
-        color var(--motion-fast),
-        transform var(--motion-fast);
-    }
-
-    .status-button:hover,
-    .status-button.is-active {
-      color: #cbd0db;
-    }
-
-    .status-button:hover {
-      transform: translateY(-1px);
-    }
-
-    .status-button:active {
-      transform: translateY(0) scale(0.98);
-    }
-
-    .status-item.is-live {
-      animation: statusFlash 900ms ease-out both;
-    }
-
-    .status-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 999px;
-      background: #c74c4c;
-      box-shadow: 0 0 8px rgba(199, 76, 76, 0.3);
-      animation: statusPulse 2.4s ease-in-out infinite;
-    }
-
     @media (prefers-reduced-motion: reduce) {
-      *,
-      *::before,
-      *::after {
+      *, *::before, *::after {
         animation-duration: 1ms !important;
         animation-iteration-count: 1 !important;
         scroll-behavior: auto !important;
@@ -2185,214 +2612,122 @@ function renderWindowBar() {
   root.innerHTML = `
     <main class="app-shell">
       <header id="windowChrome">
-        <div id="windowTitleGroup">
-          <div id="windowBannerFrame">
-            <img id="windowBannerIcon" src="${bannerIconUrl}" alt="Wapi">
-          </div>
-        </div>
-        <div id="windowAppTitle">Wapi</div>
+        <div id="windowBannerFrame"><img id="windowBannerIcon" src="${bannerIconUrl}" alt="Wapi"></div>
+        <div id="windowAppTitle">Wapi IDE</div>
         <div id="windowButtons">
-          <button id="windowMinimize" class="window-btn window-btn-min" type="button" aria-label="Minimize">
-            <span class="window-icon window-icon-min"></span>
-          </button>
-          <button id="windowMaximize" class="window-btn window-btn-max" type="button" aria-label="Maximize">
-            <span class="window-icon window-icon-max"></span>
-          </button>
-          <button id="windowClose" class="window-btn window-btn-close" type="button" aria-label="Close">
-            <span class="window-icon window-icon-close"></span>
-          </button>
+          <button id="windowMinimize" class="window-btn" type="button" aria-label="Minimize"><span class="window-icon window-icon-min"></span></button>
+          <button id="windowMaximize" class="window-btn" type="button" aria-label="Maximize"><span class="window-icon window-icon-max"></span></button>
+          <button id="windowClose" class="window-btn window-btn-close" type="button" aria-label="Close"><span class="window-icon window-icon-close"></span></button>
         </div>
       </header>
-      <section class="blank-stage" aria-label="Workspace">
+      <section class="workspace" aria-label="Wapi IDE workspace">
         <nav class="activity-bar" aria-label="Primary navigation">
-          <button class="activity-button is-active" type="button" aria-label="Explorer" title="Explorer" data-panel="explorer">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M8 3h8l4 4v13H8z"></path>
-              <path d="M4 7h8l4 4v10H4z"></path>
-            </svg>
+          <button class="activity-button is-active" type="button" title="Explorer" data-panel="explorer">
+            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8l4 4v13H8z"></path><path d="M4 7h8l4 4v10H4z"></path></svg>
           </button>
-          <button class="activity-button" type="button" aria-label="Search" title="Search" data-panel="search">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="11" cy="11" r="6"></circle>
-              <path d="m16 16 5 5"></path>
-            </svg>
+          <button class="activity-button" type="button" title="Search" data-panel="search">
+            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 5 5"></path></svg>
           </button>
-          <button class="activity-button" type="button" aria-label="Source control" title="Source control" data-panel="source">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="6" cy="5" r="2"></circle>
-              <circle cx="18" cy="5" r="2"></circle>
-              <circle cx="6" cy="19" r="2"></circle>
-              <path d="M6 7v10"></path>
-              <path d="M18 7v3a4 4 0 0 1-4 4H6"></path>
-            </svg>
+          <button class="activity-button" type="button" title="Functions" data-panel="functions">
+            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8"></path><path d="M8 20h8"></path><path d="M12 4c-3 4-3 12 0 16"></path><path d="M12 4c3 4 3 12 0 16"></path></svg>
+          </button>
+          <button class="activity-button" type="button" title="Outline" data-panel="outline">
+            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path></svg>
           </button>
           <div class="activity-spacer" aria-hidden="true"></div>
-          <button class="activity-button" type="button" aria-label="Account" title="Account" data-panel="account">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="12" cy="8" r="4"></circle>
-              <path d="M5 21a7 7 0 0 1 14 0"></path>
-            </svg>
-          </button>
-          <button class="activity-button" type="button" aria-label="Settings" title="Settings" data-panel="settings">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path>
-              <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2.15 2.15 0 0 1-3.04 3.04l-.06-.06a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.65V21.4a2.15 2.15 0 0 1-4.3 0v-.09a1.8 1.8 0 0 0-1.08-1.65 1.8 1.8 0 0 0-1.98.36l-.06.06a2.15 2.15 0 1 1-3.04-3.04l.06-.06A1.8 1.8 0 0 0 3.6 15a1.8 1.8 0 0 0-1.65-1.08H1.86a2.15 2.15 0 0 1 0-4.3h.09A1.8 1.8 0 0 0 3.6 8.54a1.8 1.8 0 0 0-.36-1.98l-.06-.06A2.15 2.15 0 1 1 6.22 3.46l.06.06a1.8 1.8 0 0 0 1.98.36 1.8 1.8 0 0 0 1.08-1.65V2.14a2.15 2.15 0 0 1 4.3 0v.09a1.8 1.8 0 0 0 1.08 1.65 1.8 1.8 0 0 0 1.98-.36l.06-.06a2.15 2.15 0 1 1 3.04 3.04l-.06.06a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.08h.09a2.15 2.15 0 0 1 0 4.3h-.09A1.8 1.8 0 0 0 19.4 15Z"></path>
-            </svg>
+          <button class="activity-button" type="button" title="Project settings" data-panel="settings">
+            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2.15 2.15 0 0 1-3.04 3.04l-.06-.06a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.65v.09a2.15 2.15 0 0 1-4.3 0v-.09a1.8 1.8 0 0 0-1.08-1.65 1.8 1.8 0 0 0-1.98.36l-.06.06a2.15 2.15 0 1 1-3.04-3.04l.06-.06A1.8 1.8 0 0 0 3.6 15a1.8 1.8 0 0 0-1.65-1.08h-.09a2.15 2.15 0 0 1 0-4.3h.09A1.8 1.8 0 0 0 3.6 8.54a1.8 1.8 0 0 0-.36-1.98l-.06-.06A2.15 2.15 0 1 1 6.22 3.46l.06.06a1.8 1.8 0 0 0 1.98.36 1.8 1.8 0 0 0 1.08-1.65V2.14a2.15 2.15 0 0 1 4.3 0v.09a1.8 1.8 0 0 0 1.08 1.65 1.8 1.8 0 0 0 1.98-.36l.06-.06a2.15 2.15 0 1 1 3.04 3.04l-.06.06a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.08h.09a2.15 2.15 0 0 1 0 4.3h-.09A1.8 1.8 0 0 0 19.4 15Z"></path></svg>
           </button>
         </nav>
-        <aside id="solutionExplorer" aria-label="Solution Explorer">
-          <div class="explorer-topbar">
-            <div class="explorer-title-block">
-              <div id="explorerTitle" class="explorer-title">EXPLORER</div>
-              <div id="explorerMeta" class="explorer-meta">No files loaded</div>
+        <aside class="side-panel" aria-label="Side panel">
+          <div class="side-topbar">
+            <div>
+              <div id="sideTitle" class="side-title">SOLUTION EXPLORER</div>
+              <div id="sideMeta" class="side-meta">No project loaded</div>
             </div>
-            <div id="explorerActions" class="explorer-actions">
-              <button id="explorerCreateProject" class="explorer-action" type="button" aria-label="Create new project" title="Create new project">
-                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 5v14"></path>
-                  <path d="M5 12h14"></path>
-                </svg>
-              </button>
-              <button id="explorerUploadProject" class="explorer-action" type="button" aria-label="Upload project" title="Upload project">
-                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-                  <path d="M3 10h18"></path>
-                </svg>
-              </button>
-              <button id="explorerRefresh" class="explorer-action" type="button" aria-label="Refresh explorer" title="Refresh explorer">
-                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M20 11a8 8 0 0 0-14.5-4.5L3 9"></path>
-                  <path d="M3 4v5h5"></path>
-                  <path d="M4 13a8 8 0 0 0 14.5 4.5L21 15"></path>
-                  <path d="M21 20v-5h-5"></path>
-                </svg>
-              </button>
-              <button id="explorerMoreActions" class="explorer-action" type="button" aria-label="More explorer actions" title="More actions" aria-expanded="false">
-                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M5 12h.01"></path>
-                  <path d="M12 12h.01"></path>
-                  <path d="M19 12h.01"></path>
-                </svg>
-              </button>
+            <div id="sideActions" class="side-actions">
+              <button id="sideCreateProject" class="icon-button" type="button" title="Create project"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg></button>
+              <button id="sideUploadProject" class="icon-button" type="button" title="Upload project"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><path d="M3 10h18"></path></svg></button>
+              <button id="sideMoreActions" class="icon-button" type="button" title="More actions"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M5 12h.01"></path><path d="M12 12h.01"></path><path d="M19 12h.01"></path></svg></button>
             </div>
-            <div id="explorerActionMenu" class="explorer-action-menu" role="menu">
-              <button class="menu-item" type="button" role="menuitem" data-menu-action="create-project">Create new project</button>
-              <button class="menu-item" type="button" role="menuitem" data-menu-action="upload-project">Upload project</button>
-              <button class="menu-item" type="button" role="menuitem" data-menu-action="add-files">Add files</button>
-              <button class="menu-item" type="button" role="menuitem" data-menu-action="clear-search">Clear search</button>
+            <div id="sideActionMenu" class="side-action-menu" role="menu">
+              <button class="menu-item" type="button" data-menu-action="create-project">Create new project</button>
+              <button class="menu-item" type="button" data-menu-action="upload-project">Upload project</button>
+              <button class="menu-item" type="button" data-menu-action="add-files">Add files</button>
+              <button class="menu-item" type="button" data-menu-action="save-all">Save all</button>
+              <button class="menu-item" type="button" data-menu-action="clear-search">Clear search</button>
             </div>
           </div>
-          <div id="explorerSearchbar" class="explorer-searchbar">
-            <div class="explorer-search-wrap">
-              <svg class="explorer-search-icon ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <circle cx="11" cy="11" r="6"></circle>
-                <path d="m16 16 5 5"></path>
-              </svg>
-              <input id="explorerSearch" type="search" autocomplete="off" spellcheck="false" placeholder="Search files">
+          <div id="sideSearchbar" class="side-searchbar">
+            <div class="search-wrap">
+              <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 5 5"></path></svg>
+              <input id="sideSearch" type="search" spellcheck="false" autocomplete="off" placeholder="Filter files">
             </div>
           </div>
-          <div id="explorerFileTree" class="explorer-tree"></div>
+          <div id="sideContent" class="side-content"></div>
         </aside>
-        <section class="editor-surface" aria-label="Editor workspace">
-          <div class="editor-tabs">
-            <div id="editorTabLabel" class="editor-tab">
-              <svg class="editor-tab-icon tab-icon-globe" viewBox="0 0 24 24" aria-hidden="true">
-                <circle cx="12" cy="12" r="9"></circle>
-                <path d="M3 12h18"></path>
-                <path d="M12 3a13.8 13.8 0 0 1 0 18"></path>
-                <path d="M12 3a13.8 13.8 0 0 0 0 18"></path>
-              </svg>
-              <svg class="editor-tab-icon tab-icon-document" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M7 3h7l5 5v13H7z"></path>
-                <path d="M14 3v5h5"></path>
-                <path d="M10 13h6"></path>
-                <path d="M10 17h4"></path>
-              </svg>
-              <span id="editorTabText" class="editor-tab-text">Welcome</span>
+        <section class="editor-surface" aria-label="Editor">
+          <div class="menu-strip">
+            <span class="menu-strip-label">Wapi</span>
+            <button id="toolbarSave" class="toolbar-button" type="button">Save</button>
+            <button id="toolbarSaveAs" class="toolbar-button" type="button">Save As</button>
+            <button id="toolbarSaveAll" class="toolbar-button" type="button">Save All</button>
+            <span class="toolbar-separator"></span>
+            <button id="toolbarCheck" class="toolbar-button toolbar-button-primary" type="button">Check</button>
+            <button id="toolbarRun" class="toolbar-button" type="button">Run</button>
+            <div class="runtime-controls" aria-label="Runtime controls">
+              <select id="runtimeMode" title="Runtime mode">
+                <option value="safe">Safe</option>
+                <option value="dev">Dev</option>
+                <option value="unsafe">Unsafe</option>
+              </select>
+              <label class="runtime-toggle"><input id="runtimeStrict" type="checkbox"><span>Strict</span></label>
+              <label class="runtime-toggle"><input id="runtimeInjection" type="checkbox"><span>Injection</span></label>
+              <input id="runtimeCapabilities" type="text" spellcheck="false" title="Capabilities" placeholder="capabilities">
             </div>
-            <div id="editorStatus" class="editor-status">Wapi</div>
           </div>
-          <div class="editor-body">
-            <div class="editor-workbench">
-              <section id="startSurface" class="start-surface" aria-label="Start">
-                <div class="start-shell">
-                  <div class="start-identity">
-                    <div class="start-mark" aria-hidden="true">W</div>
-                    <h1 class="start-title">Wapi</h1>
-                    <p class="start-subtitle">Create a Wapi project or upload an existing folder.</p>
-                    <div class="start-project-meta">
-                      <strong id="startProjectName">No project loaded</strong>
-                      <span id="startProjectPath">Create a Wapi project or upload an existing folder.</span>
-                    </div>
-                  </div>
-                  <div class="start-actions-panel">
-                    <button id="startCreateProject" class="start-action start-action-primary" type="button">
-                      <span class="start-action-icon" aria-hidden="true">
-                        <svg class="ui-icon" viewBox="0 0 24 24">
-                          <path d="M12 5v14"></path>
-                          <path d="M5 12h14"></path>
-                        </svg>
-                      </span>
-                      <span class="start-action-copy">
-                        <span class="start-action-title">Create new project</span>
-                        <span class="start-action-note">Start with main.wapi</span>
-                      </span>
-                      <svg class="start-action-arrow ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M5 12h14"></path>
-                        <path d="m13 6 6 6-6 6"></path>
-                      </svg>
-                    </button>
-                    <button id="startUploadProject" class="start-action" type="button">
-                      <span class="start-action-icon" aria-hidden="true">
-                        <svg class="ui-icon" viewBox="0 0 24 24">
-                          <path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-                          <path d="M3 10h18"></path>
-                        </svg>
-                      </span>
-                      <span class="start-action-copy">
-                        <span class="start-action-title">Upload project</span>
-                        <span class="start-action-note">Open a Wapi folder</span>
-                      </span>
-                      <svg class="start-action-arrow ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M5 12h14"></path>
-                        <path d="m13 6 6 6-6 6"></path>
-                      </svg>
-                    </button>
-                  </div>
+          <div id="documentTabs" class="document-tabs"></div>
+          <div class="editor-workbench">
+            <section id="startSurface" class="start-surface" aria-label="Start">
+              <div class="start-shell">
+                <div class="start-identity">
+                  <div class="start-mark" aria-hidden="true">W</div>
+                  <h1 class="start-title">Wapi IDE</h1>
+                  <p class="start-subtitle">Create a Wapi project or upload an existing folder. The workbench opens with Check as the primary runtime action.</p>
+                  <div class="recent-title">RECENT PROJECTS</div>
+                  <div id="recentProjects" class="recent-list"></div>
                 </div>
-              </section>
-              <div id="monacoEditor"></div>
-            </div>
-            <section id="terminalPanel" class="terminal-panel" aria-label="Terminals">
-              <div class="terminal-header">
-                <span>TERMINALS</span>
-                <div class="terminal-actions">
-                  <button id="terminalCollapse" class="terminal-action" type="button" aria-label="Collapse terminals" title="Collapse terminals" aria-pressed="false">
-                    <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="m18 15-6-6-6 6"></path>
-                    </svg>
+                <div class="start-actions-panel">
+                  <button id="startCreateProject" class="start-action start-action-primary" type="button">
+                    <span class="start-action-icon"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg></span>
+                    <span><span class="start-action-title">Create new project</span><span class="start-action-note">Choose Empty, Process Inspector, or Memory Sandbox</span></span>
+                    <svg class="ui-icon start-action-arrow" viewBox="0 0 24 24"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>
                   </button>
-                  <button id="terminalClose" class="terminal-action" type="button" aria-label="Close terminals" title="Close terminals">
-                    <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M18 6 6 18"></path>
-                      <path d="m6 6 12 12"></path>
-                    </svg>
+                  <button id="startUploadProject" class="start-action" type="button">
+                    <span class="start-action-icon"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><path d="M3 10h18"></path></svg></span>
+                    <span><span class="start-action-title">Upload project</span><span class="start-action-note">Open an existing Wapi folder</span></span>
+                    <svg class="ui-icon start-action-arrow" viewBox="0 0 24 24"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>
                   </button>
-                </div>
-              </div>
-              <div class="terminal-empty">
-                <div>
-                  <strong>No terminals available</strong>
-                  <span>Terminals are created automatically when a Wapi session starts</span>
                 </div>
               </div>
             </section>
+            <div id="monacoEditor"></div>
           </div>
+          <section class="tool-window" aria-label="Tool windows">
+            <div id="toolTabs" class="tool-tabs">
+              <button class="tool-tab" type="button" data-tool="problems">Problems</button>
+              <button class="tool-tab is-active" type="button" data-tool="output">Output</button>
+              <button class="tool-tab" type="button" data-tool="terminal">Terminal</button>
+              <button class="tool-tab" type="button" data-tool="audit">Audit</button>
+            </div>
+            <div id="toolBody" class="tool-body"></div>
+          </section>
         </section>
       </section>
-      <footer class="status-bar" aria-label="Status">
+      <footer class="status-bar">
         <div class="status-left">
           <span id="statusFile" class="status-item">&lt;/&gt; Welcome</span>
+          <span id="statusDirty" class="status-item">Saved</span>
         </div>
         <div class="status-right">
           <span id="statusCursor" class="status-item">Ln 1, Col 1</span>
@@ -2401,7 +2736,7 @@ function renderWindowBar() {
           <span id="statusLanguage" class="status-item">Wapi</span>
           <button id="statusTerminal" class="status-button" type="button">Terminal</button>
           <span class="status-dot" aria-hidden="true"></span>
-          <span id="statusInstance" class="status-item">No Instance</span>
+          <span id="statusInstance" class="status-item">Ready</span>
         </div>
       </footer>
       <div id="newProjectDialog" class="project-dialog" aria-hidden="true">
@@ -2411,6 +2746,7 @@ function renderWindowBar() {
             <span>Project name</span>
             <input id="newProjectName" type="text" autocomplete="off" spellcheck="false" value="WapiProject">
           </label>
+          <div id="templatePicker" class="template-picker"></div>
           <div class="project-dialog-actions">
             <button id="newProjectCancel" class="dialog-button" type="button">Cancel</button>
             <button class="dialog-button dialog-button-primary" type="submit">Create</button>
@@ -2419,73 +2755,190 @@ function renderWindowBar() {
       </div>
     </main>
   `;
+}
 
+function bindEvents() {
   document.getElementById("windowMinimize")?.addEventListener("click", () => bridge.window.minimize());
   document.getElementById("windowMaximize")?.addEventListener("click", () => bridge.window.toggleMaximize());
-  document.getElementById("windowClose")?.addEventListener("click", () => bridge.window.close());
-  document.getElementById("explorerCreateProject")?.addEventListener("click", () => setProjectDialogOpen(true));
-  document.getElementById("explorerUploadProject")?.addEventListener("click", uploadProjectIntoExplorer);
-  document.getElementById("explorerRefresh")?.addEventListener("click", refreshExplorerPanel);
-  document.getElementById("explorerMoreActions")?.addEventListener("click", toggleExplorerMenu);
-  document.getElementById("startCreateProject")?.addEventListener("click", () => setProjectDialogOpen(true));
-  document.getElementById("startUploadProject")?.addEventListener("click", uploadProjectIntoExplorer);
+  document.getElementById("windowClose")?.addEventListener("click", requestWindowClose);
+  document.getElementById("sideCreateProject")?.addEventListener("click", openCreateProjectDialog);
+  document.getElementById("sideUploadProject")?.addEventListener("click", () => uploadProjectIntoExplorer());
+  document.getElementById("sideMoreActions")?.addEventListener("click", () => {
+    ideState.menuOpen = !ideState.menuOpen;
+    renderSidePanel();
+  });
+  document.getElementById("startCreateProject")?.addEventListener("click", openCreateProjectDialog);
+  document.getElementById("startUploadProject")?.addEventListener("click", () => uploadProjectIntoExplorer());
+  document.getElementById("toolbarSave")?.addEventListener("click", () => saveActiveFile(false));
+  document.getElementById("toolbarSaveAs")?.addEventListener("click", () => saveActiveFile(true));
+  document.getElementById("toolbarSaveAll")?.addEventListener("click", saveAllFiles);
+  document.getElementById("toolbarCheck")?.addEventListener("click", () => runWapiCommand("check"));
+  document.getElementById("toolbarRun")?.addEventListener("click", () => runWapiCommand("run"));
+  document.getElementById("statusTerminal")?.addEventListener("click", () => setActiveTool("terminal"));
+
+  ["runtimeMode", "runtimeStrict", "runtimeInjection", "runtimeCapabilities"].forEach((id) => {
+    document.getElementById(id)?.addEventListener(id === "runtimeCapabilities" ? "change" : "input", () => updateRuntimeFromControls("toolbar"));
+  });
+
+  document.querySelectorAll(".activity-button[data-panel]").forEach((button) => {
+    button.addEventListener("click", () => setActivePanel(button.dataset.panel));
+  });
+
+  document.getElementById("sideSearch")?.addEventListener("input", (event) => {
+    ideState.searchQuery = event.target.value;
+    renderSidePanel();
+  });
+
+  document.getElementById("sideContent")?.addEventListener("click", (event) => {
+    const folder = event.target.closest("[data-folder-path]");
+    if (folder) {
+      const path = folder.dataset.folderPath;
+      if (ideState.collapsedFolders.has(path)) ideState.collapsedFolders.delete(path);
+      else ideState.collapsedFolders.add(path);
+      renderSidePanel();
+      return;
+    }
+
+    const fileRow = event.target.closest("[data-file-id]");
+    if (fileRow) {
+      openFileInEditor(fileRow.dataset.fileId);
+      return;
+    }
+
+    const result = event.target.closest("[data-search-file]");
+    if (result) {
+      openFileInEditor(result.dataset.searchFile);
+      goToLine(Number(result.dataset.searchLine || "1"));
+      return;
+    }
+
+    const outline = event.target.closest("[data-goto-line]");
+    if (outline) {
+      goToLine(Number(outline.dataset.gotoLine || "1"));
+      return;
+    }
+
+    const fn = event.target.closest("[data-insert-function]");
+    if (fn) {
+      insertFunctionSnippet(fn.dataset.insertFunction);
+      return;
+    }
+
+    const capability = event.target.closest("[data-toggle-capability]");
+    if (capability) {
+      const cap = capability.dataset.toggleCapability;
+      const caps = new Set(ideState.projectConfig.capabilities);
+      if (caps.has(cap)) caps.delete(cap);
+      else caps.add(cap);
+      ideState.projectConfig.capabilities = [...caps].sort();
+      persistProjectConfig();
+      renderSidePanel();
+      renderToolbarState();
+    }
+  });
+
+  document.getElementById("sideActionMenu")?.addEventListener("click", async (event) => {
+    const action = event.target.closest("[data-menu-action]")?.dataset.menuAction;
+    ideState.menuOpen = false;
+    if (action === "create-project") await openCreateProjectDialog();
+    if (action === "upload-project") await uploadProjectIntoExplorer();
+    if (action === "add-files") await addFilesToExplorer();
+    if (action === "save-all") await saveAllFiles();
+    if (action === "clear-search") {
+      ideState.searchQuery = "";
+      renderSidePanel();
+      setStatus("Search cleared");
+    }
+  });
+
+  document.getElementById("documentTabs")?.addEventListener("click", (event) => {
+    const close = event.target.closest("[data-close-tab]");
+    if (close) {
+      event.stopPropagation();
+      closeDocumentTab(close.dataset.closeTab);
+      return;
+    }
+    const tab = event.target.closest("[data-tab-file]");
+    if (tab) openFileInEditor(tab.dataset.tabFile);
+  });
+
+  document.getElementById("toolTabs")?.addEventListener("click", (event) => {
+    const tab = event.target.closest("[data-tool]");
+    if (tab) setActiveTool(tab.dataset.tool);
+  });
+
+  document.getElementById("toolBody")?.addEventListener("click", (event) => {
+    const problem = event.target.closest("[data-problem-file]");
+    if (problem) {
+      openFileInEditor(problem.dataset.problemFile);
+      goToLine(Number(problem.dataset.problemLine || "1"));
+      return;
+    }
+    const start = event.target.closest("#terminalStart");
+    if (start) startTerminal();
+  });
+
+  document.getElementById("toolBody")?.addEventListener("input", (event) => {
+    if (event.target.id === "terminalInput") ideState.terminalInput = event.target.value;
+  });
+
+  document.getElementById("toolBody")?.addEventListener("submit", async (event) => {
+    if (event.target.id !== "terminalForm") return;
+    event.preventDefault();
+    await sendTerminalCommand(event.target.querySelector("#terminalInput")?.value ?? "");
+  });
+
   document.getElementById("newProjectCancel")?.addEventListener("click", () => setProjectDialogOpen(false));
   document.getElementById("newProjectDialog")?.addEventListener("click", (event) => {
     if (event.target.id === "newProjectDialog") setProjectDialogOpen(false);
+  });
+  document.getElementById("templatePicker")?.addEventListener("click", (event) => {
+    const template = event.target.closest("[data-template-id]");
+    if (!template) return;
+    ideState.selectedTemplate = template.dataset.templateId;
+    renderTemplatePicker();
   });
   document.getElementById("newProjectForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     await createProjectFromDialog();
   });
-  document.querySelectorAll(".activity-button[data-panel]").forEach((button) => {
-    button.addEventListener("click", () => setActivePanel(button.dataset.panel));
-  });
-  document.getElementById("explorerSearch")?.addEventListener("input", (event) => {
-    explorerState.searchQuery = event.target.value;
-    renderSolutionExplorer();
-  });
-  document.getElementById("explorerActionMenu")?.addEventListener("click", async (event) => {
-    const item = event.target.closest("[data-menu-action]");
-    if (!item) return;
-    uiState.menuOpen = false;
-    if (item.dataset.menuAction === "create-project") setProjectDialogOpen(true);
-    if (item.dataset.menuAction === "upload-project") await uploadProjectIntoExplorer();
-    if (item.dataset.menuAction === "add-files") await addFilesToExplorer();
-    if (item.dataset.menuAction === "clear-search") {
-      explorerState.searchQuery = "";
-      renderSolutionExplorer();
-      setStatusMessage("Search cleared");
+
+  document.addEventListener("keydown", async (event) => {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === "s" && event.shiftKey) {
+      event.preventDefault();
+      await saveAllFiles();
+    } else if (key === "s") {
+      event.preventDefault();
+      await saveActiveFile(false);
+    } else if (key === "f") {
+      event.preventDefault();
+      setActivePanel("search");
+      document.getElementById("sideSearch")?.focus();
     }
   });
-  document.getElementById("explorerFileTree")?.addEventListener("click", (event) => {
-    const action = event.target.closest("[data-action]");
-    if (action) {
-      handlePanelAction(action.dataset.action);
-      return;
-    }
-    const item = event.target.closest(".explorer-file");
-    if (!item) return;
-    explorerState.activeFileId = item.dataset.fileId;
-    renderSolutionExplorer();
-    setEditorModel(activeExplorerFile());
+
+  window.addEventListener("beforeunload", (event) => {
+    if (!ideState.dirty) return;
+    event.preventDefault();
+    event.returnValue = "";
   });
-  document.getElementById("terminalCollapse")?.addEventListener("click", () => {
-    setTerminalState({ terminalCollapsed: !uiState.terminalCollapsed, terminalHidden: false });
-  });
-  document.getElementById("terminalClose")?.addEventListener("click", () => {
-    setTerminalState({ terminalHidden: true, terminalCollapsed: false });
-    renderSolutionExplorer();
-  });
-  document.getElementById("statusTerminal")?.addEventListener("click", () => {
-    setTerminalState({ terminalHidden: !uiState.terminalHidden, terminalCollapsed: false });
-    renderSolutionExplorer();
-  });
-  renderSolutionExplorer();
-  setTerminalState();
-  createMonacoEditor();
 }
 
-installRendererIcon();
-installStyles();
-installMonacoLanguage();
-renderWindowBar();
+async function init() {
+  installRendererIcon();
+  installStyles();
+  installMonacoLanguage();
+  renderWindowBar();
+  bindEvents();
+  installTerminalListener();
+  createMonacoEditor();
+  renderTemplatePicker();
+  renderAll();
+  ideState.recentProjects = await bridge.listRecentProjects();
+  renderStartSurface();
+  syncDirtyState(false);
+}
+
+init();

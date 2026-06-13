@@ -33,12 +33,14 @@ private:
 class Evaluator {
 public:
     explicit Evaluator(const WapiRuntimeOptions& options = {});
+    ~Evaluator();
     void run(std::shared_ptr<Program> program);
 
 private:
     WapiRuntimeOptions options;
     std::unordered_map<std::string, WapiValue> variables;
     std::unordered_set<long long> trackedHandles;
+    std::unordered_map<long long, std::unordered_set<long long>> trackedAllocations;
 
     WapiValue evalNode(std::shared_ptr<ASTNode> node);
     WapiValue evalFunctionCall(std::shared_ptr<FunctionCall> call);
@@ -55,6 +57,9 @@ private:
     long long asLongLong(const std::shared_ptr<ASTNode>& node, const std::string& functionName, int argIndex);
 
     void* requireTrackedHandle(long long handleValue, const std::string& functionName);
+    void cleanupTrackedResources() noexcept;
+    void releaseTrackedAllocations(long long handleValue) noexcept;
+    void closeTrackedHandle(long long handleValue) noexcept;
 
     // Windows API bindings
     WapiValue wapi_findProcessPID(const std::string& name);

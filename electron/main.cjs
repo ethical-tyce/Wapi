@@ -5,12 +5,35 @@ const { spawn } = require("node:child_process");
 
 const isDev = Boolean(process.env.WAPI_IDE_DEV_SERVER_URL);
 const appIcon = path.join(app.getAppPath(), "icon.ico");
-const projectFileExtensions = new Set([".wapi", ".txt", ".cpp", ".c", ".h", ".hpp"]);
+const projectFileExtensions = new Set([".wapi", ".txt", ".json", ".cpp", ".c", ".h", ".hpp"]);
 const shellCwdMarker = "__WAPI_CWD__";
 const terminalSessions = new Map();
+const executionSessions = new Map();
+const executionOutputTruncated = "\n[WAPI_IDE] Output limit reached. Terminating Wapi process to protect memory.";
+
+function defaultProjectConfig(name = "WapiProject") {
+  return {
+    name,
+    entryFile: "main.wapi",
+    defaultMode: "safe",
+    strictPermissions: true,
+    allowInjection: false,
+    capabilities: ["proc.list", "proc.modules"]
+  };
+}
 
 function terminalSessionKey(event) {
   return event.sender.id;
+}
+
+function executionSessionKey(event, command) {
+  return `${event.sender.id}:${command}`;
+}
+
+function stopExecutionSession(key) {
+  const child = executionSessions.get(key);
+  if (child && !child.killed) child.kill();
+  executionSessions.delete(key);
 }
 
 function emitTerminalData(webContents, payload) {
@@ -38,7 +61,21 @@ function createWindow() {
     }
   });
 
+  win.__wapiDirty = false;
   win.once("ready-to-show", () => win.show());
+  win.on("close", (event) => {
+    if (!win.__wapiDirty) return;
+    const choice = dialog.showMessageBoxSync(win, {
+      type: "warning",
+      title: "Unsaved Wapi changes",
+      message: "This project has unsaved changes.",
+      detail: "Save your files before closing, or discard the changes.",
+      buttons: ["Cancel", "Discard"],
+      defaultId: 0,
+      cancelId: 0
+    });
+    if (choice === 0) event.preventDefault();
+  });
 
   if (isDev) {
     win.loadURL(process.env.WAPI_IDE_DEV_SERVER_URL);
@@ -110,6 +147,83 @@ async function collectProjectFiles(rootPath, dirPath = rootPath, files = []) {
   return files;
 }
 
+function projectConfigPath(rootPath) {
+  return path.join(rootPath, ".wapi", "project.json");
+}
+
+async function readJsonFile(filePath, fallback = null) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeProjectConfig(config = {}, fallbackName = "WapiProject") {
+  const base = defaultProjectConfig(fallbackName);
+  const next = { ...base, ...config };
+  next.name = sanitizeProjectName(next.name || fallbackName);
+  next.entryFile = safeRelativeProjectPath(next.entryFile || "main.wapi");
+  if (next.defaultMode === "audit") next.defaultMode = "dev";
+  next.defaultMode = ["safe", "dev", "unsafe"].includes(next.defaultMode) ? next.defaultMode : "safe";
+  next.strictPermissions = Boolean(next.strictPermissions);
+  next.allowInjection = Boolean(next.allowInjection);
+  next.capabilities = Array.isArray(next.capabilities)
+    ? [...new Set(next.capabilities.map((cap) => String(cap).trim()).filter(Boolean))]
+    : base.capabilities;
+  return next;
+}
+
+async function readProjectConfig(rootPath) {
+  if (typeof rootPath !== "string" || !rootPath.trim()) return null;
+  const config = await readJsonFile(projectConfigPath(rootPath), null);
+  return config ? normalizeProjectConfig(config, path.basename(rootPath)) : null;
+}
+
+async function writeProjectConfig(rootPath, config) {
+  if (typeof rootPath !== "string" || !rootPath.trim()) {
+    throw new Error("Project root is required.");
+  }
+  const normalized = normalizeProjectConfig(config, path.basename(rootPath));
+  const targetPath = projectConfigPath(rootPath);
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.writeFile(targetPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  return normalized;
+}
+
+function recentProjectsPath() {
+  return path.join(app.getPath("userData"), "recent-projects.json");
+}
+
+async function readRecentProjects() {
+  const projects = await readJsonFile(recentProjectsPath(), []);
+  return Array.isArray(projects)
+    ? projects.filter((project) => typeof project.rootPath === "string" && project.rootPath.trim()).slice(0, 10)
+    : [];
+}
+
+async function writeRecentProjects(projects) {
+  const targetPath = recentProjectsPath();
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.writeFile(targetPath, `${JSON.stringify(projects.slice(0, 10), null, 2)}\n`, "utf8");
+}
+
+async function addRecentProject(rootPath) {
+  if (typeof rootPath !== "string" || !rootPath.trim()) return readRecentProjects();
+  const resolvedRoot = path.resolve(rootPath);
+  const recent = await readRecentProjects();
+  const next = [
+    {
+      rootPath: resolvedRoot,
+      name: path.basename(resolvedRoot) || "WapiProject",
+      openedAt: new Date().toISOString()
+    },
+    ...recent.filter((project) => path.resolve(project.rootPath) !== resolvedRoot)
+  ];
+  await writeRecentProjects(next);
+  return next.slice(0, 10);
+}
+
 function sanitizeProjectName(name) {
   const cleaned = String(name || "WapiProject")
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
@@ -147,6 +261,25 @@ async function writeProjectFiles(rootPath, files) {
   }
 }
 
+async function saveIdeFiles(files) {
+  const results = [];
+  for (const file of Array.isArray(files) ? files : []) {
+    const filePath = typeof file?.filePath === "string" ? file.filePath : "";
+    const source = typeof file?.source === "string" ? file.source : "";
+    if (!filePath) {
+      results.push({ ok: false, filePath: null, error: "Missing file path." });
+      continue;
+    }
+    try {
+      await fs.writeFile(filePath, source, "utf8");
+      results.push({ ok: true, filePath });
+    } catch (error) {
+      results.push({ ok: false, filePath, error: error.message });
+    }
+  }
+  return results;
+}
+
 function buildArgs(command, source, options = {}) {
   const args = [command, source];
   if (options.mode) args.push("--mode", options.mode);
@@ -158,7 +291,7 @@ function buildArgs(command, source, options = {}) {
   return args;
 }
 
-function runProcess(exe, args) {
+function runProcess(exe, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(exe, args, {
       cwd: path.dirname(exe),
@@ -167,14 +300,40 @@ function runProcess(exe, args) {
 
     let stdout = "";
     let stderr = "";
+    let outputBytes = 0;
+    let killedForLimit = false;
+    const maxOutputBytes = options.maxOutputBytes ?? 1024 * 1024;
+    const timeout = setTimeout(() => {
+      killedForLimit = true;
+      stderr += `\n[WAPI_IDE] Timed out after ${Math.round((options.timeoutMs ?? 30000) / 1000)} seconds.`;
+      child.kill();
+    }, options.timeoutMs ?? 30000);
+
+    if (options.sessionKey) executionSessions.set(options.sessionKey, child);
+
+    function appendOutput(target, chunk) {
+      const text = chunk.toString();
+      outputBytes += Buffer.byteLength(text);
+      if (outputBytes > maxOutputBytes) {
+        if (!killedForLimit) {
+          killedForLimit = true;
+          stderr += executionOutputTruncated;
+          child.kill();
+        }
+        return target;
+      }
+      return target + text;
+    }
 
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      stdout = appendOutput(stdout, chunk);
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
+      stderr = appendOutput(stderr, chunk);
     });
     child.on("error", (error) => {
+      clearTimeout(timeout);
+      if (options.sessionKey) executionSessions.delete(options.sessionKey);
       resolve({
         ok: false,
         code: null,
@@ -184,8 +343,12 @@ function runProcess(exe, args) {
       });
     });
     child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (options.sessionKey && executionSessions.get(options.sessionKey) === child) {
+        executionSessions.delete(options.sessionKey);
+      }
       resolve({
-        ok: code === 0,
+        ok: code === 0 && !killedForLimit,
         code,
         stdout,
         stderr,
@@ -384,7 +547,13 @@ ipcMain.handle("wapi:execute", async (_event, payload) => {
     };
   }
 
-  return runProcess(exe, buildArgs(command, source, options));
+  const sessionKey = executionSessionKey(_event, command);
+  stopExecutionSession(sessionKey);
+  return runProcess(exe, buildArgs(command, source, options), {
+    sessionKey,
+    timeoutMs: command === "check" ? 8000 : 60000,
+    maxOutputBytes: command === "check" ? 256 * 1024 : 1024 * 1024
+  });
 });
 
 ipcMain.handle("wapi:locate", async () => resolveWapiExecutable());
@@ -420,25 +589,43 @@ ipcMain.handle("wapi:createProject", async (_event, payload = {}) => {
   if (result.canceled || result.filePaths.length === 0) return null;
 
   const rootPath = await uniqueProjectPath(result.filePaths[0], payload.name);
+  const config = normalizeProjectConfig(payload.config, payload.name);
   const files = Array.isArray(payload.files) && payload.files.length > 0
     ? payload.files
     : [{ name: "main.wapi", relativePath: "main.wapi", source: "listProcesses()\n" }];
 
   await fs.mkdir(rootPath, { recursive: false });
   await writeProjectFiles(rootPath, files);
-  return { rootPath, files: await collectProjectFiles(rootPath) };
+  await writeProjectConfig(rootPath, config);
+  await addRecentProject(rootPath);
+  return { rootPath, config: await readProjectConfig(rootPath), files: await collectProjectFiles(rootPath) };
 });
 
-ipcMain.handle("wapi:loadProject", async () => {
-  const result = await dialog.showOpenDialog({
-    title: "Upload project folder",
-    properties: ["openDirectory"]
-  });
+ipcMain.handle("wapi:loadProject", async (_event, requestedRootPath) => {
+  let rootPath = typeof requestedRootPath === "string" ? requestedRootPath : "";
+  if (rootPath) {
+    const stat = await fs.stat(rootPath).catch(() => null);
+    if (!stat?.isDirectory()) return null;
+  } else {
+    const result = await dialog.showOpenDialog({
+      title: "Upload project folder",
+      properties: ["openDirectory"]
+    });
 
-  if (result.canceled || result.filePaths.length === 0) return null;
-  const rootPath = result.filePaths[0];
-  return { rootPath, files: await collectProjectFiles(rootPath) };
+    if (result.canceled || result.filePaths.length === 0) return null;
+    rootPath = result.filePaths[0];
+  }
+  await addRecentProject(rootPath);
+  return { rootPath, config: await readProjectConfig(rootPath), files: await collectProjectFiles(rootPath) };
 });
+
+ipcMain.handle("wapi:readProjectConfig", async (_event, rootPath) => readProjectConfig(rootPath));
+
+ipcMain.handle("wapi:writeProjectConfig", async (_event, rootPath, config) => writeProjectConfig(rootPath, config));
+
+ipcMain.handle("wapi:listRecentProjects", async () => readRecentProjects());
+
+ipcMain.handle("wapi:addRecentProject", async (_event, rootPath) => addRecentProject(rootPath));
 
 ipcMain.handle("window:minimize", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.minimize();
@@ -456,6 +643,15 @@ ipcMain.handle("window:toggleMaximize", (event) => {
 
 ipcMain.handle("window:close", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
+});
+
+ipcMain.handle("window:setDirtyState", (event, isDirty) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return false;
+  win.__wapiDirty = Boolean(isDirty);
+  win.setTitle(`${win.__wapiDirty ? "* " : ""}Wapi IDE`);
+  if (typeof win.setDocumentEdited === "function") win.setDocumentEdited(win.__wapiDirty);
+  return true;
 });
 
 ipcMain.handle("wapi:openFile", async () => {
@@ -496,6 +692,8 @@ ipcMain.handle("wapi:saveFile", async (_event, payload) => {
   return { filePath };
 });
 
+ipcMain.handle("wapi:saveFiles", async (_event, files) => saveIdeFiles(files));
+
 app.whenReady().then(createWindow);
 
 app.on("activate", () => {
@@ -504,5 +702,6 @@ app.on("activate", () => {
 
 app.on("window-all-closed", () => {
   for (const key of terminalSessions.keys()) stopTerminalSession(key);
+  for (const key of executionSessions.keys()) stopExecutionSession(key);
   if (process.platform !== "darwin") app.quit();
 });

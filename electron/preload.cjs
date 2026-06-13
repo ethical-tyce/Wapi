@@ -5,9 +5,14 @@ contextBridge.exposeInMainWorld("wapi", {
   locate: () => ipcRenderer.invoke("wapi:locate"),
   addFiles: () => ipcRenderer.invoke("wapi:addFiles"),
   createProject: (payload) => ipcRenderer.invoke("wapi:createProject", payload),
-  loadProject: () => ipcRenderer.invoke("wapi:loadProject"),
+  loadProject: (rootPath) => ipcRenderer.invoke("wapi:loadProject", rootPath),
   openFile: () => ipcRenderer.invoke("wapi:openFile"),
   saveFile: (payload) => ipcRenderer.invoke("wapi:saveFile", payload),
+  saveFiles: (files) => ipcRenderer.invoke("wapi:saveFiles", files),
+  readProjectConfig: (rootPath) => ipcRenderer.invoke("wapi:readProjectConfig", rootPath),
+  writeProjectConfig: (rootPath, config) => ipcRenderer.invoke("wapi:writeProjectConfig", rootPath, config),
+  listRecentProjects: () => ipcRenderer.invoke("wapi:listRecentProjects"),
+  addRecentProject: (rootPath) => ipcRenderer.invoke("wapi:addRecentProject", rootPath),
   shell: (payload) => ipcRenderer.invoke("wapi:shell", payload),
   terminal: {
     start: (payload) => ipcRenderer.invoke("wapi:terminal:start", payload),
@@ -22,6 +27,7 @@ contextBridge.exposeInMainWorld("wapi", {
   window: {
     minimize: () => ipcRenderer.invoke("window:minimize"),
     toggleMaximize: () => ipcRenderer.invoke("window:toggleMaximize"),
-    close: () => ipcRenderer.invoke("window:close")
+    close: () => ipcRenderer.invoke("window:close"),
+    setDirtyState: (isDirty) => ipcRenderer.invoke("window:setDirtyState", isDirty)
   }
 });
