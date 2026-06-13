@@ -110,6 +110,43 @@ async function collectProjectFiles(rootPath, dirPath = rootPath, files = []) {
   return files;
 }
 
+function sanitizeProjectName(name) {
+  const cleaned = String(name || "WapiProject")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
+    .trim();
+  return cleaned || "WapiProject";
+}
+
+async function uniqueProjectPath(parentPath, projectName) {
+  const baseName = sanitizeProjectName(projectName);
+  for (let index = 0; index < 50; index += 1) {
+    const suffix = index === 0 ? "" : ` ${index + 1}`;
+    const candidate = path.join(parentPath, `${baseName}${suffix}`);
+    if (!(await fileExists(candidate))) return candidate;
+  }
+  throw new Error(`Could not create a unique folder for ${baseName}`);
+}
+
+function safeRelativeProjectPath(relativePath) {
+  const normalized = path.normalize(String(relativePath || "")).replace(/^(\.\.(\\|\/|$))+/, "");
+  const clean = normalized.replace(/^([\\\/])+/, "");
+  return clean && clean !== "." ? clean : "main.wapi";
+}
+
+async function writeProjectFiles(rootPath, files) {
+  for (const file of files) {
+    const relativePath = safeRelativeProjectPath(file.relativePath || file.name);
+    const targetPath = path.join(rootPath, relativePath);
+    const resolvedRoot = path.resolve(rootPath);
+    const resolvedTarget = path.resolve(targetPath);
+    if (resolvedTarget !== resolvedRoot && !resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)) {
+      throw new Error(`Invalid project file path: ${relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, typeof file.source === "string" ? file.source : "", "utf8");
+  }
+}
+
 function buildArgs(command, source, options = {}) {
   const args = [command, source];
   if (options.mode) args.push("--mode", options.mode);
@@ -374,9 +411,27 @@ ipcMain.handle("wapi:addFiles", async () => {
   return Promise.all(result.filePaths.map((filePath) => readIdeFile(filePath)));
 });
 
+ipcMain.handle("wapi:createProject", async (_event, payload = {}) => {
+  const result = await dialog.showOpenDialog({
+    title: "Choose project location",
+    properties: ["openDirectory", "createDirectory"]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) return null;
+
+  const rootPath = await uniqueProjectPath(result.filePaths[0], payload.name);
+  const files = Array.isArray(payload.files) && payload.files.length > 0
+    ? payload.files
+    : [{ name: "main.wapi", relativePath: "main.wapi", source: "listProcesses()\n" }];
+
+  await fs.mkdir(rootPath, { recursive: false });
+  await writeProjectFiles(rootPath, files);
+  return { rootPath, files: await collectProjectFiles(rootPath) };
+});
+
 ipcMain.handle("wapi:loadProject", async () => {
   const result = await dialog.showOpenDialog({
-    title: "Load project folder",
+    title: "Upload project folder",
     properties: ["openDirectory"]
   });
 

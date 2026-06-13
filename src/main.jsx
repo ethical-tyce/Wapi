@@ -10,6 +10,10 @@ self.MonacoEnvironment = {
 
 const bridge = window.wapi ?? {
   addFiles: async () => [],
+  createProject: async (payload = {}) => ({
+    rootPath: null,
+    files: payload.files ?? []
+  }),
   loadProject: async () => null,
   window: {
     minimize: async () => null,
@@ -36,7 +40,8 @@ const uiState = {
   activePanel: "explorer",
   terminalCollapsed: false,
   terminalHidden: false,
-  menuOpen: false
+  menuOpen: false,
+  projectDialogOpen: false
 };
 
 const welcomeSource = "";
@@ -151,6 +156,31 @@ function normalizeProjectFile(file = {}) {
   return { ...file, id, filePath, name, relativePath };
 }
 
+function starterProjectFiles(projectName = "WapiProject") {
+  const safeName = projectName.trim() || "WapiProject";
+  return [
+    {
+      name: "main.wapi",
+      relativePath: "main.wapi",
+      source: [
+        `// ${safeName}`,
+        "listProcesses()",
+        ""
+      ].join("\n")
+    },
+    {
+      name: "README.txt",
+      relativePath: "README.txt",
+      source: [
+        safeName,
+        "",
+        "Created with Wapi IDE.",
+        "Start in main.wapi."
+      ].join("\n")
+    }
+  ];
+}
+
 function mergeProjectFiles(existingFiles, incomingFiles) {
   const filesById = new Map(existingFiles.map((file) => [file.id, file]));
   for (const file of incomingFiles.map(normalizeProjectFile)) {
@@ -183,13 +213,37 @@ function filteredExplorerFiles() {
   });
 }
 
+function replaceProject(project, message) {
+  explorerState.projectFiles = project.files.map(normalizeProjectFile)
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  explorerState.activeFileId = explorerState.projectFiles[0]?.id ?? null;
+  explorerState.projectRoot = project.rootPath ?? null;
+  explorerState.searchQuery = "";
+  uiState.activePanel = "explorer";
+  uiState.menuOpen = false;
+  renderSolutionExplorer();
+  setEditorModel(activeExplorerFile());
+  updateStartSurface();
+  if (message) setStatusMessage(message);
+}
+
+function projectDisplayName() {
+  if (!explorerState.projectRoot) return "WapiProject";
+  const normalized = normalizePath(explorerState.projectRoot);
+  return normalized.split("/").filter(Boolean).pop() || "WapiProject";
+}
+
 function setStatusMessage(message) {
   const statusInstance = document.getElementById("statusInstance");
   if (!statusInstance) return;
   statusInstance.textContent = message;
+  statusInstance.classList.remove("is-live");
+  statusInstance.offsetWidth;
+  statusInstance.classList.add("is-live");
   window.clearTimeout(setStatusMessage.timeoutId);
   setStatusMessage.timeoutId = window.setTimeout(() => {
     statusInstance.textContent = "No Instance";
+    statusInstance.classList.remove("is-live");
   }, 1800);
 }
 
@@ -304,6 +358,7 @@ function renderSolutionExplorer() {
   actions?.classList.toggle("is-hidden", panel !== "explorer");
   searchbar?.classList.toggle("is-hidden", !["explorer", "search"].includes(panel));
   document.getElementById("explorerActionMenu")?.classList.toggle("is-open", uiState.menuOpen);
+  document.getElementById("explorerMoreActions")?.setAttribute("aria-expanded", String(uiState.menuOpen));
 
   if (searchInput && searchInput.value !== explorerState.searchQuery) {
     searchInput.value = explorerState.searchQuery;
@@ -318,6 +373,7 @@ function renderSolutionExplorer() {
       ? `${visibleFiles.length} match${visibleFiles.length === 1 ? "" : "es"}`
     : `${files.length} file${files.length === 1 ? "" : "s"}`;
 
+  updateStartSurface();
   tree.replaceChildren();
 
   if (panel === "search") {
@@ -348,7 +404,7 @@ function renderSolutionExplorer() {
   }
 
   if (files.length === 0) {
-    renderPanelEmpty("FILES", "No files found");
+    renderPanelEmpty("START", "Create or upload a project");
     return;
   }
 
@@ -358,6 +414,58 @@ function renderSolutionExplorer() {
   }
 
   renderFileGroups(visibleFiles);
+  updateStartSurface();
+}
+
+function updateStartSurface() {
+  const startSurface = document.getElementById("startSurface");
+  const monacoHost = document.getElementById("monacoEditor");
+  const editorSurface = document.querySelector(".editor-surface");
+  const projectName = document.getElementById("startProjectName");
+  const projectPath = document.getElementById("startProjectPath");
+  const showStart = explorerState.projectFiles.length === 0;
+
+  startSurface?.classList.toggle("is-visible", showStart);
+  monacoHost?.classList.toggle("is-start-hidden", showStart);
+  editorSurface?.classList.toggle("is-start-mode", showStart);
+
+  if (projectName) {
+    projectName.textContent = showStart ? "No project loaded" : projectDisplayName();
+  }
+  if (projectPath) {
+    projectPath.textContent = showStart
+      ? "Create a Wapi project or upload an existing folder."
+      : explorerState.projectRoot ?? `${explorerState.projectFiles.length} file${explorerState.projectFiles.length === 1 ? "" : "s"}`;
+  }
+}
+
+function setProjectDialogOpen(open) {
+  uiState.projectDialogOpen = open;
+  const dialog = document.getElementById("newProjectDialog");
+  const input = document.getElementById("newProjectName");
+  dialog?.classList.toggle("is-open", open);
+  dialog?.setAttribute("aria-hidden", String(!open));
+  if (open && input) {
+    input.value = "WapiProject";
+    input.focus();
+    input.select();
+  }
+}
+
+async function createProjectFromDialog() {
+  const input = document.getElementById("newProjectName");
+  const name = input?.value.trim() || "WapiProject";
+  const project = await bridge.createProject({
+    name,
+    files: starterProjectFiles(name)
+  });
+  if (!project || !Array.isArray(project.files) || project.files.length === 0) {
+    setProjectDialogOpen(false);
+    setStatusMessage("Project creation cancelled");
+    return;
+  }
+  setProjectDialogOpen(false);
+  replaceProject(project, "Project created");
 }
 
 function installMonacoLanguage() {
@@ -536,24 +644,27 @@ function createMonacoEditor() {
 
 async function addFilesToExplorer() {
   const files = await bridge.addFiles();
-  if (!Array.isArray(files) || files.length === 0) return;
+  if (!Array.isArray(files) || files.length === 0) {
+    setStatusMessage("No files added");
+    return;
+  }
   const normalized = files.map(normalizeProjectFile);
   explorerState.projectFiles = mergeProjectFiles(explorerState.projectFiles, normalized);
   explorerState.activeFileId ||= normalized[0].id;
   explorerState.projectRoot = null;
   renderSolutionExplorer();
   setEditorModel(activeExplorerFile());
+  updateStartSurface();
+  setStatusMessage(`${normalized.length} file${normalized.length === 1 ? "" : "s"} added`);
 }
 
-async function loadProjectIntoExplorer() {
+async function uploadProjectIntoExplorer() {
   const project = await bridge.loadProject();
-  if (!project || !Array.isArray(project.files)) return;
-  explorerState.projectFiles = project.files.map(normalizeProjectFile)
-    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-  explorerState.activeFileId = explorerState.projectFiles[0]?.id ?? null;
-  explorerState.projectRoot = project.rootPath ?? null;
-  renderSolutionExplorer();
-  setEditorModel(activeExplorerFile());
+  if (!project || !Array.isArray(project.files)) {
+    setStatusMessage("Project upload cancelled");
+    return;
+  }
+  replaceProject(project, "Project uploaded");
 }
 
 function refreshExplorerPanel() {
@@ -579,6 +690,7 @@ function setTerminalState(nextState = {}) {
   collapse?.classList.toggle("is-active", uiState.terminalCollapsed);
   if (statusTerminal) {
     statusTerminal.textContent = uiState.terminalHidden ? "Terminal hidden" : "Terminal";
+    statusTerminal.classList.toggle("is-active", !uiState.terminalHidden);
   }
   editorState.editor?.layout();
 }
@@ -636,6 +748,11 @@ function installStyles() {
       --text-main: #c5c9d3;
       --text-muted: #8f96a5;
       --text-soft: #aab0be;
+      --focus-ring: 0 0 0 1px rgba(57, 201, 135, 0.42), 0 0 0 4px rgba(57, 201, 135, 0.1);
+      --shadow-soft: 0 14px 36px rgba(0, 0, 0, 0.28);
+      --motion-fast: 120ms cubic-bezier(.2, .7, .2, 1);
+      --motion-med: 180ms cubic-bezier(.2, .7, .2, 1);
+      --motion-slow: 260ms cubic-bezier(.16, 1, .3, 1);
     }
 
     * {
@@ -658,10 +775,69 @@ function installStyles() {
       user-select: none;
     }
 
+    ::selection {
+      color: #f4fff9;
+      background: rgba(57, 201, 135, 0.34);
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: none;
+      box-shadow: var(--focus-ring);
+    }
+
+    @keyframes surfaceIn {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes menuIn {
+      from {
+        opacity: 0;
+        transform: translateY(-6px) scale(0.98);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    @keyframes statusPulse {
+      0%,
+      100% {
+        box-shadow: 0 0 8px rgba(199, 76, 76, 0.3);
+      }
+      50% {
+        box-shadow: 0 0 14px rgba(199, 76, 76, 0.58);
+      }
+    }
+
+    @keyframes statusFlash {
+      0% {
+        color: #f4fff9;
+        text-shadow: 0 0 10px rgba(57, 201, 135, 0.44);
+      }
+      100% {
+        color: inherit;
+        text-shadow: none;
+      }
+    }
+
     .app-shell {
       width: 100%;
       height: 100%;
-      background: #15161a;
+      background: linear-gradient(180deg, #17181d 0%, #141519 100%);
     }
 
     #windowChrome {
@@ -678,8 +854,12 @@ function installStyles() {
       padding: 0 16px 0 var(--window-signature-left);
       border: 1px solid var(--line);
       border-bottom-color: rgba(255, 255, 255, 0.06);
-      background: #17181c;
-      box-shadow: inset 0 -1px rgba(0, 0, 0, 0.8);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(0, 0, 0, 0)),
+        #17181c;
+      box-shadow:
+        inset 0 -1px rgba(0, 0, 0, 0.8),
+        0 10px 28px rgba(0, 0, 0, 0.14);
       -webkit-app-region: drag;
     }
 
@@ -753,13 +933,19 @@ function installStyles() {
       cursor: pointer;
       line-height: 1;
       transition:
-        color 120ms ease,
-        background-color 120ms ease;
+        color var(--motion-fast),
+        background-color var(--motion-fast),
+        transform var(--motion-fast);
     }
 
     .window-btn:hover {
       color: #d9dde6;
       background: rgba(218, 224, 238, 0.055);
+      transform: translateY(-1px);
+    }
+
+    .window-btn:active {
+      transform: translateY(0) scale(0.95);
     }
 
     .window-btn-close:hover {
@@ -776,6 +962,11 @@ function installStyles() {
       height: 12px;
       transform: translate(-50%, -50%);
       pointer-events: none;
+      transition: transform var(--motion-fast);
+    }
+
+    .window-btn:hover .window-icon {
+      transform: translate(-50%, -50%) scale(1.08);
     }
 
     .window-icon-min::before {
@@ -826,8 +1017,11 @@ function installStyles() {
       height: 100%;
       padding-top: var(--window-chrome-height);
       padding-bottom: var(--status-height);
-      background: #15161a;
+      background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.012), transparent 34%),
+        #15161a;
       min-height: 0;
+      animation: surfaceIn 240ms ease-out both;
     }
 
     .activity-bar {
@@ -838,7 +1032,9 @@ function installStyles() {
       height: 100%;
       padding: 14px 0 12px;
       border-right: 1px solid var(--line);
-      background: #17181c;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(0, 0, 0, 0.06)),
+        #17181c;
     }
 
     .activity-button {
@@ -859,8 +1055,26 @@ function installStyles() {
       cursor: pointer;
       -webkit-app-region: no-drag;
       transition:
-        color 120ms ease,
-        background-color 120ms ease;
+        color var(--motion-fast),
+        background-color var(--motion-fast),
+        box-shadow var(--motion-med),
+        transform var(--motion-fast);
+    }
+
+    .activity-button::before {
+      position: absolute;
+      left: -10px;
+      top: 50%;
+      width: 3px;
+      height: 18px;
+      border-radius: 999px;
+      background: var(--accent);
+      content: "";
+      opacity: 0;
+      transform: translateY(-50%) scaleY(0.45);
+      transition:
+        opacity var(--motion-fast),
+        transform var(--motion-med);
     }
 
     .activity-button:hover,
@@ -870,6 +1084,7 @@ function installStyles() {
 
     .activity-button:hover {
       background: rgba(218, 224, 238, 0.052);
+      transform: translateY(-1px);
     }
 
     .activity-button.is-active {
@@ -878,6 +1093,15 @@ function installStyles() {
       box-shadow:
         0 8px 22px rgba(57, 201, 135, 0.14),
         inset 0 1px rgba(255, 255, 255, 0.14);
+    }
+
+    .activity-button.is-active::before {
+      opacity: 1;
+      transform: translateY(-50%) scaleY(1);
+    }
+
+    .activity-button:active {
+      transform: translateY(0) scale(0.96);
     }
 
     .activity-spacer {
@@ -901,6 +1125,12 @@ function installStyles() {
       width: 24px;
       height: 24px;
       stroke-width: 1.55;
+      transition: transform var(--motion-med), stroke-width var(--motion-fast);
+    }
+
+    .activity-button:hover .ui-icon,
+    .activity-button.is-active .ui-icon {
+      transform: scale(1.04);
     }
 
     #solutionExplorer {
@@ -913,7 +1143,9 @@ function installStyles() {
       margin: 0;
       border: 0;
       border-right: 1px solid var(--line);
-      background: var(--panel);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.014), rgba(0, 0, 0, 0.018)),
+        var(--panel);
       box-shadow: none;
       min-height: 0;
     }
@@ -937,7 +1169,9 @@ function installStyles() {
       min-width: 0;
       padding: 0 14px;
       border-bottom: 0;
-      background: var(--panel);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.012), transparent),
+        var(--panel);
     }
 
     .explorer-title-block {
@@ -988,20 +1222,34 @@ function installStyles() {
       cursor: pointer;
       -webkit-app-region: no-drag;
       transition:
-        border-color 120ms ease,
-        color 120ms ease,
-        background-color 120ms ease;
+        border-color var(--motion-fast),
+        color var(--motion-fast),
+        background-color var(--motion-fast),
+        box-shadow var(--motion-fast),
+        transform var(--motion-fast);
     }
 
-    .explorer-action:hover {
+    .explorer-action:hover,
+    .explorer-action[aria-expanded="true"] {
       color: #dde1ea;
       background: rgba(218, 224, 238, 0.06);
+      transform: translateY(-1px);
+    }
+
+    .explorer-action:active {
+      transform: translateY(0) scale(0.94);
     }
 
     .explorer-action .ui-icon {
       width: 16px;
       height: 16px;
       stroke-width: 1.75;
+      transition: transform var(--motion-fast);
+    }
+
+    .explorer-action:hover .ui-icon,
+    .explorer-action[aria-expanded="true"] .ui-icon {
+      transform: scale(1.08);
     }
 
     .explorer-action-menu {
@@ -1015,12 +1263,14 @@ function installStyles() {
       border: 1px solid var(--line);
       border-radius: 7px;
       background: #202129;
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+      box-shadow: var(--shadow-soft);
+      transform-origin: 92% 0;
     }
 
     .explorer-action-menu.is-open {
       display: grid;
       gap: 2px;
+      animation: menuIn var(--motion-slow) both;
     }
 
     .menu-item,
@@ -1037,12 +1287,23 @@ function installStyles() {
       font-size: 12px;
       text-align: left;
       -webkit-app-region: no-drag;
+      transition:
+        color var(--motion-fast),
+        background-color var(--motion-fast),
+        padding-left var(--motion-fast),
+        transform var(--motion-fast);
     }
 
     .menu-item:hover,
     .panel-button:hover {
       color: #dde1ea;
       background: rgba(218, 224, 238, 0.06);
+      padding-left: 12px;
+    }
+
+    .menu-item:active,
+    .panel-button:active {
+      transform: scale(0.985);
     }
 
     .explorer-searchbar {
@@ -1058,6 +1319,11 @@ function installStyles() {
       position: relative;
       width: 100%;
       height: 32px;
+      transition: transform var(--motion-fast);
+    }
+
+    .explorer-search-wrap:focus-within {
+      transform: translateY(-1px);
     }
 
     .explorer-search-icon {
@@ -1069,6 +1335,14 @@ function installStyles() {
       color: #838b9c;
       transform: translateY(-50%);
       pointer-events: none;
+      transition:
+        color var(--motion-fast),
+        transform var(--motion-fast);
+    }
+
+    .explorer-search-wrap:focus-within .explorer-search-icon {
+      color: var(--accent);
+      transform: translateY(-50%) scale(1.08);
     }
 
     #explorerSearch {
@@ -1085,9 +1359,9 @@ function installStyles() {
       line-height: 32px;
       -webkit-app-region: no-drag;
       transition:
-        border-color 120ms ease,
-        background-color 120ms ease,
-        box-shadow 120ms ease;
+        border-color var(--motion-fast),
+        background-color var(--motion-fast),
+        box-shadow var(--motion-fast);
     }
 
     #explorerSearch::placeholder {
@@ -1097,7 +1371,9 @@ function installStyles() {
     #explorerSearch:focus {
       border-color: rgba(57, 201, 135, 0.38);
       background: #22232b;
-      box-shadow: 0 0 0 1px rgba(57, 201, 135, 0.14);
+      box-shadow:
+        0 0 0 1px rgba(57, 201, 135, 0.14),
+        0 8px 20px rgba(0, 0, 0, 0.18);
     }
 
     .explorer-tree {
@@ -1128,12 +1404,18 @@ function installStyles() {
       color: var(--text-muted);
       font-size: 12px;
       line-height: 1.35;
+      animation: surfaceIn var(--motion-slow) both;
     }
 
     .panel-card {
       display: grid;
       gap: 6px;
       margin-top: 12px;
+      animation: surfaceIn var(--motion-slow) both;
+    }
+
+    .explorer-section {
+      animation: surfaceIn var(--motion-slow) both;
     }
 
     .explorer-section + .explorer-section {
@@ -1164,7 +1446,7 @@ function installStyles() {
       padding: 0 9px;
       overflow: hidden;
       border: 1px solid transparent;
-      border-radius: 0;
+      border-radius: 5px;
       color: #c2c6d0;
       background: transparent;
       cursor: pointer;
@@ -1173,6 +1455,13 @@ function installStyles() {
       line-height: 26px;
       text-align: left;
       -webkit-app-region: no-drag;
+      box-shadow: inset 0 0 0 0 rgba(57, 201, 135, 0);
+      transition:
+        border-color var(--motion-fast),
+        color var(--motion-fast),
+        background-color var(--motion-fast),
+        box-shadow var(--motion-fast),
+        transform var(--motion-fast);
     }
 
     .file-document-icon {
@@ -1186,6 +1475,9 @@ function installStyles() {
       stroke-width: 1.55;
       stroke-linecap: round;
       stroke-linejoin: round;
+      transition:
+        color var(--motion-fast),
+        transform var(--motion-fast);
     }
 
     .explorer-file-name {
@@ -1226,12 +1518,22 @@ function installStyles() {
     .explorer-file:hover {
       color: #dde1ea;
       background: rgba(218, 224, 238, 0.052);
+      transform: translateX(2px);
+    }
+
+    .explorer-file:hover .file-document-icon {
+      transform: translateY(-1px);
     }
 
     .explorer-file.is-active {
       border-color: transparent;
       color: #e2e6ee;
       background: var(--accent-soft);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+
+    .explorer-file:active {
+      transform: translateX(1px) scale(0.99);
     }
 
     .editor-surface {
@@ -1240,7 +1542,9 @@ function installStyles() {
       flex: 1 1 auto;
       min-width: 0;
       min-height: 0;
-      background: #18181c;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.014), rgba(0, 0, 0, 0.018)),
+        #18181c;
     }
 
     .editor-tabs {
@@ -1250,7 +1554,9 @@ function installStyles() {
       flex: 0 0 39px;
       min-width: 0;
       border-bottom: 1px solid var(--line);
-      background: #17181c;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.014), transparent),
+        #17181c;
     }
 
     .editor-tab {
@@ -1269,6 +1575,20 @@ function installStyles() {
       text-overflow: ellipsis;
       white-space: nowrap;
       background: #18181c;
+      transition:
+        color var(--motion-fast),
+        background-color var(--motion-fast);
+    }
+
+    .editor-tab::after {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 1px;
+      background: linear-gradient(90deg, var(--accent), rgba(102, 121, 216, 0.78));
+      content: "";
+      opacity: 0.8;
     }
 
     .editor-tab-icon {
@@ -1322,10 +1642,327 @@ function installStyles() {
       min-height: 0;
     }
 
-    #monacoEditor {
+    .editor-workbench {
+      position: relative;
+      display: flex;
       flex: 1 1 auto;
       min-width: 0;
       min-height: 0;
+      overflow: hidden;
+      background:
+        linear-gradient(135deg, rgba(57, 201, 135, 0.035), transparent 34%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(0, 0, 0, 0.02)),
+        #18181c;
+    }
+
+    #monacoEditor {
+      position: absolute;
+      inset: 0;
+      flex: 1 1 auto;
+      min-width: 0;
+      min-height: 0;
+      opacity: 1;
+      transition: opacity var(--motion-med);
+    }
+
+    #monacoEditor.is-start-hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .start-surface {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 38px;
+      overflow: auto;
+      color: #dfe3eb;
+      background:
+        linear-gradient(135deg, rgba(24, 24, 28, 0.96), rgba(20, 21, 25, 0.98)),
+        #18181c;
+    }
+
+    .start-surface.is-visible {
+      display: flex;
+      animation: surfaceIn var(--motion-slow) both;
+    }
+
+    .start-shell {
+      display: grid;
+      grid-template-columns: minmax(240px, 0.82fr) minmax(320px, 1fr);
+      gap: 44px;
+      width: min(860px, 100%);
+      align-items: center;
+    }
+
+    .start-identity {
+      min-width: 0;
+    }
+
+    .start-mark {
+      display: grid;
+      width: 48px;
+      height: 48px;
+      margin-bottom: 20px;
+      place-items: center;
+      border: 1px solid rgba(57, 201, 135, 0.38);
+      border-radius: 10px;
+      color: #0f1714;
+      background: linear-gradient(135deg, #39c987, #89a9ff);
+      box-shadow: 0 18px 46px rgba(57, 201, 135, 0.18);
+      font-size: 20px;
+      font-weight: 800;
+    }
+
+    .start-title {
+      margin: 0;
+      color: #f1f4f8;
+      font-size: 34px;
+      font-weight: 680;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .start-subtitle {
+      max-width: 330px;
+      margin: 14px 0 0;
+      color: #9ca4b4;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .start-project-meta {
+      display: grid;
+      gap: 4px;
+      margin-top: 32px;
+      color: #8f96a5;
+      font-size: 12px;
+    }
+
+    .start-project-meta strong {
+      color: #c8ced9;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .start-project-meta span {
+      overflow: hidden;
+      max-width: 360px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .start-actions-panel {
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .start-action {
+      position: relative;
+      display: grid;
+      grid-template-columns: 42px 1fr auto;
+      gap: 14px;
+      align-items: center;
+      width: 100%;
+      min-height: 76px;
+      padding: 14px 16px;
+      border: 1px solid rgba(218, 224, 238, 0.08);
+      border-radius: 8px;
+      color: #dfe3eb;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.006)),
+        #1d1e24;
+      cursor: pointer;
+      text-align: left;
+      transition:
+        border-color var(--motion-fast),
+        background-color var(--motion-fast),
+        box-shadow var(--motion-med),
+        transform var(--motion-fast);
+    }
+
+    .start-action:hover {
+      border-color: rgba(57, 201, 135, 0.32);
+      background-color: #22242b;
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.23);
+      transform: translateY(-2px);
+    }
+
+    .start-action:active {
+      transform: translateY(0) scale(0.99);
+    }
+
+    .start-action-icon {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      border-radius: 7px;
+      color: var(--accent);
+      background: rgba(57, 201, 135, 0.11);
+    }
+
+    .start-action-primary .start-action-icon {
+      color: #121915;
+      background: linear-gradient(135deg, #39c987, #89a9ff);
+    }
+
+    .start-action-copy {
+      min-width: 0;
+    }
+
+    .start-action-title {
+      display: block;
+      color: #f0f3f8;
+      font-size: 14px;
+      font-weight: 650;
+      line-height: 1.2;
+    }
+
+    .start-action-note {
+      display: block;
+      margin-top: 5px;
+      overflow: hidden;
+      color: #9da5b5;
+      font-size: 12px;
+      line-height: 1.4;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .start-action-arrow {
+      color: #838b9c;
+      transition: transform var(--motion-fast), color var(--motion-fast);
+    }
+
+    .start-action:hover .start-action-arrow {
+      color: #dfe3eb;
+      transform: translateX(3px);
+    }
+
+    .project-dialog {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 26px;
+      background: rgba(6, 7, 10, 0.58);
+      backdrop-filter: blur(14px);
+    }
+
+    .project-dialog.is-open {
+      display: flex;
+      animation: surfaceIn var(--motion-slow) both;
+    }
+
+    .project-dialog-card {
+      width: min(460px, 100%);
+      padding: 20px;
+      border: 1px solid rgba(218, 224, 238, 0.09);
+      border-radius: 9px;
+      background: #1d1e24;
+      box-shadow: var(--shadow-soft);
+    }
+
+    .project-dialog-card h2 {
+      margin: 0 0 16px;
+      color: #f0f3f8;
+      font-size: 18px;
+      font-weight: 680;
+      letter-spacing: 0;
+    }
+
+    .project-field {
+      display: grid;
+      gap: 8px;
+      color: #aeb5c2;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    #newProjectName {
+      height: 36px;
+      padding: 0 11px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      color: #e4e8f0;
+      background: #24262e;
+      font-size: 13px;
+      transition:
+        border-color var(--motion-fast),
+        box-shadow var(--motion-fast),
+        background-color var(--motion-fast);
+    }
+
+    #newProjectName:focus {
+      border-color: rgba(57, 201, 135, 0.42);
+      background: #282a33;
+    }
+
+    .project-dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 9px;
+      margin-top: 20px;
+    }
+
+    .dialog-button {
+      min-width: 86px;
+      height: 32px;
+      padding: 0 13px;
+      border: 1px solid rgba(218, 224, 238, 0.09);
+      border-radius: 6px;
+      color: #cbd1dd;
+      background: #24262d;
+      cursor: pointer;
+      font-size: 12px;
+      transition:
+        border-color var(--motion-fast),
+        background-color var(--motion-fast),
+        transform var(--motion-fast);
+    }
+
+    .dialog-button:hover {
+      border-color: rgba(218, 224, 238, 0.18);
+      background: #2a2d35;
+      transform: translateY(-1px);
+    }
+
+    .dialog-button-primary {
+      border-color: rgba(57, 201, 135, 0.42);
+      color: #101713;
+      background: linear-gradient(135deg, #39c987, #89a9ff);
+      font-weight: 700;
+    }
+
+    @media (max-width: 760px) {
+      .start-surface {
+        align-items: flex-start;
+        padding: 28px 20px;
+      }
+
+      .start-shell {
+        grid-template-columns: 1fr;
+        gap: 26px;
+      }
+
+      .start-title {
+        font-size: 28px;
+      }
+
+      .start-action {
+        grid-template-columns: 38px 1fr;
+      }
+
+      .start-action-arrow {
+        display: none;
+      }
     }
 
     .terminal-panel {
@@ -1334,8 +1971,17 @@ function installStyles() {
       flex-direction: column;
       min-height: 120px;
       border-top: 1px solid var(--line);
-      background: #18181c;
-      transition: flex-basis 140ms ease;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(0, 0, 0, 0.018)),
+        #18181c;
+      transition:
+        flex-basis var(--motion-med),
+        min-height var(--motion-med),
+        opacity var(--motion-med);
+    }
+
+    .editor-surface.is-start-mode .terminal-panel {
+      display: none;
     }
 
     .terminal-panel.is-collapsed {
@@ -1377,18 +2023,46 @@ function installStyles() {
       height: 18px;
       place-items: center;
       border: 0;
+      border-radius: 4px;
       color: inherit;
       background: transparent;
       cursor: pointer;
       -webkit-app-region: no-drag;
+      rotate: 0deg;
+      transition:
+        color var(--motion-fast),
+        background-color var(--motion-fast),
+        transform var(--motion-fast),
+        rotate var(--motion-med);
     }
 
     .terminal-action:hover {
       color: #dde1ea;
+      background: rgba(218, 224, 238, 0.055);
+      transform: translateY(-1px);
     }
 
     .terminal-action.is-active {
       color: #c6cbd8;
+      background: rgba(218, 224, 238, 0.045);
+    }
+
+    #terminalCollapse.is-active {
+      rotate: 180deg;
+    }
+
+    .terminal-action:active {
+      transform: translateY(0) scale(0.94);
+    }
+
+    #terminalCollapse .ui-icon {
+      transform-box: fill-box;
+      transform-origin: center;
+      transition: transform var(--motion-med);
+    }
+
+    #terminalCollapse.is-active .ui-icon {
+      transform: rotate(180deg);
     }
 
     .terminal-empty {
@@ -1398,6 +2072,7 @@ function installStyles() {
       color: #858d9d;
       font-family: "Cascadia Code", "SF Mono", Consolas, monospace;
       text-align: center;
+      animation: surfaceIn var(--motion-slow) both;
     }
 
     .terminal-empty strong {
@@ -1428,7 +2103,9 @@ function installStyles() {
       border: 1px solid var(--line);
       border-top-color: rgba(255, 255, 255, 0.055);
       color: #9fa6b5;
-      background: #17181c;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.014), transparent),
+        #17181c;
       font-size: 11px;
       line-height: var(--status-height);
     }
@@ -1458,10 +2135,26 @@ function installStyles() {
       cursor: pointer;
       font: inherit;
       -webkit-app-region: no-drag;
+      transition:
+        color var(--motion-fast),
+        transform var(--motion-fast);
+    }
+
+    .status-button:hover,
+    .status-button.is-active {
+      color: #cbd0db;
     }
 
     .status-button:hover {
-      color: #cbd0db;
+      transform: translateY(-1px);
+    }
+
+    .status-button:active {
+      transform: translateY(0) scale(0.98);
+    }
+
+    .status-item.is-live {
+      animation: statusFlash 900ms ease-out both;
     }
 
     .status-dot {
@@ -1470,6 +2163,18 @@ function installStyles() {
       border-radius: 999px;
       background: #c74c4c;
       box-shadow: 0 0 8px rgba(199, 76, 76, 0.3);
+      animation: statusPulse 2.4s ease-in-out infinite;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 1ms !important;
+      }
     }
   `;
   document.head.appendChild(style);
@@ -1542,13 +2247,13 @@ function renderWindowBar() {
               <div id="explorerMeta" class="explorer-meta">No files loaded</div>
             </div>
             <div id="explorerActions" class="explorer-actions">
-              <button id="explorerAddFiles" class="explorer-action" type="button" aria-label="Add files" title="Add files">
+              <button id="explorerCreateProject" class="explorer-action" type="button" aria-label="Create new project" title="Create new project">
                 <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 5v14"></path>
                   <path d="M5 12h14"></path>
                 </svg>
               </button>
-              <button id="explorerLoadProject" class="explorer-action" type="button" aria-label="Load project" title="Load project">
+              <button id="explorerUploadProject" class="explorer-action" type="button" aria-label="Upload project" title="Upload project">
                 <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
                   <path d="M3 10h18"></path>
@@ -1562,7 +2267,7 @@ function renderWindowBar() {
                   <path d="M21 20v-5h-5"></path>
                 </svg>
               </button>
-              <button id="explorerMoreActions" class="explorer-action" type="button" aria-label="More explorer actions" title="More actions">
+              <button id="explorerMoreActions" class="explorer-action" type="button" aria-label="More explorer actions" title="More actions" aria-expanded="false">
                 <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M5 12h.01"></path>
                   <path d="M12 12h.01"></path>
@@ -1571,8 +2276,9 @@ function renderWindowBar() {
               </button>
             </div>
             <div id="explorerActionMenu" class="explorer-action-menu" role="menu">
+              <button class="menu-item" type="button" role="menuitem" data-menu-action="create-project">Create new project</button>
+              <button class="menu-item" type="button" role="menuitem" data-menu-action="upload-project">Upload project</button>
               <button class="menu-item" type="button" role="menuitem" data-menu-action="add-files">Add files</button>
-              <button class="menu-item" type="button" role="menuitem" data-menu-action="load-project">Load project</button>
               <button class="menu-item" type="button" role="menuitem" data-menu-action="clear-search">Clear search</button>
             </div>
           </div>
@@ -1607,7 +2313,56 @@ function renderWindowBar() {
             <div id="editorStatus" class="editor-status">Wapi</div>
           </div>
           <div class="editor-body">
-            <div id="monacoEditor"></div>
+            <div class="editor-workbench">
+              <section id="startSurface" class="start-surface" aria-label="Start">
+                <div class="start-shell">
+                  <div class="start-identity">
+                    <div class="start-mark" aria-hidden="true">W</div>
+                    <h1 class="start-title">Wapi</h1>
+                    <p class="start-subtitle">Create a Wapi project or upload an existing folder.</p>
+                    <div class="start-project-meta">
+                      <strong id="startProjectName">No project loaded</strong>
+                      <span id="startProjectPath">Create a Wapi project or upload an existing folder.</span>
+                    </div>
+                  </div>
+                  <div class="start-actions-panel">
+                    <button id="startCreateProject" class="start-action start-action-primary" type="button">
+                      <span class="start-action-icon" aria-hidden="true">
+                        <svg class="ui-icon" viewBox="0 0 24 24">
+                          <path d="M12 5v14"></path>
+                          <path d="M5 12h14"></path>
+                        </svg>
+                      </span>
+                      <span class="start-action-copy">
+                        <span class="start-action-title">Create new project</span>
+                        <span class="start-action-note">Start with main.wapi</span>
+                      </span>
+                      <svg class="start-action-arrow ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M5 12h14"></path>
+                        <path d="m13 6 6 6-6 6"></path>
+                      </svg>
+                    </button>
+                    <button id="startUploadProject" class="start-action" type="button">
+                      <span class="start-action-icon" aria-hidden="true">
+                        <svg class="ui-icon" viewBox="0 0 24 24">
+                          <path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                          <path d="M3 10h18"></path>
+                        </svg>
+                      </span>
+                      <span class="start-action-copy">
+                        <span class="start-action-title">Upload project</span>
+                        <span class="start-action-note">Open a Wapi folder</span>
+                      </span>
+                      <svg class="start-action-arrow ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M5 12h14"></path>
+                        <path d="m13 6 6 6-6 6"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </section>
+              <div id="monacoEditor"></div>
+            </div>
             <section id="terminalPanel" class="terminal-panel" aria-label="Terminals">
               <div class="terminal-header">
                 <span>TERMINALS</span>
@@ -1649,16 +2404,39 @@ function renderWindowBar() {
           <span id="statusInstance" class="status-item">No Instance</span>
         </div>
       </footer>
+      <div id="newProjectDialog" class="project-dialog" aria-hidden="true">
+        <form id="newProjectForm" class="project-dialog-card">
+          <h2>Create a new project</h2>
+          <label class="project-field">
+            <span>Project name</span>
+            <input id="newProjectName" type="text" autocomplete="off" spellcheck="false" value="WapiProject">
+          </label>
+          <div class="project-dialog-actions">
+            <button id="newProjectCancel" class="dialog-button" type="button">Cancel</button>
+            <button class="dialog-button dialog-button-primary" type="submit">Create</button>
+          </div>
+        </form>
+      </div>
     </main>
   `;
 
   document.getElementById("windowMinimize")?.addEventListener("click", () => bridge.window.minimize());
   document.getElementById("windowMaximize")?.addEventListener("click", () => bridge.window.toggleMaximize());
   document.getElementById("windowClose")?.addEventListener("click", () => bridge.window.close());
-  document.getElementById("explorerAddFiles")?.addEventListener("click", addFilesToExplorer);
-  document.getElementById("explorerLoadProject")?.addEventListener("click", loadProjectIntoExplorer);
+  document.getElementById("explorerCreateProject")?.addEventListener("click", () => setProjectDialogOpen(true));
+  document.getElementById("explorerUploadProject")?.addEventListener("click", uploadProjectIntoExplorer);
   document.getElementById("explorerRefresh")?.addEventListener("click", refreshExplorerPanel);
   document.getElementById("explorerMoreActions")?.addEventListener("click", toggleExplorerMenu);
+  document.getElementById("startCreateProject")?.addEventListener("click", () => setProjectDialogOpen(true));
+  document.getElementById("startUploadProject")?.addEventListener("click", uploadProjectIntoExplorer);
+  document.getElementById("newProjectCancel")?.addEventListener("click", () => setProjectDialogOpen(false));
+  document.getElementById("newProjectDialog")?.addEventListener("click", (event) => {
+    if (event.target.id === "newProjectDialog") setProjectDialogOpen(false);
+  });
+  document.getElementById("newProjectForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await createProjectFromDialog();
+  });
   document.querySelectorAll(".activity-button[data-panel]").forEach((button) => {
     button.addEventListener("click", () => setActivePanel(button.dataset.panel));
   });
@@ -1670,8 +2448,9 @@ function renderWindowBar() {
     const item = event.target.closest("[data-menu-action]");
     if (!item) return;
     uiState.menuOpen = false;
+    if (item.dataset.menuAction === "create-project") setProjectDialogOpen(true);
+    if (item.dataset.menuAction === "upload-project") await uploadProjectIntoExplorer();
     if (item.dataset.menuAction === "add-files") await addFilesToExplorer();
-    if (item.dataset.menuAction === "load-project") await loadProjectIntoExplorer();
     if (item.dataset.menuAction === "clear-search") {
       explorerState.searchQuery = "";
       renderSolutionExplorer();

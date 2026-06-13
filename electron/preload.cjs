@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("wapi", {
   execute: (payload) => ipcRenderer.invoke("wapi:execute", payload),
   locate: () => ipcRenderer.invoke("wapi:locate"),
   addFiles: () => ipcRenderer.invoke("wapi:addFiles"),
+  createProject: (payload) => ipcRenderer.invoke("wapi:createProject", payload),
   loadProject: () => ipcRenderer.invoke("wapi:loadProject"),
   openFile: () => ipcRenderer.invoke("wapi:openFile"),
   saveFile: (payload) => ipcRenderer.invoke("wapi:saveFile", payload),
