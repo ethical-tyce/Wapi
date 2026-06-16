@@ -15,6 +15,7 @@
     "vite": "^6.0.7"
   },
   "dependencies": {
+    "lucide": "^1.18.0",
     "monaco-editor": "^0.55.1"
   }
 }

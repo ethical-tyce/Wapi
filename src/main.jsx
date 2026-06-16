@@ -1,12 +1,48 @@
 import wapiIconUrl from "../wapi.png";
 import bannerIconUrl from "../banner icon.png";
 import evaluatorSource from "../evaluator.cpp?raw";
+import {
+  ArrowRight,
+  Braces,
+  ChevronRight,
+  Ellipsis,
+  FileCode,
+  FileText,
+  Folder,
+  FolderOpen,
+  ListTree,
+  Maximize2,
+  Minus,
+  PanelLeft,
+  Play,
+  Plus,
+  Save,
+  SaveAll,
+  Search,
+  Settings,
+  SquareCheck,
+  Terminal,
+  Upload,
+  X
+} from "lucide";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 
 self.MonacoEnvironment = {
   getWorker: () => new editorWorker()
 };
+
+function attrsString(attrs = {}) {
+  return Object.entries(attrs)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([key, value]) => `${key}="${String(value)}"`)
+    .join(" ");
+}
+
+function iconSvg(node, className = "ui-icon") {
+  const children = node.map(([tag, attrs]) => `<${tag} ${attrsString(attrs)}></${tag}>`).join("");
+  return `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true">${children}</svg>`;
+}
 
 const bridge = window.wapi ?? {
   execute: async (payload = {}) => ({
@@ -108,10 +144,10 @@ function parseEvaluatorFunctionRegistry(source) {
     ? source
     : source.slice(registryStart, registryEnd);
   const methods = parseEvaluatorMethodParams(source);
-  const entryPattern = /\{\s*"([a-zA-Z_]\w*)"\s*,\s*\{\s*(\d+)\s*,\s*"([^"]+)"\s*,\s*(true|false)\s*,/g;
+  const entryPattern = /\{\s*"([a-zA-Z_][\w.]*)"\s*,\s*\{\s*(\d+)\s*,\s*"([^"]+)"\s*,\s*(true|false)\s*,/g;
   const entries = [...registrySource.matchAll(entryPattern)];
 
-  return entries.map((entry, index) => {
+  const functions = entries.map((entry, index) => {
     const nextEntry = entries[index + 1];
     const body = registrySource.slice(entry.index, nextEntry?.index ?? registrySource.length);
     const methodName = body.match(/evaluator\.(wapi_[a-zA-Z_]\w*)\s*\(/)?.[1] ?? "";
@@ -125,7 +161,19 @@ function parseEvaluatorFunctionRegistry(source) {
       requiresInjectionFlag: entry[4] === "true",
       params: params.length === argCount ? params : genericParams(argCount)
     };
-  }).sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  const byName = new Map(functions.map((fn) => [fn.name, fn]));
+  const aliasPattern = /\{\s*"([a-zA-Z_][\w.]*)"\s*,\s*"([a-zA-Z_]\w*)"\s*\}/g;
+  for (const alias of registrySource.matchAll(aliasPattern)) {
+    const target = byName.get(alias[2]);
+    if (!target || byName.has(alias[1])) continue;
+    const aliasFn = { ...target, name: alias[1] };
+    functions.push(aliasFn);
+    byName.set(aliasFn.name, aliasFn);
+  }
+
+  return functions.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 const wapiRuntimeFunctions = parseEvaluatorFunctionRegistry(evaluatorSource);
@@ -781,7 +829,7 @@ function installMonacoLanguage() {
         endLineNumber: position.lineNumber,
         endColumn: position.column
       });
-      const match = [...linePrefix.matchAll(/([a-zA-Z_]\w*)\s*\(([^()]*)$/g)].pop();
+      const match = [...linePrefix.matchAll(/([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\(([^()]*)$/g)].pop();
       const fn = match ? wapiRuntimeFunctionMap.get(match[1]) : null;
       if (!fn) return null;
       const activeParameter = match[2].trim() ? Math.min(match[2].split(",").length - 1, Math.max(fn.params.length - 1, 0)) : 0;
@@ -908,7 +956,7 @@ function updateStatusLine() {
   const statusLanguage = document.getElementById("statusLanguage");
   const editorStatus = document.getElementById("editorStatus");
   if (statusFile) {
-    statusFile.textContent = file ? `</> ${file.relativePath}${isDirty(file) ? " *" : ""}` : "</> Welcome";
+    statusFile.textContent = file ? `${file.relativePath}${isDirty(file) ? " *" : ""}` : "Welcome";
     statusFile.title = file?.relativePath ?? "Welcome";
   }
   if (statusLanguage) statusLanguage.textContent = displayLanguage;
@@ -935,13 +983,10 @@ function renderDocumentTabs() {
     tab.dataset.tabFile = file.id;
     tab.title = file.relativePath;
     tab.innerHTML = `
-      <svg class="ui-icon tab-file-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M7 3h7l5 5v13H7z"></path>
-        <path d="M14 3v5h5"></path>
-      </svg>
+      ${iconSvg(fileExtension(file.name) === ".wapi" ? FileCode : FileText, "ui-icon tab-file-icon")}
       <span class="document-tab-name"></span>
       <span class="dirty-dot" aria-hidden="true"></span>
-      <span class="tab-close" data-close-tab="${file.id}" aria-label="Close tab">x</span>
+      <span class="tab-close" data-close-tab="${file.id}" aria-label="Close tab">${iconSvg(X)}</span>
     `;
     tab.querySelector(".document-tab-name").textContent = file.name;
     tabs.appendChild(tab);
@@ -959,8 +1004,8 @@ function renderProjectTreeNode(parent, node, depth = 0) {
     button.dataset.folderPath = folder.path;
     button.style.setProperty("--depth", depth);
     button.innerHTML = `
-      <svg class="ui-icon chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg>
-      <svg class="ui-icon folder-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v10.5A2.5 2.5 0 0 1 18.5 21h-13A2.5 2.5 0 0 1 3 18.5z"></path></svg>
+      ${iconSvg(ChevronRight, "ui-icon chevron")}
+      ${iconSvg(collapsed ? Folder : FolderOpen, "ui-icon folder-icon")}
       <span class="tree-label"></span>
       <span class="dirty-dot" aria-hidden="true"></span>
     `;
@@ -979,11 +1024,7 @@ function renderProjectTreeNode(parent, node, depth = 0) {
     row.title = file.relativePath;
     row.innerHTML = `
       <span class="tree-spacer" aria-hidden="true"></span>
-      <svg class="ui-icon file-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M7 3h7l5 5v13H7z"></path>
-        <path d="M14 3v5h5"></path>
-        <path d="M10 13h6"></path>
-      </svg>
+      ${iconSvg(fileExtension(file.name) === ".wapi" ? FileCode : FileText, "ui-icon file-icon")}
       <span class="tree-label"></span>
       <span class="dirty-dot" aria-hidden="true"></span>
     `;
@@ -2604,6 +2645,644 @@ function installStyles() {
       }
     }
   `;
+  style.textContent += `
+    :root {
+      color-scheme: dark;
+      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+      --chrome-height: 34px;
+      --status-height: 22px;
+      --activity-width: 48px;
+      --side-width: 292px;
+      --tool-height: 196px;
+      --accent: #007acc;
+      --accent-blue: #007acc;
+      --danger: #f48771;
+      --warning: #cca700;
+      --bg: #1e1e1e;
+      --panel: #252526;
+      --panel-2: #2d2d30;
+      --panel-3: #333333;
+      --line: #3c3c3c;
+      --line-strong: #464647;
+      --text: #cccccc;
+      --text-soft: #c5c5c5;
+      --text-muted: #858585;
+      --shadow: 0 8px 18px rgba(0, 0, 0, .32);
+      --focus: 0 0 0 1px #007acc;
+      --fast: 80ms ease;
+      --med: 100ms ease;
+      --slow: 120ms ease;
+    }
+
+    * { letter-spacing: 0 !important; }
+    body { background: #1e1e1e; }
+    button, input, select, textarea { font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif; }
+    .app-shell, .workspace, .editor-workbench, .start-surface {
+      background: #1e1e1e !important;
+    }
+    #windowChrome {
+      grid-template-columns: 240px 1fr 138px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: #323233;
+    }
+    #windowBannerFrame {
+      width: 82px;
+      height: 20px;
+      margin-left: 10px;
+    }
+    #windowBannerIcon {
+      top: -6px;
+      height: 32px;
+      opacity: .9;
+    }
+    #windowAppTitle {
+      justify-self: center;
+      color: #cccccc;
+      font-size: 12px;
+      font-weight: 400;
+    }
+    #windowButtons {
+      height: 100%;
+      gap: 0;
+      padding-right: 0;
+    }
+    .window-btn {
+      width: 46px;
+      height: 100%;
+      border-radius: 0;
+      color: #cccccc;
+    }
+    .window-btn:hover {
+      color: #ffffff;
+      background: #3e3e42;
+      transform: none;
+    }
+    .window-btn-close:hover { background: #c42b1c; }
+    .window-btn:active, .icon-button:active, .toolbar-button:active, .tool-action:active, .start-action:active {
+      transform: none;
+    }
+    .window-icon, .window-btn .ui-icon {
+      position: static;
+      width: 13px;
+      height: 13px;
+      margin: auto;
+      transform: none;
+    }
+    .window-icon::before, .window-icon::after { display: none; }
+
+    .activity-bar {
+      gap: 0;
+      padding: 0;
+      border-right: 1px solid var(--line);
+      background: #333333;
+    }
+    .activity-button {
+      width: 48px;
+      height: 48px;
+      margin: 0;
+      border-radius: 0;
+      color: #c5c5c5;
+      transition: background var(--fast), color var(--fast);
+    }
+    .activity-button::before {
+      left: 0;
+      width: 2px;
+      height: 100%;
+      border-radius: 0;
+      background: #ffffff;
+      transform: translateY(-50%);
+    }
+    .activity-button:hover {
+      color: #ffffff;
+      background: #3e3e42;
+      transform: none;
+    }
+    .activity-button.is-active {
+      color: #ffffff;
+      background: #2d2d30;
+      box-shadow: none;
+    }
+    .activity-button .ui-icon {
+      width: 22px;
+      height: 22px;
+      stroke-width: 1.8;
+    }
+    button:hover > .ui-icon, .start-action:hover .start-action-arrow {
+      transform: none;
+    }
+
+    .ui-icon {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 auto;
+      stroke-width: 1.8;
+    }
+    .side-panel {
+      border-right: 1px solid var(--line);
+      background: #252526;
+    }
+    .side-topbar {
+      min-height: 35px;
+      padding: 0 8px 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: #252526;
+    }
+    .side-title {
+      color: #cccccc;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .side-meta {
+      display: none;
+    }
+    .side-actions { gap: 0; }
+    .icon-button {
+      width: 26px;
+      height: 26px;
+      border-radius: 2px;
+      color: #c5c5c5;
+    }
+    .icon-button:hover, .toolbar-button:hover, .tool-action:hover {
+      color: #ffffff;
+      border-color: transparent;
+      background: #37373d;
+      transform: none;
+      box-shadow: none;
+    }
+    .side-action-menu {
+      top: 31px;
+      right: 8px;
+      width: 174px;
+      padding: 2px;
+      border-color: var(--line-strong);
+      border-radius: 2px;
+      background: #252526;
+    }
+    .side-action-menu.is-open { animation: none; }
+    .menu-item {
+      min-height: 26px;
+      border-radius: 0;
+      color: #cccccc;
+      font-size: 12px;
+    }
+    .menu-item:hover {
+      color: #ffffff;
+      background: #094771;
+      padding-left: 6px;
+    }
+    .side-searchbar {
+      padding: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .side-searchbar input, .runtime-controls select, .runtime-controls input[type="text"],
+    .settings-field select, .settings-field textarea, #newProjectName,
+    .terminal-input-row input {
+      border: 1px solid #3c3c3c;
+      border-radius: 2px;
+      color: #cccccc;
+      background: #1e1e1e;
+      font-size: 12px;
+      box-shadow: none;
+    }
+    .side-searchbar input:focus, .runtime-controls select:focus, .runtime-controls input[type="text"]:focus,
+    .settings-field select:focus, .settings-field textarea:focus, #newProjectName:focus,
+    .terminal-input-row input:focus {
+      border-color: #007acc;
+      background: #1e1e1e;
+    }
+    .side-searchbar input { height: 28px; padding-left: 30px; }
+    .side-content {
+      padding: 6px 0 10px;
+      scrollbar-color: #5a5a5a transparent;
+    }
+    .tree-row {
+      grid-template-columns: 14px 16px minmax(0, 1fr) 10px;
+      gap: 5px;
+      min-height: 24px;
+      padding: 0 8px 0 calc(8px + var(--depth) * 14px);
+      border: 0;
+      border-radius: 0;
+      color: #cccccc;
+      font-size: 12px;
+      animation: none;
+      transition: background var(--fast), color var(--fast);
+    }
+    .tree-row:hover, .search-result:hover, .function-row:hover, .outline-row:hover, .problem-row:hover, .recent-project:hover {
+      color: #ffffff;
+      background: #2a2d2e;
+      transform: none;
+    }
+    .tree-row.is-active {
+      color: #ffffff;
+      background: #37373d;
+      box-shadow: inset 2px 0 0 #007acc;
+    }
+    .tree-folder .chevron {
+      width: 14px;
+      height: 14px;
+    }
+    .dirty-dot {
+      width: 7px;
+      height: 7px;
+      background: #ffffff;
+      box-shadow: none;
+    }
+    .panel-empty, .tool-empty {
+      padding: 10px 12px;
+      color: #858585;
+      font-size: 12px;
+      animation: none;
+    }
+    .panel-empty strong {
+      color: #cccccc;
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    .search-result, .function-row, .outline-row, .problem-row, .recent-project {
+      min-height: 34px;
+      padding: 6px 12px;
+      border: 0;
+      border-radius: 0;
+      color: #cccccc;
+      font-size: 12px;
+      animation: none;
+    }
+    .search-result strong, .function-row strong, .outline-row strong, .recent-project strong {
+      color: #cccccc;
+      font-weight: 600;
+    }
+    .side-section + .side-section { margin-top: 8px; }
+    .side-section-title {
+      margin: 10px 12px 4px;
+      color: #858585;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .outline-kind {
+      height: 18px;
+      border-radius: 2px;
+      color: #ffffff;
+      background: #007acc;
+      font-size: 10px;
+    }
+    .settings-section {
+      gap: 10px;
+      padding: 10px 12px 16px;
+      animation: none;
+    }
+    .settings-field, .settings-toggle {
+      gap: 6px;
+      color: #cccccc;
+      font-size: 12px;
+      font-weight: 400;
+    }
+    .capability-cloud { gap: 4px; }
+    .capability-chip {
+      min-height: 22px;
+      border-color: #3c3c3c;
+      border-radius: 2px;
+      color: #cccccc;
+      background: #2d2d30;
+      font-size: 11px;
+    }
+    .capability-chip:hover, .capability-chip.is-active {
+      color: #ffffff;
+      border-color: #007acc;
+      background: #094771;
+      transform: none;
+    }
+
+    .editor-surface {
+      grid-template-rows: 34px 35px 1fr var(--tool-height);
+      background: #1e1e1e;
+    }
+    .menu-strip {
+      gap: 2px;
+      padding: 0 8px;
+      border-bottom: 1px solid var(--line);
+      background: #2d2d30;
+    }
+    .menu-strip-label {
+      min-width: 46px;
+      margin-right: 6px;
+      color: #cccccc;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .toolbar-button, .tool-action, .dialog-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 26px;
+      padding: 0 8px;
+      border: 1px solid transparent;
+      border-radius: 2px;
+      color: #cccccc;
+      background: transparent;
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 1;
+    }
+    .toolbar-button-primary, .tool-action-primary, .dialog-button-primary {
+      color: #ffffff;
+      border-color: #0e639c;
+      background: #0e639c;
+      font-weight: 400;
+    }
+    .toolbar-button-primary:hover, .tool-action-primary:hover, .dialog-button-primary:hover {
+      background: #1177bb;
+    }
+    .toolbar-separator {
+      height: 20px;
+      margin: 0 6px;
+      background: #3c3c3c;
+    }
+    .runtime-controls {
+      gap: 8px;
+      color: #cccccc;
+      font-size: 12px;
+    }
+    .runtime-controls select { width: 78px; height: 26px; }
+    .runtime-controls input[type="text"] { height: 26px; width: min(320px, 24vw); }
+    .runtime-toggle { gap: 5px; }
+
+    .document-tabs {
+      border-bottom: 1px solid var(--line);
+      background: #252526;
+    }
+    .document-tab {
+      grid-template-columns: 16px minmax(56px, 1fr) 8px 18px;
+      gap: 7px;
+      min-width: 132px;
+      max-width: 230px;
+      height: 34px;
+      padding: 0 8px;
+      border-right: 1px solid #1e1e1e;
+      color: #cccccc;
+      background: #2d2d30;
+      font-size: 12px;
+      transition: background var(--fast), color var(--fast);
+    }
+    .document-tab:hover {
+      color: #ffffff;
+      background: #333337;
+    }
+    .document-tab.is-active {
+      color: #ffffff;
+      background: #1e1e1e;
+      box-shadow: inset 0 1px 0 #007acc;
+    }
+    .tab-close {
+      width: 18px;
+      height: 18px;
+      border-radius: 2px;
+      font-size: 0;
+    }
+    .tab-close .ui-icon {
+      width: 13px;
+      height: 13px;
+    }
+    .tab-close:hover { background: #3e3e42; }
+
+    #monacoEditor { transition: none; }
+    .start-surface {
+      align-items: flex-start;
+      justify-content: flex-start;
+      padding: 36px 48px;
+      background: #1e1e1e !important;
+    }
+    .start-surface.is-visible { animation: none; }
+    .start-shell {
+      grid-template-columns: minmax(260px, 360px) minmax(300px, 460px);
+      gap: 36px;
+      width: min(900px, 100%);
+    }
+    .start-mark {
+      display: none;
+    }
+    .start-title {
+      margin: 0 0 10px;
+      color: #ffffff;
+      font-size: 28px;
+      font-weight: 400;
+      line-height: 1.2;
+    }
+    .start-subtitle {
+      max-width: 520px;
+      margin: 0 0 28px;
+      color: #cccccc;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .recent-title {
+      color: #858585;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .start-actions-panel {
+      gap: 8px;
+      align-self: start;
+      padding-top: 4px;
+    }
+    .start-action {
+      grid-template-columns: 28px 1fr 18px;
+      gap: 10px;
+      min-height: 58px;
+      padding: 8px 10px;
+      border: 1px solid #3c3c3c;
+      border-radius: 2px;
+      color: #cccccc;
+      background: #252526;
+      box-shadow: none;
+      animation: none;
+    }
+    .start-action:hover {
+      border-color: #007acc;
+      color: #ffffff;
+      background: #2a2d2e;
+      transform: none;
+      box-shadow: none;
+    }
+    .start-action-primary {
+      border-color: #007acc;
+      background: #252526;
+    }
+    .start-action-icon {
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: 2px;
+      color: #cccccc;
+      background: #333333;
+    }
+    .start-action-primary .start-action-icon {
+      color: #ffffff;
+      background: #0e639c;
+    }
+    .start-action-title {
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .start-action-note {
+      color: #858585;
+      font-size: 12px;
+    }
+
+    .tool-window {
+      grid-template-rows: 30px 1fr;
+      border-top: 1px solid var(--line);
+      background: #1e1e1e;
+    }
+    .tool-tabs {
+      gap: 0;
+      padding: 0;
+      border-bottom: 1px solid var(--line);
+      background: #252526;
+    }
+    .tool-tab {
+      min-width: 92px;
+      height: 30px;
+      padding: 0 12px;
+      border: 0;
+      border-right: 1px solid #1e1e1e;
+      border-radius: 0;
+      color: #cccccc;
+      background: #2d2d30;
+      font-size: 12px;
+    }
+    .tool-tab:hover, .tool-tab.is-active {
+      color: #ffffff;
+      background: #1e1e1e;
+      box-shadow: inset 0 1px 0 #007acc;
+    }
+    .tool-body {
+      padding: 6px 8px;
+      background: #1e1e1e;
+      font-size: 12px;
+    }
+    .log-line {
+      grid-template-columns: 70px minmax(0, 1fr);
+      min-height: 20px;
+      padding: 0 2px;
+      color: #cccccc;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+    }
+    .log-time { color: #858585; }
+    .problem-row {
+      grid-template-columns: 64px minmax(0, 1fr) auto;
+      min-height: 28px;
+      padding: 4px 6px;
+    }
+    .problem-severity {
+      border-radius: 2px;
+      color: #ffffff;
+      background: #a1260d;
+      font-size: 10px;
+    }
+    .terminal-tool { grid-template-rows: 1fr 32px; }
+    .terminal-input-row {
+      gap: 6px;
+      padding-top: 5px;
+      border-top: 1px solid #2d2d30;
+    }
+    .terminal-input-row input { height: 26px; }
+
+    .status-bar {
+      padding: 0 8px;
+      border: 0;
+      color: #ffffff;
+      background: #007acc;
+      font-size: 12px;
+    }
+    .status-left, .status-right { gap: 12px; }
+    .status-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 100%;
+      color: #ffffff;
+    }
+    .status-button .ui-icon {
+      width: 14px;
+      height: 14px;
+    }
+    .status-button:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, .14);
+      transform: none;
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      background: #ffffff;
+      box-shadow: none;
+    }
+
+    .project-dialog {
+      background: rgba(0, 0, 0, .46);
+      backdrop-filter: none;
+    }
+    .project-dialog.is-open { animation: none; }
+    .project-dialog-card {
+      padding: 18px;
+      border: 1px solid #454545;
+      border-radius: 2px;
+      background: #252526;
+      box-shadow: var(--shadow);
+    }
+    .project-dialog-card h2 {
+      color: #ffffff;
+      font-size: 18px;
+      font-weight: 400;
+    }
+    .project-field {
+      color: #cccccc;
+      font-size: 12px;
+      font-weight: 400;
+    }
+    .template-picker { gap: 8px; }
+    .template-card {
+      min-height: 84px;
+      padding: 10px;
+      border-color: #3c3c3c;
+      border-radius: 2px;
+      color: #cccccc;
+      background: #2d2d30;
+      box-shadow: none;
+    }
+    .template-card:hover, .template-card.is-active {
+      border-color: #007acc;
+      background: #333337;
+      transform: none;
+    }
+    .template-card.is-active { box-shadow: inset 0 0 0 1px #007acc; }
+    .template-card strong { color: #ffffff; font-size: 13px; }
+    .template-card span { color: #a0a0a0; font-size: 12px; }
+    .dialog-button:hover {
+      border-color: transparent;
+      background: #3e3e42;
+      transform: none;
+    }
+
+    @media (max-width: 980px) {
+      :root { --side-width: 250px; --activity-width: 48px; --tool-height: 176px; }
+      .start-shell { grid-template-columns: 1fr; gap: 24px; }
+    }
+    @media (max-width: 760px) {
+      .workspace { grid-template-columns: var(--activity-width) 1fr; }
+      .editor-surface { grid-template-rows: auto 35px 1fr var(--tool-height); }
+      .menu-strip { min-height: 64px; padding-block: 5px; }
+      .runtime-controls { width: 100%; margin-left: 0; }
+      .start-surface { padding: 24px; }
+    }
+  `;
   document.head.appendChild(style);
 }
 
@@ -2615,28 +3294,28 @@ function renderWindowBar() {
         <div id="windowBannerFrame"><img id="windowBannerIcon" src="${bannerIconUrl}" alt="Wapi"></div>
         <div id="windowAppTitle">Wapi IDE</div>
         <div id="windowButtons">
-          <button id="windowMinimize" class="window-btn" type="button" aria-label="Minimize"><span class="window-icon window-icon-min"></span></button>
-          <button id="windowMaximize" class="window-btn" type="button" aria-label="Maximize"><span class="window-icon window-icon-max"></span></button>
-          <button id="windowClose" class="window-btn window-btn-close" type="button" aria-label="Close"><span class="window-icon window-icon-close"></span></button>
+          <button id="windowMinimize" class="window-btn" type="button" aria-label="Minimize">${iconSvg(Minus, "ui-icon window-icon")}</button>
+          <button id="windowMaximize" class="window-btn" type="button" aria-label="Maximize">${iconSvg(Maximize2, "ui-icon window-icon")}</button>
+          <button id="windowClose" class="window-btn window-btn-close" type="button" aria-label="Close">${iconSvg(X, "ui-icon window-icon")}</button>
         </div>
       </header>
       <section class="workspace" aria-label="Wapi IDE workspace">
         <nav class="activity-bar" aria-label="Primary navigation">
           <button class="activity-button is-active" type="button" title="Explorer" data-panel="explorer">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8l4 4v13H8z"></path><path d="M4 7h8l4 4v10H4z"></path></svg>
+            ${iconSvg(PanelLeft)}
           </button>
           <button class="activity-button" type="button" title="Search" data-panel="search">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 5 5"></path></svg>
+            ${iconSvg(Search)}
           </button>
           <button class="activity-button" type="button" title="Functions" data-panel="functions">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8"></path><path d="M8 20h8"></path><path d="M12 4c-3 4-3 12 0 16"></path><path d="M12 4c3 4 3 12 0 16"></path></svg>
+            ${iconSvg(Braces)}
           </button>
           <button class="activity-button" type="button" title="Outline" data-panel="outline">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path></svg>
+            ${iconSvg(ListTree)}
           </button>
           <div class="activity-spacer" aria-hidden="true"></div>
           <button class="activity-button" type="button" title="Project settings" data-panel="settings">
-            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2.15 2.15 0 0 1-3.04 3.04l-.06-.06a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.65v.09a2.15 2.15 0 0 1-4.3 0v-.09a1.8 1.8 0 0 0-1.08-1.65 1.8 1.8 0 0 0-1.98.36l-.06.06a2.15 2.15 0 1 1-3.04-3.04l.06-.06A1.8 1.8 0 0 0 3.6 15a1.8 1.8 0 0 0-1.65-1.08h-.09a2.15 2.15 0 0 1 0-4.3h.09A1.8 1.8 0 0 0 3.6 8.54a1.8 1.8 0 0 0-.36-1.98l-.06-.06A2.15 2.15 0 1 1 6.22 3.46l.06.06a1.8 1.8 0 0 0 1.98.36 1.8 1.8 0 0 0 1.08-1.65V2.14a2.15 2.15 0 0 1 4.3 0v.09a1.8 1.8 0 0 0 1.08 1.65 1.8 1.8 0 0 0 1.98-.36l.06-.06a2.15 2.15 0 1 1 3.04 3.04l-.06.06a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.08h.09a2.15 2.15 0 0 1 0 4.3h-.09A1.8 1.8 0 0 0 19.4 15Z"></path></svg>
+            ${iconSvg(Settings)}
           </button>
         </nav>
         <aside class="side-panel" aria-label="Side panel">
@@ -2646,9 +3325,9 @@ function renderWindowBar() {
               <div id="sideMeta" class="side-meta">No project loaded</div>
             </div>
             <div id="sideActions" class="side-actions">
-              <button id="sideCreateProject" class="icon-button" type="button" title="Create project"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg></button>
-              <button id="sideUploadProject" class="icon-button" type="button" title="Upload project"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><path d="M3 10h18"></path></svg></button>
-              <button id="sideMoreActions" class="icon-button" type="button" title="More actions"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M5 12h.01"></path><path d="M12 12h.01"></path><path d="M19 12h.01"></path></svg></button>
+              <button id="sideCreateProject" class="icon-button" type="button" title="Create project">${iconSvg(Plus)}</button>
+              <button id="sideUploadProject" class="icon-button" type="button" title="Upload project">${iconSvg(Upload)}</button>
+              <button id="sideMoreActions" class="icon-button" type="button" title="More actions">${iconSvg(Ellipsis)}</button>
             </div>
             <div id="sideActionMenu" class="side-action-menu" role="menu">
               <button class="menu-item" type="button" data-menu-action="create-project">Create new project</button>
@@ -2660,7 +3339,7 @@ function renderWindowBar() {
           </div>
           <div id="sideSearchbar" class="side-searchbar">
             <div class="search-wrap">
-              <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 5 5"></path></svg>
+              ${iconSvg(Search)}
               <input id="sideSearch" type="search" spellcheck="false" autocomplete="off" placeholder="Filter files">
             </div>
           </div>
@@ -2669,12 +3348,12 @@ function renderWindowBar() {
         <section class="editor-surface" aria-label="Editor">
           <div class="menu-strip">
             <span class="menu-strip-label">Wapi</span>
-            <button id="toolbarSave" class="toolbar-button" type="button">Save</button>
+            <button id="toolbarSave" class="toolbar-button" type="button">${iconSvg(Save)}<span>Save</span></button>
             <button id="toolbarSaveAs" class="toolbar-button" type="button">Save As</button>
-            <button id="toolbarSaveAll" class="toolbar-button" type="button">Save All</button>
+            <button id="toolbarSaveAll" class="toolbar-button" type="button">${iconSvg(SaveAll)}<span>Save All</span></button>
             <span class="toolbar-separator"></span>
-            <button id="toolbarCheck" class="toolbar-button toolbar-button-primary" type="button">Check</button>
-            <button id="toolbarRun" class="toolbar-button" type="button">Run</button>
+            <button id="toolbarCheck" class="toolbar-button toolbar-button-primary" type="button">${iconSvg(SquareCheck)}<span>Check</span></button>
+            <button id="toolbarRun" class="toolbar-button" type="button">${iconSvg(Play)}<span>Run</span></button>
             <div class="runtime-controls" aria-label="Runtime controls">
               <select id="runtimeMode" title="Runtime mode">
                 <option value="safe">Safe</option>
@@ -2699,14 +3378,14 @@ function renderWindowBar() {
                 </div>
                 <div class="start-actions-panel">
                   <button id="startCreateProject" class="start-action start-action-primary" type="button">
-                    <span class="start-action-icon"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg></span>
+                    <span class="start-action-icon">${iconSvg(Plus)}</span>
                     <span><span class="start-action-title">Create new project</span><span class="start-action-note">Choose Empty, Process Inspector, or Memory Sandbox</span></span>
-                    <svg class="ui-icon start-action-arrow" viewBox="0 0 24 24"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>
+                    ${iconSvg(ArrowRight, "ui-icon start-action-arrow")}
                   </button>
                   <button id="startUploadProject" class="start-action" type="button">
-                    <span class="start-action-icon"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><path d="M3 10h18"></path></svg></span>
+                    <span class="start-action-icon">${iconSvg(Upload)}</span>
                     <span><span class="start-action-title">Upload project</span><span class="start-action-note">Open an existing Wapi folder</span></span>
-                    <svg class="ui-icon start-action-arrow" viewBox="0 0 24 24"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>
+                    ${iconSvg(ArrowRight, "ui-icon start-action-arrow")}
                   </button>
                 </div>
               </div>
@@ -2726,7 +3405,7 @@ function renderWindowBar() {
       </section>
       <footer class="status-bar">
         <div class="status-left">
-          <span id="statusFile" class="status-item">&lt;/&gt; Welcome</span>
+          <span id="statusFile" class="status-item">Welcome</span>
           <span id="statusDirty" class="status-item">Saved</span>
         </div>
         <div class="status-right">
@@ -2734,7 +3413,7 @@ function renderWindowBar() {
           <span class="status-item">Spaces: 4</span>
           <span class="status-item">UTF-8</span>
           <span id="statusLanguage" class="status-item">Wapi</span>
-          <button id="statusTerminal" class="status-button" type="button">Terminal</button>
+          <button id="statusTerminal" class="status-button" type="button">${iconSvg(Terminal)}<span>Terminal</span></button>
           <span class="status-dot" aria-hidden="true"></span>
           <span id="statusInstance" class="status-item">Ready</span>
         </div>

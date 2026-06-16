@@ -2,7 +2,7 @@
 
 Wapi is a C++ command-line language/runtime for controlled Windows API scripting.
 
-It gives you a small custom language (`int` variables + function calls) that can:
+It gives you a small custom language with variables, expressions, blocks, loops, and Windows API runtime calls that can:
 - inspect processes,
 - open process handles,
 - read/write/allocate/free memory,
@@ -30,16 +30,34 @@ This repository is an early version (`v0.01`) with:
 
 The language currently supports:
 - variable declarations (for example `int pid = findProcessPID("notepad")`),
-- string/int/hex literals,
-- function calls as statements and expressions.
+- assignment (for example `pid = pid + 1`),
+- string/int/hex/bool literals,
+- arithmetic and comparison expressions,
+- `if`/`else` blocks,
+- `while` loops,
+- function calls as statements and expressions,
+- namespaced aliases such as `proc.find(...)`, `proc.open(...)`, and `mem.read(...)`.
 
 Example script:
 
 ```txt
 int pid = findProcessPID("notepad")
-int handle = openProcess(pid)
-suspendProcess(handle)
-resumeProcess(handle)
+if pid != 0 {
+    long handle = proc.open(pid)
+    proc.suspend(handle)
+    proc.resume(handle)
+    proc.close(handle)
+}
+```
+
+Semicolons are optional, so this also works:
+
+```txt
+int i = 0;
+while i < 3 {
+    print("loop=" + i);
+    i = i + 1;
+}
 ```
 
 ## CLI Usage
@@ -76,24 +94,42 @@ Audit lines are emitted as `[WAPI_AUDIT] ...`.
 
 ### Process
 - `listProcesses()`
+- `proc.list()`
 - `findProcessPID(name)`
+- `proc.find(name)`
 - `openProcess(pid)`
+- `proc.open(pid)`
 - `terminateProcess(handle)`
+- `proc.terminate(handle)`
 - `suspendProcess(handle)`
+- `proc.suspend(handle)`
 - `resumeProcess(handle)`
+- `proc.resume(handle)`
+- `closeProcess(handle)`
+- `proc.close(handle)`
 
 ### Memory
 - `readMemory(handle, address)`
+- `mem.read(handle, address)`
 - `writeMemory(handle, address, value)`
+- `mem.write(handle, address, value)`
 - `allocMemory(handle, size)`
+- `mem.alloc(handle, size)`
 - `freeMemory(handle, address)`
+- `mem.free(handle, address)`
+
+### Runtime
+- `print(value)`
 
 ### Window
 - `findWindow(windowTitle)`
+- `window.find(windowTitle)`
 
 ### Injection
 - `injectDLL(pid, dllPath)`
+- `inject.dll(pid, dllPath)`
 - `testInjectDLL(pid)` (loads `TestDLL.dll` next to the built executable)
+- `inject.test(pid)`
 
 ## Build (Visual Studio)
 

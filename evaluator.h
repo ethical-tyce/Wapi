@@ -44,10 +44,15 @@ private:
 
     WapiValue evalNode(std::shared_ptr<ASTNode> node);
     WapiValue evalFunctionCall(std::shared_ptr<FunctionCall> call);
+    WapiValue evalUnaryExpression(const UnaryExpression& expr);
+    WapiValue evalBinaryExpression(const BinaryExpression& expr);
 
     void checkArgCount(const std::shared_ptr<FunctionCall>& call, size_t expected);
     std::string modeToString() const;
     std::string nowIso8601() const;
+    std::string valueToString(const WapiValue& value) const;
+    bool isTruthy(const WapiValue& value) const;
+    long long asNumberValue(const WapiValue& value, const std::string& context) const;
     void emitAudit(const std::string& functionName, const std::string& capability, const std::string& result, const std::string& detail = "") const;
     void enforcePolicy(const std::string& functionName, const std::string& capability, bool requiresInjectionFlag = false) const;
     [[noreturn]] void throwArgType(const std::string& functionName, int argIndex, const std::string& expectedType) const;

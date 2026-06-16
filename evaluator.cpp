@@ -9,14 +9,92 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+
+namespace {
+
+bool isNumericValue(const WapiValue& value) {
+    return std::holds_alternative<int>(value) || std::holds_alternative<long long>(value);
+}
+
+long long numericValue(const WapiValue& value) {
+    if (auto p = std::get_if<int>(&value)) return *p;
+    return std::get<long long>(value);
+}
+
+bool valuesEqual(const WapiValue& left, const WapiValue& right) {
+    if (isNumericValue(left) && isNumericValue(right)) {
+        return numericValue(left) == numericValue(right);
+    }
+    if (auto l = std::get_if<std::string>(&left)) {
+        if (auto r = std::get_if<std::string>(&right)) return *l == *r;
+    }
+    if (auto l = std::get_if<bool>(&left)) {
+        if (auto r = std::get_if<bool>(&right)) return *l == *r;
+    }
+    return false;
+}
+
+std::string wideToUtf8(const std::wstring& value) {
+    if (value.empty()) return "";
+
+    const int length = WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        value.c_str(),
+        static_cast<int>(value.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr
+    );
+    if (length <= 0) return "";
+
+    std::string result(static_cast<size_t>(length), '\0');
+    WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        value.c_str(),
+        static_cast<int>(value.size()),
+        result.data(),
+        length,
+        nullptr,
+        nullptr
+    );
+    return result;
+}
+
+} // namespace
 
 Evaluator::Evaluator(const WapiRuntimeOptions& options) : options(options) {}
 
 Evaluator::~Evaluator() {
     cleanupTrackedResources();
+}
+
+std::string Evaluator::valueToString(const WapiValue& value) const {
+    if (auto p = std::get_if<int>(&value)) return std::to_string(*p);
+    if (auto p = std::get_if<long long>(&value)) return std::to_string(*p);
+    if (auto p = std::get_if<std::string>(&value)) return *p;
+    if (auto p = std::get_if<bool>(&value)) return *p ? "true" : "false";
+    return "";
+}
+
+bool Evaluator::isTruthy(const WapiValue& value) const {
+    if (auto p = std::get_if<int>(&value)) return *p != 0;
+    if (auto p = std::get_if<long long>(&value)) return *p != 0;
+    if (auto p = std::get_if<std::string>(&value)) return !p->empty();
+    if (auto p = std::get_if<bool>(&value)) return *p;
+    return false;
+}
+
+long long Evaluator::asNumberValue(const WapiValue& value, const std::string& context) const {
+    if (auto p = std::get_if<int>(&value)) return *p;
+    if (auto p = std::get_if<long long>(&value)) return *p;
+    throw std::runtime_error("E_TYPE:" + context + " expected number");
 }
 
 void Evaluator::run(std::shared_ptr<Program> program) {
@@ -29,6 +107,7 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
     if (auto n = std::dynamic_pointer_cast<IntLiteral>(node)) return n->value;
     if (auto n = std::dynamic_pointer_cast<LongLongLiteral>(node)) return n->value;
     if (auto n = std::dynamic_pointer_cast<StringLiteral>(node)) return n->value;
+    if (auto n = std::dynamic_pointer_cast<BoolLiteral>(node)) return n->value;
 
     if (auto n = std::dynamic_pointer_cast<Identifier>(node)) {
         if (variables.count(n->name)) return variables[n->name];
@@ -41,11 +120,113 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
         return val;
     }
 
+    if (auto n = std::dynamic_pointer_cast<Assignment>(node)) {
+        if (!variables.count(n->name)) throw std::runtime_error("E_UNDEFINED_VAR: " + n->name);
+        WapiValue val = evalNode(n->value);
+        variables[n->name] = val;
+        return val;
+    }
+
+    if (auto n = std::dynamic_pointer_cast<BlockStatement>(node)) {
+        WapiValue last = 0;
+        for (auto& stmt : n->statements) {
+            last = evalNode(stmt);
+        }
+        return last;
+    }
+
+    if (auto n = std::dynamic_pointer_cast<IfStatement>(node)) {
+        if (isTruthy(evalNode(n->condition))) {
+            return evalNode(n->thenBranch);
+        }
+        if (n->elseBranch) return evalNode(n->elseBranch);
+        return 0;
+    }
+
+    if (auto n = std::dynamic_pointer_cast<WhileStatement>(node)) {
+        constexpr int maxIterations = 100000;
+        WapiValue last = 0;
+        int iterations = 0;
+
+        while (isTruthy(evalNode(n->condition))) {
+            if (++iterations > maxIterations) {
+                throw std::runtime_error("E_LOOP_LIMIT: while exceeded 100000 iterations");
+            }
+            last = evalNode(n->body);
+        }
+
+        return last;
+    }
+
+    if (auto n = std::dynamic_pointer_cast<UnaryExpression>(node)) {
+        return evalUnaryExpression(*n);
+    }
+
+    if (auto n = std::dynamic_pointer_cast<BinaryExpression>(node)) {
+        return evalBinaryExpression(*n);
+    }
+
     if (auto n = std::dynamic_pointer_cast<FunctionCall>(node)) {
         return evalFunctionCall(n);
     }
 
     throw std::runtime_error("E_UNKNOWN_NODE: unsupported AST node");
+}
+
+WapiValue Evaluator::evalUnaryExpression(const UnaryExpression& expr) {
+    WapiValue value = evalNode(expr.value);
+
+    if (expr.op == "-") {
+        const long long number = -asNumberValue(value, "unary '-'");
+        if (std::holds_alternative<int>(value) &&
+            number >= (std::numeric_limits<int>::min)() &&
+            number <= (std::numeric_limits<int>::max)()) {
+            return static_cast<int>(number);
+        }
+        return number;
+    }
+
+    throw std::runtime_error("E_UNKNOWN_OPERATOR:" + expr.op);
+}
+
+WapiValue Evaluator::evalBinaryExpression(const BinaryExpression& expr) {
+    WapiValue left = evalNode(expr.left);
+    WapiValue right = evalNode(expr.right);
+
+    if (expr.op == "==") return valuesEqual(left, right);
+    if (expr.op == "!=") return !valuesEqual(left, right);
+
+    if (expr.op == "+" && (std::holds_alternative<std::string>(left) || std::holds_alternative<std::string>(right))) {
+        return valueToString(left) + valueToString(right);
+    }
+
+    const long long lhs = asNumberValue(left, "operator '" + expr.op + "'");
+    const long long rhs = asNumberValue(right, "operator '" + expr.op + "'");
+
+    if (expr.op == "<") return lhs < rhs;
+    if (expr.op == "<=") return lhs <= rhs;
+    if (expr.op == ">") return lhs > rhs;
+    if (expr.op == ">=") return lhs >= rhs;
+
+    long long result = 0;
+    if (expr.op == "+") result = lhs + rhs;
+    else if (expr.op == "-") result = lhs - rhs;
+    else if (expr.op == "*") result = lhs * rhs;
+    else if (expr.op == "/") {
+        if (rhs == 0) throw std::runtime_error("E_DIVIDE_BY_ZERO");
+        result = lhs / rhs;
+    }
+    else {
+        throw std::runtime_error("E_UNKNOWN_OPERATOR:" + expr.op);
+    }
+
+    const bool promoteToLong = std::holds_alternative<long long>(left) || std::holds_alternative<long long>(right);
+    if (!promoteToLong &&
+        result >= (std::numeric_limits<int>::min)() &&
+        result <= (std::numeric_limits<int>::max)()) {
+        return static_cast<int>(result);
+    }
+    return result;
 }
 
 void Evaluator::checkArgCount(const std::shared_ptr<FunctionCall>& call, size_t expected) {
@@ -202,6 +383,14 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
 
     static const std::unordered_map<std::string, FunctionBinding> functions = {
         {
+            "print",
+            {1, "runtime.print", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                WapiValue value = evaluator.evalNode(call->args[0]);
+                std::cout << evaluator.valueToString(value) << "\n";
+                return value;
+            }}
+        },
+        {
             "findProcessPID",
             {1, "proc.list", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
                 return evaluator.wapi_findProcessPID(evaluator.asString(call->args[0], call->name, 0));
@@ -333,7 +522,34 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         }
     };
 
+    static const std::unordered_map<std::string, std::string> aliases = {
+        {"proc.find", "findProcessPID"},
+        {"proc.list", "listProcesses"},
+        {"proc.open", "openProcess"},
+        {"proc.terminate", "terminateProcess"},
+        {"proc.suspend", "suspendProcess"},
+        {"proc.resume", "resumeProcess"},
+        {"proc.close", "closeProcess"},
+        {"proc.modules", "listModules"},
+        {"proc.moduleBase", "getModuleBaseAddress"},
+        {"proc.module.base", "getModuleBaseAddress"},
+        {"handle.close", "closeHandle"},
+        {"mem.read", "readMemory"},
+        {"mem.write", "writeMemory"},
+        {"mem.alloc", "allocMemory"},
+        {"mem.free", "freeMemory"},
+        {"window.find", "findWindow"},
+        {"inject.dll", "injectDLL"},
+        {"inject.testDll", "testInjectDLL"},
+        {"inject.test", "testInjectDLL"}
+    };
+
     auto found = functions.find(call->name);
+    if (found == functions.end()) {
+        auto alias = aliases.find(call->name);
+        if (alias != aliases.end()) found = functions.find(alias->second);
+    }
+
     if (found == functions.end()) {
         throw std::runtime_error("E_UNKNOWN_FUNCTION:" + call->name);
     }
@@ -399,7 +615,7 @@ WapiValue Evaluator::wapi_listProcesses() {
     if (Process32FirstW(snap, &entry)) {
         do {
             std::wstring ws(entry.szExeFile);
-            std::string name(ws.begin(), ws.end());
+            std::string name = wideToUtf8(ws);
             std::cout << entry.th32ProcessID << " - " << name << "\n";
         } while (Process32NextW(snap, &entry));
     }
@@ -614,10 +830,10 @@ WapiValue Evaluator::wapi_listModules(int pid) {
         std::wstring modulePath(me32.szExePath);
         std::cout
             << me32.th32ProcessID << " - "
-            << std::string(moduleName.begin(), moduleName.end())
+            << wideToUtf8(moduleName)
             << " @ 0x" << std::hex << reinterpret_cast<uintptr_t>(me32.modBaseAddr)
             << " size=" << std::dec << me32.modBaseSize
-            << " path=" << std::string(modulePath.begin(), modulePath.end())
+            << " path=" << wideToUtf8(modulePath)
             << "\n";
     } while (Module32NextW(hSnapshot, &me32));
 
@@ -791,7 +1007,7 @@ WapiValue Evaluator::wapi_testInjectDLL(int pid) {
     std::wstring dir(exePath);
     dir = dir.substr(0, dir.find_last_of(L"\\/"));
     std::wstring dllPathW = dir + L"\\TestDLL.dll";
-    std::string dllPath(dllPathW.begin(), dllPathW.end());
+    std::string dllPath = wideToUtf8(dllPathW);
 
     return wapi_injectDLL(pid, dllPath);
 }

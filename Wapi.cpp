@@ -111,6 +111,13 @@ void runStandardizedTests() {
     std::cout << "[Precheck] Start Notepad before running tests for process-dependent coverage.\n\n";
 
     std::cout << "[Implemented Baseline]\n";
+    std::cout << "[Language] --------------------------------------------\n";
+    test("arithmetic expressions", "int size = 1024 * 4 int next = size + 8", options);
+    test("if/else blocks", "bool ready = false int value = 1 if ready { value = 2 } else { value = value + 3 }", options);
+    test("while loops", "int i = 0 while i < 3 { i = i + 1 }", options);
+    test("print expression", "print(\"value=\" + 42)", options);
+    test("namespaced runtime call", "proc.list()", options);
+
     std::cout << "[Process] ---------------------------------------------\n";
     test("listProcesses", "listProcesses()", options);
     test("findProcessPID", "int pid = findProcessPID(\"notepad\")", options);
