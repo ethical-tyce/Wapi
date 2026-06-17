@@ -874,27 +874,40 @@ function installMonacoLanguage() {
     base: "vs-dark",
     inherit: true,
     rules: [
-      { token: "comment", foreground: "747a86" },
-      { token: "keyword", foreground: "f4f7fb", fontStyle: "bold" },
-      { token: "type.identifier", foreground: "82d8af" },
-      { token: "string", foreground: "c8d7ff" },
-      { token: "number", foreground: "f0c78a" }
+      { token: "comment", foreground: "444444", fontStyle: "italic" },
+      { token: "keyword", foreground: "aaaaaa", fontStyle: "bold" },
+      { token: "type.identifier", foreground: "999999" },
+      { token: "string", foreground: "888888" },
+      { token: "number", foreground: "999999" },
+      { token: "delimiter", foreground: "666666" },
+      { token: "operator", foreground: "777777" }
     ],
     colors: {
-      "editor.background": "#18191e",
-      "editor.foreground": "#ced3dc",
-      "editorLineNumber.foreground": "#777d8a",
-      "editorLineNumber.activeForeground": "#d8dde6",
-      "editorCursor.foreground": "#dce2eb",
-      "editor.selectionBackground": "#314354",
-      "editor.inactiveSelectionBackground": "#292e37",
-      "editor.lineHighlightBackground": "#20222a",
-      "editorIndentGuide.background1": "#2d3038",
-      "editorIndentGuide.activeBackground1": "#4b5260",
-      "editorWidget.background": "#1d1f26",
-      "editorWidget.border": "#373d49",
-      "input.background": "#252832",
-      "input.border": "#363c48"
+      "editor.background": "#1a1a1a",
+      "editor.foreground": "#888888",
+      "editorLineNumber.foreground": "#333333",
+      "editorLineNumber.activeForeground": "#22c55e",
+      "editorCursor.foreground": "#22c55e",
+      "editor.selectionBackground": "#2a2a2a88",
+      "editor.inactiveSelectionBackground": "#22222266",
+      "editor.selectionHighlightBackground": "#22222244",
+      "editor.lineHighlightBackground": "#1f1f1f",
+      "editorIndentGuide.background1": "#222222",
+      "editorIndentGuide.activeBackground1": "#333333",
+      "editorBracketMatch.background": "#22c55e22",
+      "editorBracketMatch.border": "#22c55e66",
+      "scrollbarSlider.background": "#2a2a2a44",
+      "scrollbarSlider.hoverBackground": "#33333366",
+      "scrollbarSlider.activeBackground": "#44444488",
+      "editorWidget.background": "#1e1e1e",
+      "editorWidget.border": "#2a2a2a",
+      "editorSuggestWidget.background": "#1e1e1e",
+      "editorSuggestWidget.border": "#2a2a2a",
+      "editorSuggestWidget.selectedBackground": "#2a2a2a",
+      "input.background": "#161616",
+      "input.border": "#2a2a2a",
+      "focusBorder": "#22c55e",
+      "minimap.background": "#161616"
     }
   });
 }
@@ -1330,10 +1343,13 @@ function renderStartSurface() {
   const surface = document.getElementById("startSurface");
   const monacoHost = document.getElementById("monacoEditor");
   const workbench = document.querySelector(".editor-workbench");
+  const emptyHost = document.getElementById("emptyEditorState");
   const showStart = isWelcomeActive();
+  const showEmpty = !showStart && !activeFile();
   surface?.classList.toggle("is-visible", showStart);
-  monacoHost?.classList.toggle("is-start-hidden", showStart);
+  monacoHost?.classList.toggle("is-start-hidden", showStart || showEmpty);
   workbench?.classList.toggle("is-start-mode", showStart);
+  emptyHost?.classList.toggle("is-visible", showEmpty);
 
   const recent = document.getElementById("recentProjects");
   if (!recent) return;
@@ -3745,6 +3761,26 @@ function installStyles() {
     #monacoEditor {
       background: #1a1a1a !important;
     }
+    .empty-editor-state {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: #1a1a1a;
+      pointer-events: none;
+    }
+    .empty-editor-state.is-visible {
+      display: flex;
+    }
+    .empty-editor-state img {
+      width: clamp(88px, 12vw, 140px);
+      height: auto;
+      opacity: .18;
+      filter: grayscale(1) saturate(0) contrast(.9);
+      user-select: none;
+    }
     .start-surface {
       padding: 34px;
       background: #111111 !important;
@@ -3893,7 +3929,6 @@ function renderWindowBar() {
         </aside>
         <section class="editor-surface" aria-label="Editor">
           <div class="menu-strip">
-            <span class="menu-strip-label">Wapi</span>
             <button id="toolbarSave" class="toolbar-button" type="button">${iconSvg(Save)}<span>Save</span></button>
             <button id="toolbarSaveAs" class="toolbar-button" type="button">Save As</button>
             <button id="toolbarSaveAll" class="toolbar-button" type="button">${iconSvg(SaveAll)}<span>Save All</span></button>
@@ -3936,6 +3971,9 @@ function renderWindowBar() {
                 </div>
               </div>
             </section>
+            <div id="emptyEditorState" class="empty-editor-state" aria-hidden="true">
+              <img src="${wapiIconUrl}" alt="">
+            </div>
             <div id="monacoEditor"></div>
           </div>
           <section class="tool-window" aria-label="Tool windows">
