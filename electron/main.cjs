@@ -581,15 +581,18 @@ ipcMain.handle("wapi:addFiles", async () => {
 });
 
 ipcMain.handle("wapi:createProject", async (_event, payload = {}) => {
+  const projectName = sanitizeProjectName(payload.name);
   const result = await dialog.showOpenDialog({
-    title: "Choose project location",
+    title: "Choose where to create the project",
+    message: `Select the folder that will contain "${projectName}".`,
+    buttonLabel: "Create here",
     properties: ["openDirectory", "createDirectory"]
   });
 
   if (result.canceled || result.filePaths.length === 0) return null;
 
-  const rootPath = await uniqueProjectPath(result.filePaths[0], payload.name);
-  const config = normalizeProjectConfig(payload.config, payload.name);
+  const rootPath = await uniqueProjectPath(result.filePaths[0], projectName);
+  const config = normalizeProjectConfig(payload.config, projectName);
   const files = Array.isArray(payload.files) && payload.files.length > 0
     ? payload.files
     : [{ name: "main.wapi", relativePath: "main.wapi", source: "listProcesses()\n" }];

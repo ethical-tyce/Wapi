@@ -10,10 +10,9 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  FolderTree,
+  Globe,
   ListTree,
-  Maximize2,
-  Minus,
-  PanelLeft,
   Play,
   Plus,
   Save,
@@ -84,6 +83,7 @@ const bridge = window.wapi ?? {
 
 const visibleExtensions = new Set([".wapi", ".txt", ".json", ".cpp", ".c", ".h", ".hpp"]);
 const maxPanelLines = 300;
+const welcomeTabId = "__welcome__";
 const welcomeSource = "";
 
 function escapeRegExp(value) {
@@ -300,7 +300,8 @@ const projectTemplates = [
 
 const ideState = {
   files: [],
-  activeFileId: null,
+  activeFileId: welcomeTabId,
+  welcomeTabOpen: true,
   openFileIds: [],
   collapsedFolders: new Set(),
   projectRoot: null,
@@ -380,7 +381,12 @@ function visibleProjectFiles(files = []) {
 }
 
 function activeFile() {
+  if (ideState.activeFileId === welcomeTabId) return null;
   return ideState.files.find((file) => file.id === ideState.activeFileId) ?? null;
+}
+
+function isWelcomeActive() {
+  return ideState.welcomeTabOpen && ideState.activeFileId === welcomeTabId;
 }
 
 function isDirty(file) {
@@ -568,7 +574,7 @@ async function replaceProject(project, message = "Project loaded") {
   ideState.projectRoot = project.rootPath ?? null;
   ideState.projectConfig = config;
   ideState.openFileIds = [];
-  ideState.activeFileId = null;
+  ideState.activeFileId = ideState.welcomeTabOpen ? welcomeTabId : null;
   ideState.searchQuery = "";
   ideState.collapsedFolders = new Set();
   ideState.problems = [];
@@ -604,9 +610,18 @@ function openFileInEditor(fileId, render = true) {
 }
 
 function closeDocumentTab(fileId) {
+  if (fileId === welcomeTabId) {
+    ideState.welcomeTabOpen = false;
+    if (ideState.activeFileId === welcomeTabId) {
+      ideState.activeFileId = ideState.openFileIds.at(-1) ?? null;
+    }
+    renderAll();
+    setEditorModel(activeFile());
+    return;
+  }
   ideState.openFileIds = ideState.openFileIds.filter((id) => id !== fileId);
   if (ideState.activeFileId === fileId) {
-    ideState.activeFileId = ideState.openFileIds.at(-1) ?? null;
+    ideState.activeFileId = ideState.openFileIds.at(-1) ?? (ideState.welcomeTabOpen ? welcomeTabId : null);
   }
   renderAll();
   setEditorModel(activeFile());
@@ -967,12 +982,19 @@ function renderDocumentTabs() {
   const tabs = document.getElementById("documentTabs");
   if (!tabs) return;
   tabs.replaceChildren();
-  if (ideState.openFileIds.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "document-tab is-empty";
-    empty.textContent = "Welcome";
-    tabs.appendChild(empty);
-    return;
+  if (ideState.welcomeTabOpen) {
+    const welcomeTab = document.createElement("button");
+    welcomeTab.className = `document-tab document-tab-welcome${isWelcomeActive() ? " is-active" : ""}`;
+    welcomeTab.type = "button";
+    welcomeTab.dataset.tabFile = welcomeTabId;
+    welcomeTab.title = "Welcome";
+    welcomeTab.innerHTML = `
+      ${iconSvg(Globe, "ui-icon tab-file-icon")}
+      <span class="document-tab-name">Welcome</span>
+      <span class="dirty-dot" aria-hidden="true"></span>
+      <span class="tab-close" data-close-tab="${welcomeTabId}" aria-label="Close tab">${iconSvg(X)}</span>
+    `;
+    tabs.appendChild(welcomeTab);
   }
   for (const fileId of ideState.openFileIds) {
     const file = ideState.files.find((item) => item.id === fileId);
@@ -1308,7 +1330,7 @@ function renderStartSurface() {
   const surface = document.getElementById("startSurface");
   const monacoHost = document.getElementById("monacoEditor");
   const workbench = document.querySelector(".editor-workbench");
-  const showStart = ideState.files.length === 0;
+  const showStart = isWelcomeActive();
   surface?.classList.toggle("is-visible", showStart);
   monacoHost?.classList.toggle("is-start-hidden", showStart);
   workbench?.classList.toggle("is-start-mode", showStart);
@@ -1424,10 +1446,10 @@ async function uploadProjectIntoExplorer(rootPath = null) {
   if (!confirmDiscardUnsaved()) return;
   const project = await bridge.loadProject(rootPath);
   if (!project || !Array.isArray(project.files)) {
-    setStatus("Project upload cancelled");
+    setStatus(rootPath ? "Recent project unavailable" : "Project upload cancelled");
     return;
   }
-  await replaceProject(project, "Project uploaded");
+  await replaceProject(project, rootPath ? "Recent project opened" : "Project uploaded");
 }
 
 async function addFilesToExplorer() {
@@ -3282,6 +3304,530 @@ function installStyles() {
       .runtime-controls { width: 100%; margin-left: 0; }
       .start-surface { padding: 24px; }
     }
+
+    /* Restored accepted dark shell */
+    :root {
+      --chrome-height: 38px;
+      --status-height: 22px;
+      --activity-width: 46px;
+      --side-width: 214px;
+      --tool-height: 180px;
+      --accent: #22c55e;
+      --accent-blue: #22c55e;
+      --bg: #111111;
+      --panel: #161616;
+      --panel-2: #181818;
+      --panel-3: #1e1e1e;
+      --line: #222222;
+      --line-strong: #2a2a2a;
+      --text: #cccccc;
+      --text-soft: #aaaaaa;
+      --text-muted: #555555;
+      --focus: 0 0 0 1px rgba(34,197,94,.85), 0 0 0 3px rgba(34,197,94,.1);
+    }
+    html,
+    body,
+    #root,
+    .app-shell,
+    .workspace,
+    .editor-workbench,
+    .start-surface {
+      background: #111111 !important;
+      background-image: none !important;
+    }
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: #333333 #141414;
+    }
+    *::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    *::-webkit-scrollbar-track {
+      background: #141414;
+    }
+    *::-webkit-scrollbar-thumb {
+      border: 2px solid #141414;
+      border-radius: 6px;
+      background: #333333;
+      background-clip: padding-box;
+    }
+    *::-webkit-scrollbar-thumb:hover {
+      background: #444444;
+      background-clip: padding-box;
+    }
+    .app-shell {
+      grid-template-rows: 38px minmax(0, 1fr) 22px;
+      border: 1px solid #222222;
+      background: #181818 !important;
+      box-shadow: 0 30px 80px rgba(0,0,0,.55);
+    }
+    #windowChrome,
+    .activity-bar,
+    .side-panel,
+    .side-topbar,
+    .side-searchbar,
+    .menu-strip,
+    .document-tabs,
+    .document-tab,
+    .editor-surface,
+    .start-surface,
+    .start-action,
+    .tool-window,
+    .tool-tabs,
+    .tool-tab,
+    .tool-body,
+    .status-bar,
+    .project-dialog-card,
+    .template-card {
+      background-image: none !important;
+      animation: none !important;
+    }
+    #windowChrome {
+      height: 38px;
+      border: 0;
+      border-bottom: 1px solid #222222;
+      background: #161616 !important;
+      box-shadow: none;
+    }
+    #windowBannerFrame {
+      width: 82px;
+      height: 24px;
+      margin-left: 10px;
+      overflow: hidden;
+    }
+    #windowBannerIcon {
+      top: -2px;
+      height: 30px;
+      opacity: .92;
+    }
+    #windowAppTitle {
+      color: #cccccc;
+      font-size: 12px;
+      font-weight: 400;
+    }
+    #windowButtons {
+      height: 100%;
+      gap: 0;
+      padding-right: 0;
+    }
+    #windowButtons .window-btn {
+      width: 52px;
+      height: 38px;
+      min-width: 52px;
+      min-height: 38px;
+      border: 0;
+      border-radius: 0;
+      color: #cccccc;
+      background: transparent;
+      transform: none !important;
+      transition: color 120ms ease, background 120ms ease;
+    }
+    #windowButtons .window-btn:hover {
+      color: #ffffff;
+      background: #242424;
+      transform: none !important;
+    }
+    #windowButtons .window-btn-close:hover {
+      background: #3a3a3a;
+    }
+    #windowButtons .window-control-glyph {
+      position: relative;
+      display: block;
+      width: 16px;
+      height: 16px;
+      margin: auto;
+      color: currentColor;
+      opacity: .68;
+      transform: none !important;
+    }
+    #windowButtons .window-btn:hover .window-control-glyph,
+    #windowButtons .window-btn:active .window-control-glyph {
+      transform: none !important;
+    }
+    #windowButtons .window-control-glyph::before,
+    #windowButtons .window-control-glyph::after {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      content: "";
+      box-sizing: border-box;
+    }
+    #windowButtons .window-control-min::before {
+      width: 10px;
+      height: 1.5px;
+      border-radius: 2px;
+      background: currentColor;
+      transform: translate(-50%, -50%);
+    }
+    #windowButtons .window-control-svg {
+      overflow: visible;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    #windowButtons .window-control-svg::before,
+    #windowButtons .window-control-svg::after {
+      display: none;
+      content: none;
+    }
+    #windowButtons .window-control-close::before,
+    #windowButtons .window-control-close::after {
+      width: 12px;
+      height: 1.5px;
+      border-radius: 2px;
+      background: currentColor;
+    }
+    #windowButtons .window-control-close::before {
+      transform: translate(-50%, -50%) rotate(45deg);
+    }
+    #windowButtons .window-control-close::after {
+      transform: translate(-50%, -50%) rotate(-45deg);
+    }
+    .workspace {
+      grid-template-columns: 46px minmax(180px, 214px) minmax(0, 1fr);
+      background: #181818 !important;
+    }
+    .activity-bar {
+      gap: 6px;
+      padding: 8px 0;
+      border-right: 1px solid #222222;
+      background: #161616;
+      overflow: hidden;
+    }
+    .activity-button {
+      width: 34px;
+      height: 34px;
+      margin-inline: auto;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      color: #555555;
+      background: transparent;
+      box-shadow: none;
+      transition: color 120ms ease, background 120ms ease, border-color 120ms ease, transform 120ms ease;
+    }
+    .activity-button::before,
+    .activity-button.is-active::before {
+      display: none;
+      content: none;
+    }
+    .activity-button:hover {
+      color: #999999;
+      border-color: #2a2a2a;
+      background: #1e1e1e;
+      transform: translateY(-2px);
+      box-shadow: none;
+    }
+    .activity-button.is-active {
+      color: #cccccc;
+      border-color: #2a2a2a;
+      background: #0f1f12;
+      box-shadow: inset 0 0 0 1px rgba(34,197,94,.08);
+    }
+    .activity-button .ui-icon {
+      width: 17px;
+      height: 17px;
+      stroke-width: 1.8;
+    }
+    .side-panel {
+      margin: 0;
+      border: 0;
+      border-right: 1px solid #222222;
+      border-radius: 0;
+      background: #161616;
+      box-shadow: none;
+    }
+    .side-topbar {
+      min-height: 44px;
+      padding: 0 8px 0 12px;
+      border-bottom: 0;
+      background: #161616;
+    }
+    .side-title {
+      color: #3a3a3a;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .1em;
+    }
+    .side-meta {
+      margin-top: 3px;
+      color: #555555;
+      font-size: 10px;
+    }
+    .icon-button {
+      width: 23px;
+      height: 23px;
+      border-radius: 5px;
+      color: #555555;
+      background: transparent;
+    }
+    .icon-button:hover {
+      color: #999999;
+      border-color: #2a2a2a;
+      background: #1e1e1e;
+      box-shadow: none;
+      transform: translateY(-1px);
+    }
+    .side-searchbar {
+      padding: 0 8px 8px;
+      border-bottom: 0;
+      background: #161616;
+    }
+    .search-wrap .ui-icon {
+      left: 9px;
+      width: 12px;
+      height: 12px;
+      color: #3a3a3a;
+    }
+    .side-searchbar input,
+    .runtime-controls select,
+    .runtime-controls input[type="text"],
+    .settings-field select,
+    .settings-field textarea,
+    #newProjectName,
+    .terminal-input-row input {
+      border-color: #2a2a2a;
+      color: #888888;
+      background: #1c1c1c;
+    }
+    .side-searchbar input {
+      height: 28px;
+      padding-left: 28px;
+      border-radius: 5px;
+      font-size: 10.5px;
+    }
+    .side-content {
+      padding: 0 0 6px;
+      background: #161616;
+    }
+    .tree-row,
+    .search-result,
+    .function-row,
+    .outline-row,
+    .problem-row,
+    .recent-project {
+      min-height: 26px;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      color: #555555;
+      background: transparent;
+      font-size: 11px;
+      transition: color 100ms ease, background 100ms ease, transform 100ms ease;
+    }
+    .tree-row:hover,
+    .search-result:hover,
+    .function-row:hover,
+    .outline-row:hover,
+    .problem-row:hover,
+    .recent-project:hover {
+      color: #999999;
+      background: #1e1e1e;
+      transform: translateY(-1px);
+      box-shadow: none;
+    }
+    .tree-row.is-active {
+      color: #cccccc;
+      background: #0f1f12;
+      box-shadow: inset 2px 0 0 #22c55e;
+    }
+    .editor-surface {
+      grid-template-rows: 40px 34px minmax(0, 1fr) 180px;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      background: #181818;
+      box-shadow: none;
+    }
+    .menu-strip {
+      height: 40px;
+      min-height: 40px !important;
+      gap: 6px;
+      padding: 0 12px !important;
+      border-bottom: 1px solid #242424;
+      background: #161616;
+      box-shadow: none;
+      overflow-x: auto;
+    }
+    .menu-strip-label {
+      min-width: auto;
+      margin-right: 4px;
+      color: #3a3a3a;
+      background: transparent;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .toolbar-button,
+    .tool-action,
+    .dialog-button {
+      height: 28px;
+      min-height: 28px;
+      padding: 0 10px;
+      border: 1px solid #2e2e2e;
+      border-radius: 5px;
+      color: #666666;
+      background: #1e1e1e;
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      box-shadow: none;
+      transition: filter 150ms ease, transform 100ms ease, color 120ms ease, background 120ms ease, border-color 120ms ease;
+    }
+    .toolbar-button:hover,
+    .tool-action:hover,
+    .dialog-button:hover {
+      color: #888888;
+      border-color: #333333;
+      background: #1e1e1e;
+      filter: brightness(1.18);
+      transform: translateY(0);
+      box-shadow: none;
+    }
+    .toolbar-button-primary,
+    #toolbarCheck {
+      color: #666666;
+      border-color: #2e2e2e;
+      background: #1e1e1e;
+      box-shadow: none;
+    }
+    #toolbarRun {
+      color: #4ade80;
+      border-color: #22c55e;
+      background: #0d2010;
+      box-shadow: none;
+    }
+    #toolbarRun:hover {
+      color: #86efac;
+      border-color: #4ade80;
+      background: #123017;
+    }
+    .document-tabs {
+      height: 34px;
+      align-items: flex-end;
+      padding: 0 8px;
+      border-bottom: 1px solid #222222;
+      background: #141414;
+      box-shadow: none;
+    }
+    .document-tab {
+      grid-template-columns: 14px minmax(44px, 1fr) 8px 16px;
+      gap: 6px;
+      min-width: 126px;
+      max-width: 220px;
+      height: 29px;
+      padding: 0 10px;
+      border: 1px solid transparent;
+      border-bottom: 0;
+      border-radius: 4px 4px 0 0;
+      color: #444444;
+      background: transparent;
+      font-size: 10.5px;
+      box-shadow: none;
+    }
+    .document-tab:hover {
+      color: #888888;
+      background: transparent;
+      box-shadow: none;
+    }
+    .document-tab.is-active {
+      color: #bbbbbb;
+      border-color: #2a2a2a;
+      border-bottom-color: #1a1a1a;
+      background: #1a1a1a;
+      box-shadow: inset 0 -2px 0 #22c55e;
+    }
+    .editor-workbench,
+    #monacoEditor {
+      background: #1a1a1a !important;
+    }
+    .start-surface {
+      padding: 34px;
+      background: #111111 !important;
+    }
+    .tool-window {
+      height: 180px;
+      border-top: 1px solid #222222;
+      background: #141414;
+    }
+    .tool-tabs {
+      height: 30px;
+      align-items: flex-end;
+      gap: 2px;
+      padding: 0 10px;
+      border-bottom: 1px solid #222222;
+      background: #141414;
+    }
+    .tool-tab {
+      height: 30px;
+      min-width: auto;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 0;
+      color: #3a3a3a;
+      background: transparent;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      box-shadow: inset 0 -2px 0 transparent;
+    }
+    .tool-tab:hover {
+      color: #777777;
+      background: transparent;
+      box-shadow: inset 0 -2px 0 transparent;
+    }
+    .tool-tab.is-active {
+      color: #aaaaaa;
+      background: transparent;
+      box-shadow: inset 0 -2px 0 #22c55e;
+    }
+    .tool-body {
+      padding: 8px 14px;
+      color: #444444;
+      background: #141414;
+      font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.7;
+    }
+    .status-bar {
+      height: 22px;
+      padding: 0 12px;
+      border-top: 1px solid #1e1e1e;
+      color: #333333;
+      background: #111111;
+      box-shadow: none;
+    }
+    .status-item,
+    .status-button {
+      color: #333333;
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      background: #22c55e;
+      box-shadow: none;
+    }
+    @media (max-width: 980px) {
+      :root { --side-width: 190px; }
+      .workspace { grid-template-columns: 46px minmax(170px, 190px) minmax(0, 1fr); }
+      .runtime-controls input[type="text"] { width: 170px; }
+    }
+    @media (max-width: 760px) {
+      .workspace { grid-template-columns: 46px minmax(0, 1fr); }
+      .side-panel { display: none; }
+      .editor-surface { grid-column: 2; }
+      .runtime-toggle span,
+      .runtime-controls input[type="text"] { display: none !important; }
+    }
   `;
   document.head.appendChild(style);
 }
@@ -3294,15 +3840,15 @@ function renderWindowBar() {
         <div id="windowBannerFrame"><img id="windowBannerIcon" src="${bannerIconUrl}" alt="Wapi"></div>
         <div id="windowAppTitle">Wapi IDE</div>
         <div id="windowButtons">
-          <button id="windowMinimize" class="window-btn" type="button" aria-label="Minimize">${iconSvg(Minus, "ui-icon window-icon")}</button>
-          <button id="windowMaximize" class="window-btn" type="button" aria-label="Maximize">${iconSvg(Maximize2, "ui-icon window-icon")}</button>
-          <button id="windowClose" class="window-btn window-btn-close" type="button" aria-label="Close">${iconSvg(X, "ui-icon window-icon")}</button>
+          <button id="windowMinimize" class="window-btn" type="button" aria-label="Minimize"><span class="window-control-glyph window-control-min" aria-hidden="true"></span></button>
+          <button id="windowMaximize" class="window-btn" type="button" aria-label="Maximize"><svg class="window-control-glyph window-control-svg window-control-max" viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg></button>
+          <button id="windowClose" class="window-btn window-btn-close" type="button" aria-label="Close"><span class="window-control-glyph window-control-close" aria-hidden="true"></span></button>
         </div>
       </header>
       <section class="workspace" aria-label="Wapi IDE workspace">
         <nav class="activity-bar" aria-label="Primary navigation">
           <button class="activity-button is-active" type="button" title="Explorer" data-panel="explorer">
-            ${iconSvg(PanelLeft)}
+            ${iconSvg(FolderTree)}
           </button>
           <button class="activity-button" type="button" title="Search" data-panel="search">
             ${iconSvg(Search)}
@@ -3448,6 +3994,11 @@ function bindEvents() {
   });
   document.getElementById("startCreateProject")?.addEventListener("click", openCreateProjectDialog);
   document.getElementById("startUploadProject")?.addEventListener("click", () => uploadProjectIntoExplorer());
+  document.getElementById("recentProjects")?.addEventListener("click", async (event) => {
+    const recent = event.target.closest("[data-recent-root]");
+    if (!recent) return;
+    await uploadProjectIntoExplorer(recent.dataset.recentRoot);
+  });
   document.getElementById("toolbarSave")?.addEventListener("click", () => saveActiveFile(false));
   document.getElementById("toolbarSaveAs")?.addEventListener("click", () => saveActiveFile(true));
   document.getElementById("toolbarSaveAll")?.addEventListener("click", saveAllFiles);
@@ -3538,7 +4089,15 @@ function bindEvents() {
       return;
     }
     const tab = event.target.closest("[data-tab-file]");
-    if (tab) openFileInEditor(tab.dataset.tabFile);
+    if (tab) {
+      if (tab.dataset.tabFile === welcomeTabId) {
+        ideState.activeFileId = welcomeTabId;
+        renderAll();
+        setEditorModel(null);
+      } else {
+        openFileInEditor(tab.dataset.tabFile);
+      }
+    }
   });
 
   document.getElementById("toolTabs")?.addEventListener("click", (event) => {
