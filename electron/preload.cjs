@@ -17,7 +17,8 @@ contextBridge.exposeInMainWorld("wapi", {
   terminal: {
     start: (payload) => ipcRenderer.invoke("wapi:terminal:start", payload),
     send: (payload) => ipcRenderer.invoke("wapi:terminal:send", payload),
-    stop: () => ipcRenderer.invoke("wapi:terminal:stop"),
+    resize: (payload) => ipcRenderer.invoke("wapi:terminal:resize", payload),
+    stop: (payload) => ipcRenderer.invoke("wapi:terminal:stop", payload),
     onData: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("wapi:terminal:data", listener);

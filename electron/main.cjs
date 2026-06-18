@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const pty = require("node-pty");
 
 const isDev = Boolean(process.env.WAPI_IDE_DEV_SERVER_URL);
 const appIcon = path.join(app.getAppPath(), "icon.ico");
@@ -22,8 +23,8 @@ function defaultProjectConfig(name = "WapiProject") {
   };
 }
 
-function terminalSessionKey(event) {
-  return event.sender.id;
+function terminalSessionKey(event, sessionId) {
+  return `${event.sender.id}:${sessionId}`;
 }
 
 function executionSessionKey(event, command) {
@@ -458,76 +459,83 @@ async function runShellCommand(payload = {}) {
 function stopTerminalSession(key) {
   const session = terminalSessions.get(key);
   if (!session) return;
-  session.child.kill();
+  session.process.kill();
   terminalSessions.delete(key);
 }
 
 async function startTerminalSession(event, payload = {}) {
-  const key = terminalSessionKey(event);
+  const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
+  if (!/^[a-zA-Z0-9_-]{1,80}$/.test(sessionId)) {
+    return { ok: false, stderr: "Invalid terminal session ID." };
+  }
+
+  const key = terminalSessionKey(event, sessionId);
   stopTerminalSession(key);
 
   const shell = payload.shell === "cmd" ? "cmd" : "powershell";
   const cwd = await resolveShellCwd(payload.cwd);
   const exe = shell === "cmd" ? "cmd.exe" : "powershell.exe";
   const args = shell === "cmd"
-    ? ["/d", "/q", "/k"]
-    : ["-NoLogo", "-NoProfile", "-NoExit"];
+    ? ["/d", "/q"]
+    : ["-NoLogo", "-NoProfile"];
+  const cols = Math.max(20, Math.min(500, Number(payload.cols) || 80));
+  const rows = Math.max(5, Math.min(200, Number(payload.rows) || 24));
 
-  const child = spawn(exe, args, {
+  const terminalProcess = pty.spawn(exe, args, {
+    name: "xterm-256color",
+    cols,
+    rows,
     cwd,
-    windowsHide: true
+    env: process.env,
+    useConpty: true
   });
 
-  const session = { child, cwd, shell };
+  const session = { process: terminalProcess, cwd, shell, sessionId };
   terminalSessions.set(key, session);
 
-  child.stdout.on("data", (chunk) => {
+  terminalProcess.onData((data) => {
     emitTerminalData(event.sender, {
-      type: "stdout",
+      type: "data",
+      sessionId,
       shell,
-      text: chunk.toString()
+      data
     });
   });
-  child.stderr.on("data", (chunk) => {
-    emitTerminalData(event.sender, {
-      type: "stderr",
-      shell,
-      text: chunk.toString()
-    });
-  });
-  child.on("error", (error) => {
-    emitTerminalData(event.sender, {
-      type: "stderr",
-      shell,
-      text: error.message
-    });
-  });
-  child.on("close", (code) => {
+  terminalProcess.onExit(({ exitCode }) => {
     terminalSessions.delete(key);
     emitTerminalData(event.sender, {
       type: "exit",
+      sessionId,
       shell,
-      text: `\n${shell} exited with code ${code ?? "unknown"}.\n`
+      exitCode
     });
   });
 
-  return { ok: true, shell, cwd };
+  return { ok: true, sessionId, shell, cwd, pid: terminalProcess.pid };
 }
 
 function sendTerminalInput(event, payload = {}) {
-  const key = terminalSessionKey(event);
+  const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
+  const key = terminalSessionKey(event, sessionId);
   const session = terminalSessions.get(key);
-  const command = typeof payload.command === "string" ? payload.command : "";
+  const data = typeof payload.data === "string" ? payload.data : "";
 
-  if (!session || session.child.killed) {
+  if (!session) {
     return { ok: false, stderr: "Terminal session is not running." };
   }
 
-  const markerCommand = session.shell === "cmd"
-    ? `echo ${shellCwdMarker}%CD%`
-    : `Write-Output "${shellCwdMarker}$((Get-Location).Path)"`;
+  session.process.write(data);
+  return { ok: true };
+}
 
-  session.child.stdin.write(`${command}\r\n${markerCommand}\r\n`);
+function resizeTerminalSession(event, payload = {}) {
+  const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
+  const session = terminalSessions.get(terminalSessionKey(event, sessionId));
+  if (!session) return { ok: false };
+
+  const cols = Math.max(20, Math.min(500, Number(payload.cols) || 80));
+  const rows = Math.max(5, Math.min(200, Number(payload.rows) || 24));
+  session.process.resize(cols, rows);
   return { ok: true };
 }
 
@@ -561,8 +569,9 @@ ipcMain.handle("wapi:locate", async () => resolveWapiExecutable());
 ipcMain.handle("wapi:shell", async (_event, payload) => runShellCommand(payload));
 ipcMain.handle("wapi:terminal:start", async (event, payload) => startTerminalSession(event, payload));
 ipcMain.handle("wapi:terminal:send", (event, payload) => sendTerminalInput(event, payload));
-ipcMain.handle("wapi:terminal:stop", (event) => {
-  stopTerminalSession(terminalSessionKey(event));
+ipcMain.handle("wapi:terminal:resize", (event, payload) => resizeTerminalSession(event, payload));
+ipcMain.handle("wapi:terminal:stop", (event, payload = {}) => {
+  stopTerminalSession(terminalSessionKey(event, payload.sessionId));
   return { ok: true };
 });
 

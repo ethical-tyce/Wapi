@@ -26,6 +26,9 @@ import {
 } from "lucide";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+import { Terminal as XtermTerminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 self.MonacoEnvironment = {
   getWorker: () => new editorWorker()
@@ -70,6 +73,7 @@ const bridge = window.wapi ?? {
   terminal: {
     start: async () => ({ ok: true, shell: "powershell", cwd: "" }),
     send: async () => ({ ok: true }),
+    resize: async () => ({ ok: true }),
     stop: async () => ({ ok: true }),
     onData: () => () => null
   },
@@ -316,11 +320,13 @@ const ideState = {
   dirty: false,
   outputLines: [],
   auditLines: [],
-  terminalLines: [],
   problems: [],
-  terminalRunning: false,
-  terminalInput: ""
+  terminalTabs: [],
+  activeTerminalId: null
 };
+
+const terminalRuntimes = new Map();
+let terminalSequence = 0;
 
 const editorState = {
   editor: null,
@@ -1259,6 +1265,7 @@ function renderToolWindow() {
   const tabs = document.getElementById("toolTabs");
   const body = document.getElementById("toolBody");
   if (!tabs || !body) return;
+  body.closest(".tool-window")?.classList.toggle("is-forced-open", ideState.activeTool === "terminal");
   tabs.querySelectorAll("[data-tool]").forEach((tab) => {
     tab.classList.toggle("is-active", tab.dataset.tool === ideState.activeTool);
   });
@@ -1295,18 +1302,37 @@ function renderToolWindow() {
   if (ideState.activeTool === "terminal") {
     const wrap = document.createElement("div");
     wrap.className = "terminal-tool";
+    const activeTerminal = ideState.terminalTabs.find((session) => session.id === ideState.activeTerminalId);
+    const tabs = ideState.terminalTabs.map((session) => `
+      <div class="terminal-session-tab${session.id === ideState.activeTerminalId ? " is-active" : ""}${session.running ? " is-running" : ""}">
+        <button type="button" class="terminal-session-select" data-terminal-id="${session.id}" role="tab" aria-selected="${session.id === ideState.activeTerminalId}">
+          <span class="terminal-status-dot" aria-hidden="true"></span>
+          <span>${session.shell === "cmd" ? "Command Prompt" : "PowerShell"}</span>
+        </button>
+        <button type="button" class="terminal-session-close" data-terminal-close="${session.id}" aria-label="Close ${session.shell === "cmd" ? "Command Prompt" : "PowerShell"} terminal">${iconSvg(X)}</button>
+      </div>
+    `).join("");
     wrap.innerHTML = `
-      <div class="terminal-log"></div>
-      <form id="terminalForm" class="terminal-input-row">
-        <button id="terminalStart" class="tool-action" type="button">${ideState.terminalRunning ? "Restart" : "Start"}</button>
-        <input id="terminalInput" type="text" spellcheck="false" autocomplete="off" placeholder="PowerShell command">
-        <button class="tool-action tool-action-primary" type="submit">Send</button>
-      </form>
+      <div class="terminal-session-bar">
+        <div class="terminal-session-tabs" role="tablist" aria-label="Terminal sessions">${tabs}</div>
+        <div class="terminal-new-controls">
+          <select id="terminalShellChoice" aria-label="New terminal shell">
+            <option value="powershell">PowerShell</option>
+            <option value="cmd">Command Prompt</option>
+          </select>
+          <button id="terminalNew" class="terminal-new-button" type="button" aria-label="Create terminal">${iconSvg(Plus)}<span>New</span></button>
+        </div>
+      </div>
+      ${activeTerminal ? '<div class="terminal-host-slot"></div>' : `
+        <div class="terminal-empty">
+          ${iconSvg(Terminal, "terminal-empty-icon")}
+          <strong>No terminal sessions</strong>
+          <span>Choose PowerShell or Command Prompt, then create a terminal.</span>
+        </div>
+      `}
     `;
     body.appendChild(wrap);
-    renderLogLines(wrap.querySelector(".terminal-log"), ideState.terminalLines, "Terminal is idle");
-    const input = wrap.querySelector("#terminalInput");
-    input.value = ideState.terminalInput;
+    if (activeTerminal) mountTerminal(activeTerminal, wrap.querySelector(".terminal-host-slot"));
     return;
   }
 
@@ -1401,6 +1427,10 @@ function setActivePanel(panel) {
 
 function setActiveTool(tool) {
   ideState.activeTool = tool;
+  if (tool === "terminal" && ideState.terminalTabs.length === 0) {
+    createTerminalSession("powershell");
+    return;
+  }
   renderToolWindow();
 }
 
@@ -1564,29 +1594,121 @@ function updateRuntimeFromControls(source = "toolbar") {
   setStatus("Runtime settings updated");
 }
 
-async function startTerminal() {
-  const result = await bridge.terminal.start({ cwd: ideState.projectRoot || undefined, shell: "powershell" });
-  ideState.terminalRunning = Boolean(result?.ok);
-  appendLines(ideState.terminalLines, [`Terminal ${ideState.terminalRunning ? "started" : "failed"}${result?.cwd ? ` in ${result.cwd}` : ""}`], ideState.terminalRunning ? "success" : "error");
+function terminalSession(id) {
+  return ideState.terminalTabs.find((session) => session.id === id);
+}
+
+function updateTerminalTabState(session) {
+  const tab = document.querySelector(`.terminal-session-tab:has([data-terminal-id="${session.id}"])`);
+  tab?.classList.toggle("is-running", session.running);
+}
+
+async function startTerminalSession(session, runtime) {
+  if (runtime.starting || session.running) return;
+  runtime.starting = true;
+  const result = await bridge.terminal.start({
+    sessionId: session.id,
+    cwd: ideState.projectRoot || undefined,
+    shell: session.shell,
+    cols: runtime.terminal.cols,
+    rows: runtime.terminal.rows
+  });
+  runtime.starting = false;
+  session.running = Boolean(result?.ok);
+  session.cwd = result?.cwd || "";
+  updateTerminalTabState(session);
+  if (!result?.ok) runtime.terminal.writeln(`\x1b[31mUnable to start terminal: ${result?.stderr || "Unknown error"}\x1b[0m`);
+  runtime.terminal.focus();
+}
+
+function createTerminalRuntime(session, slot) {
+  const terminal = new XtermTerminal({
+    cursorBlink: true,
+    cursorStyle: "bar",
+    fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, monospace',
+    fontSize: 13,
+    lineHeight: 1.15,
+    scrollback: 5000,
+    theme: {
+      background: "#090a09",
+      foreground: "#c4c7c4",
+      cursor: "#4ade80",
+      cursorAccent: "#090a09",
+      selectionBackground: "#224d2e",
+      black: "#090a09",
+      brightBlack: "#575b57",
+      green: "#4ade80",
+      brightGreen: "#86efac"
+    }
+  });
+  const fitAddon = new FitAddon();
+  const host = document.createElement("div");
+  host.className = "terminal-host";
+  slot.appendChild(host);
+  terminal.loadAddon(fitAddon);
+  terminal.open(host);
+
+  const runtime = { terminal, fitAddon, host, starting: false, resizeObserver: null };
+  terminal.onData((data) => bridge.terminal.send({ sessionId: session.id, data }));
+  terminal.onResize(({ cols, rows }) => bridge.terminal.resize({ sessionId: session.id, cols, rows }));
+  terminalRuntimes.set(session.id, runtime);
+  startTerminalSession(session, runtime);
+  return runtime;
+}
+
+function mountTerminal(session, slot) {
+  const runtime = terminalRuntimes.get(session.id) || createTerminalRuntime(session, slot);
+  if (runtime.host.parentElement !== slot) slot.appendChild(runtime.host);
+  runtime.resizeObserver?.disconnect();
+  runtime.resizeObserver = new ResizeObserver(() => {
+    if (runtime.host.isConnected) runtime.fitAddon.fit();
+  });
+  runtime.resizeObserver.observe(slot);
+  requestAnimationFrame(() => {
+    runtime.fitAddon.fit();
+    runtime.terminal.focus();
+  });
+}
+
+function createTerminalSession(shell = "powershell") {
+  const session = {
+    id: `terminal-${++terminalSequence}`,
+    shell: shell === "cmd" ? "cmd" : "powershell",
+    running: false,
+    cwd: ""
+  };
+  ideState.terminalTabs.push(session);
+  ideState.activeTerminalId = session.id;
   ideState.activeTool = "terminal";
   renderToolWindow();
 }
 
-async function sendTerminalCommand(command) {
-  if (!command.trim()) return;
-  if (!ideState.terminalRunning) await startTerminal();
-  appendLines(ideState.terminalLines, [`PS> ${command}`], "command");
-  ideState.terminalInput = "";
-  await bridge.terminal.send({ command });
+async function closeTerminalSession(sessionId) {
+  const index = ideState.terminalTabs.findIndex((session) => session.id === sessionId);
+  if (index < 0) return;
+  const runtime = terminalRuntimes.get(sessionId);
+  runtime?.resizeObserver?.disconnect();
+  runtime?.terminal.dispose();
+  terminalRuntimes.delete(sessionId);
+  await bridge.terminal.stop({ sessionId });
+  ideState.terminalTabs.splice(index, 1);
+  if (ideState.activeTerminalId === sessionId) {
+    ideState.activeTerminalId = ideState.terminalTabs[Math.min(index, ideState.terminalTabs.length - 1)]?.id || null;
+  }
   renderToolWindow();
 }
 
 function installTerminalListener() {
   bridge.terminal.onData((payload = {}) => {
-    const kind = payload.type === "stderr" ? "error" : payload.type === "exit" ? "warning" : "info";
-    if (payload.type === "exit") ideState.terminalRunning = false;
-    appendLines(ideState.terminalLines, splitLines(payload.text), kind);
-    if (ideState.activeTool === "terminal") renderToolWindow();
+    const session = terminalSession(payload.sessionId);
+    const runtime = terminalRuntimes.get(payload.sessionId);
+    if (!session || !runtime) return;
+    if (payload.type === "data") runtime.terminal.write(payload.data || "");
+    if (payload.type === "exit") {
+      session.running = false;
+      runtime.terminal.writeln(`\r\n\x1b[90mProcess exited with code ${payload.exitCode ?? "unknown"}.\x1b[0m`);
+      updateTerminalTabState(session);
+    }
   });
 }
 
@@ -1617,7 +1739,7 @@ function installStyles() {
       --side-width: 286px;
       --tool-height: 190px;
       --accent: #37c685;
-      --accent-blue: #73a7ff;
+      --accent-blue: #22c55e;
       --danger: #e26b6b;
       --warning: #e2b86b;
       --bg: #15161b;
@@ -2398,7 +2520,7 @@ function installStyles() {
       color: #98a2b3;
       font-size: 12px;
     }
-    .start-action-arrow { color: #8993a4; }
+    .start-action-arrow { color: #777777; }
     .start-action:hover .start-action-arrow { transform: translateX(3px); color: #eef2f8; }
 
     .tool-window {
@@ -2410,6 +2532,9 @@ function installStyles() {
     }
     .is-start-mode + .tool-window, .editor-workbench.is-start-mode ~ .tool-window {
       display: none;
+    }
+    .editor-workbench.is-start-mode ~ .tool-window.is-forced-open {
+      display: grid;
     }
     .tool-tabs {
       display: flex;
@@ -2458,7 +2583,7 @@ function installStyles() {
     .log-error { color: #f0a0a0; }
     .log-success { color: #8ce0b5; }
     .log-warning { color: #e3c482; }
-    .log-command { color: #a7c3ff; }
+    .log-command { color: #86efac; }
     .problem-row {
       grid-template-columns: 68px minmax(0, 1fr) auto;
       min-height: 32px;
@@ -2478,30 +2603,139 @@ function installStyles() {
     }
     .terminal-tool {
       display: grid;
-      grid-template-rows: 1fr 34px;
+      grid-template-rows: 30px minmax(0, 1fr);
       height: 100%;
       min-height: 0;
+      margin: -7px;
     }
-    .terminal-log {
-      min-height: 0;
-      overflow: auto;
+    .terminal-session-bar {
+      display: flex;
+      min-width: 0;
+      align-items: stretch;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+      background: #0f100f;
     }
-    .terminal-input-row {
-      display: grid;
-      grid-template-columns: auto 1fr auto;
-      gap: 8px;
+    .terminal-session-tabs {
+      display: flex;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .terminal-session-tabs::-webkit-scrollbar { display: none; }
+    .terminal-session-tab {
+      display: flex;
+      min-width: 0;
       align-items: center;
-      padding-top: 6px;
+      border-right: 1px solid var(--line);
+      color: var(--text-muted);
+      background: #0d0e0d;
     }
-    .terminal-input-row input {
-      height: 28px;
-      border: 1px solid rgba(230,235,246,.09);
-      border-radius: 6px;
-      color: #dce2eb;
-      background: #22242d;
-      font-family: "Cascadia Code", Consolas, monospace;
-      font-size: 12px;
-      padding: 0 9px;
+    .terminal-session-tab.is-active {
+      color: var(--text);
+      background: #151715;
+      box-shadow: inset 0 -1px 0 #22c55e;
+    }
+    .terminal-session-select,
+    .terminal-session-close,
+    .terminal-new-button {
+      border: 0;
+      color: inherit;
+      background: transparent;
+    }
+    .terminal-session-select {
+      display: flex;
+      min-width: 116px;
+      height: 29px;
+      gap: 7px;
+      align-items: center;
+      padding: 0 4px 0 10px;
+      font-size: 11px;
+    }
+    .terminal-session-close {
+      display: grid;
+      width: 24px;
+      height: 24px;
+      margin-right: 3px;
+      place-items: center;
+      border-radius: 4px;
+      opacity: .45;
+    }
+    .terminal-session-close:hover {
+      color: #d0d0d0;
+      background: #242624;
+      opacity: 1;
+    }
+    .terminal-session-close .ui-icon,
+    .terminal-new-button .ui-icon {
+      width: 12px;
+      height: 12px;
+    }
+    .terminal-status-dot {
+      width: 6px;
+      height: 6px;
+      flex: 0 0 6px;
+      border-radius: 50%;
+      background: #575b57;
+    }
+    .terminal-session-tab.is-running .terminal-status-dot {
+      background: #22c55e;
+      box-shadow: 0 0 7px rgba(34,197,94,.45);
+    }
+    .terminal-new-controls {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      border-left: 1px solid var(--line);
+      padding: 0 5px;
+    }
+    #terminalShellChoice {
+      height: 24px;
+      border: 0;
+      color: #858985;
+      background: transparent;
+      font-size: 11px;
+    }
+    #terminalShellChoice option { background: #171917; }
+    .terminal-new-button {
+      display: flex;
+      height: 24px;
+      gap: 5px;
+      align-items: center;
+      padding: 0 7px;
+      border-radius: 4px;
+      color: #858985;
+      font-size: 11px;
+    }
+    .terminal-new-button:hover {
+      color: #c4c7c4;
+      background: #1b1d1b;
+    }
+    .terminal-host-slot,
+    .terminal-host {
+      min-height: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #090a09;
+    }
+    .terminal-host { padding: 5px 8px 3px; }
+    .terminal-host .xterm { height: 100%; }
+    .terminal-host .xterm-viewport { scrollbar-width: thin; }
+    .terminal-empty {
+      display: grid;
+      place-content: center;
+      justify-items: center;
+      gap: 7px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+    .terminal-empty strong { color: var(--text-soft); font-size: 12px; }
+    .terminal-empty span { font-size: 11px; }
+    .terminal-empty-icon {
+      width: 20px;
+      height: 20px;
+      color: #22c55e;
     }
     .tool-action {
       min-height: 28px;
@@ -2692,8 +2926,8 @@ function installStyles() {
       --activity-width: 48px;
       --side-width: 292px;
       --tool-height: 196px;
-      --accent: #007acc;
-      --accent-blue: #007acc;
+      --accent: #22c55e;
+      --accent-blue: #22c55e;
       --danger: #f48771;
       --warning: #cca700;
       --bg: #1e1e1e;
@@ -2706,7 +2940,7 @@ function installStyles() {
       --text-soft: #c5c5c5;
       --text-muted: #858585;
       --shadow: 0 8px 18px rgba(0, 0, 0, .32);
-      --focus: 0 0 0 1px #007acc;
+      --focus: 0 0 0 1px #22c55e;
       --fast: 80ms ease;
       --med: 100ms ease;
       --slow: 120ms ease;
@@ -2867,7 +3101,7 @@ function installStyles() {
     }
     .menu-item:hover {
       color: #ffffff;
-      background: #094771;
+      background: #0f3d20;
       padding-left: 6px;
     }
     .side-searchbar {
@@ -2887,7 +3121,7 @@ function installStyles() {
     .side-searchbar input:focus, .runtime-controls select:focus, .runtime-controls input[type="text"]:focus,
     .settings-field select:focus, .settings-field textarea:focus, #newProjectName:focus,
     .terminal-input-row input:focus {
-      border-color: #007acc;
+      border-color: #22c55e;
       background: #1e1e1e;
     }
     .side-searchbar input { height: 28px; padding-left: 30px; }
@@ -2915,7 +3149,7 @@ function installStyles() {
     .tree-row.is-active {
       color: #ffffff;
       background: #37373d;
-      box-shadow: inset 2px 0 0 #007acc;
+      box-shadow: inset 2px 0 0 #22c55e;
     }
     .tree-folder .chevron {
       width: 14px;
@@ -2963,7 +3197,7 @@ function installStyles() {
       height: 18px;
       border-radius: 2px;
       color: #ffffff;
-      background: #007acc;
+      background: #22c55e;
       font-size: 10px;
     }
     .settings-section {
@@ -2988,8 +3222,8 @@ function installStyles() {
     }
     .capability-chip:hover, .capability-chip.is-active {
       color: #ffffff;
-      border-color: #007acc;
-      background: #094771;
+      border-color: #22c55e;
+      background: #0f3d20;
       transform: none;
     }
 
@@ -3027,12 +3261,12 @@ function installStyles() {
     }
     .toolbar-button-primary, .tool-action-primary, .dialog-button-primary {
       color: #ffffff;
-      border-color: #0e639c;
-      background: #0e639c;
+      border-color: #15803d;
+      background: #15803d;
       font-weight: 400;
     }
     .toolbar-button-primary:hover, .tool-action-primary:hover, .dialog-button-primary:hover {
-      background: #1177bb;
+      background: #16a34a;
     }
     .toolbar-separator {
       height: 20px;
@@ -3072,7 +3306,7 @@ function installStyles() {
     .document-tab.is-active {
       color: #ffffff;
       background: #1e1e1e;
-      box-shadow: inset 0 1px 0 #007acc;
+      box-shadow: inset 0 1px 0 #22c55e;
     }
     .tab-close {
       width: 18px;
@@ -3140,14 +3374,14 @@ function installStyles() {
       animation: none;
     }
     .start-action:hover {
-      border-color: #007acc;
+      border-color: #22c55e;
       color: #ffffff;
       background: #2a2d2e;
       transform: none;
       box-shadow: none;
     }
     .start-action-primary {
-      border-color: #007acc;
+      border-color: #22c55e;
       background: #252526;
     }
     .start-action-icon {
@@ -3160,7 +3394,7 @@ function installStyles() {
     }
     .start-action-primary .start-action-icon {
       color: #ffffff;
-      background: #0e639c;
+      background: #15803d;
     }
     .start-action-title {
       color: #ffffff;
@@ -3197,7 +3431,7 @@ function installStyles() {
     .tool-tab:hover, .tool-tab.is-active {
       color: #ffffff;
       background: #1e1e1e;
-      box-shadow: inset 0 1px 0 #007acc;
+      box-shadow: inset 0 1px 0 #22c55e;
     }
     .tool-body {
       padding: 6px 8px;
@@ -3224,7 +3458,7 @@ function installStyles() {
       background: #a1260d;
       font-size: 10px;
     }
-    .terminal-tool { grid-template-rows: 1fr 32px; }
+    .terminal-tool { grid-template-rows: 30px minmax(0, 1fr); }
     .terminal-input-row {
       gap: 6px;
       padding-top: 5px;
@@ -3236,7 +3470,7 @@ function installStyles() {
       padding: 0 8px;
       border: 0;
       color: #ffffff;
-      background: #007acc;
+      background: #22c55e;
       font-size: 12px;
     }
     .status-left, .status-right { gap: 12px; }
@@ -3296,11 +3530,11 @@ function installStyles() {
       box-shadow: none;
     }
     .template-card:hover, .template-card.is-active {
-      border-color: #007acc;
+      border-color: #22c55e;
       background: #333337;
       transform: none;
     }
-    .template-card.is-active { box-shadow: inset 0 0 0 1px #007acc; }
+    .template-card.is-active { box-shadow: inset 0 0 0 1px #22c55e; }
     .template-card strong { color: #ffffff; font-size: 13px; }
     .template-card span { color: #a0a0a0; font-size: 12px; }
     .dialog-button:hover {
@@ -3852,15 +4086,797 @@ function installStyles() {
       background: #22c55e;
       box-shadow: none;
     }
+    .editor-surface:has(.editor-workbench.is-start-mode) {
+      grid-template-rows: 40px 34px minmax(0, 1fr) 0;
+    }
+    .editor-surface:has(.editor-workbench.is-start-mode) .tool-window.is-forced-open {
+      display: grid;
+    }
+    .editor-surface:has(.editor-workbench.is-start-mode):has(.tool-window.is-forced-open) {
+      grid-template-rows: 40px 34px minmax(0, 1fr) minmax(180px, var(--tool-height));
+    }
+    .start-action:hover,
+    .start-action-primary {
+      border-color: rgba(34,197,94,.42);
+    }
+    .start-action-primary {
+      background: #0d2010;
+    }
+    .start-action-primary .start-action-icon,
+    .outline-kind {
+      color: #111111;
+      background: #22c55e;
+    }
+    .start-action:hover .start-action-arrow {
+      color: #22c55e;
+    }
+    .capability-chip:hover,
+    .capability-chip.is-active {
+      color: #4ade80;
+      border-color: rgba(34,197,94,.42);
+      background: #0f1f12;
+    }
+    .template-card:hover,
+    .template-card.is-active {
+      border-color: rgba(34,197,94,.42);
+      background: #1e1e1e;
+    }
+    .template-card.is-active {
+      box-shadow: inset 0 0 0 1px rgba(34,197,94,.14);
+    }
+    .dialog-button-primary,
+    .tool-action-primary {
+      color: #4ade80;
+      border-color: #22c55e;
+      background: #0d2010;
+    }
+    .dialog-button-primary:hover,
+    .tool-action-primary:hover {
+      color: #86efac;
+      border-color: #4ade80;
+      background: #123017;
+    }
+    .log-success,
+    .log-command,
+    #statusInstance.is-live,
+    .status-item.is-dirty {
+      color: #4ade80;
+    }
+    .side-searchbar input:focus,
+    .runtime-controls select:focus,
+    .runtime-controls input[type="text"]:focus,
+    .settings-field select:focus,
+    .settings-field textarea:focus,
+    #newProjectName:focus,
+    .terminal-input-row input:focus {
+      border-color: #22c55e;
+      box-shadow: 0 0 0 2px rgba(34,197,94,.08);
+    }
+
+    /* Final interface polish */
+    button,
+    input,
+    select,
+    textarea {
+      letter-spacing: 0;
+    }
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
+    textarea:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 1px #22c55e, 0 0 0 3px rgba(34,197,94,.1);
+    }
+    .side-topbar {
+      min-height: 48px;
+      border-bottom: 1px solid #1f1f1f;
+    }
+    .side-title {
+      color: #777777;
+    }
+    .side-meta {
+      color: #484848;
+    }
+    .side-actions {
+      gap: 3px;
+    }
+    .side-searchbar {
+      padding: 8px;
+      border-bottom: 1px solid #1f1f1f;
+    }
+    .side-searchbar input {
+      height: 30px;
+      color: #aaaaaa;
+      background: #191919;
+    }
+    .side-searchbar input::placeholder,
+    .runtime-controls input::placeholder,
+    .terminal-input-row input::placeholder {
+      color: #454545;
+      opacity: 1;
+    }
+    .tree-row,
+    .search-result,
+    .function-row,
+    .outline-row,
+    .problem-row,
+    .recent-project {
+      min-height: 28px;
+    }
+    .tree-row.is-active {
+      box-shadow: inset 2px 0 0 #22c55e, inset 0 0 0 1px rgba(34,197,94,.05);
+    }
+    .side-action-menu {
+      border-color: #303030;
+      border-radius: 6px;
+      background: #1b1b1b;
+      box-shadow: 0 14px 36px rgba(0,0,0,.45);
+    }
+    .menu-item {
+      color: #999999;
+      border-radius: 4px;
+    }
+    .menu-item:hover {
+      color: #dddddd;
+      background: #242424;
+    }
+    .menu-strip {
+      gap: 5px;
+      padding-inline: 10px !important;
+    }
+    .toolbar-button,
+    .tool-action,
+    .dialog-button {
+      min-width: 0;
+      height: 28px;
+      gap: 6px;
+      padding-inline: 10px;
+      color: #888888;
+    }
+    .toolbar-button .ui-icon,
+    .tool-action .ui-icon,
+    .dialog-button .ui-icon {
+      width: 13px;
+      height: 13px;
+      flex: 0 0 13px;
+    }
+    .toolbar-button:hover,
+    .tool-action:hover,
+    .dialog-button:hover {
+      color: #b8b8b8;
+      border-color: #383838;
+      filter: none;
+    }
+    .toolbar-button:active,
+    .tool-action:active,
+    .dialog-button:active {
+      transform: scale(.98);
+    }
+    #toolbarRun {
+      min-width: 66px;
+      justify-content: center;
+    }
+    .runtime-controls {
+      gap: 6px;
+    }
+    .runtime-controls select,
+    .runtime-controls input[type="text"],
+    .runtime-toggle {
+      height: 28px;
+      border-radius: 5px;
+      background: #191919;
+    }
+    .runtime-toggle {
+      padding-inline: 8px;
+    }
+    .runtime-controls select:hover,
+    .runtime-controls input[type="text"]:hover,
+    .runtime-toggle:hover {
+      border-color: #353535;
+      background: #1d1d1d;
+    }
+    .document-tabs {
+      gap: 2px;
+      padding-inline: 7px;
+    }
+    .document-tab {
+      min-width: 132px;
+      height: 30px;
+      color: #666666;
+    }
+    .document-tab:hover {
+      color: #aaaaaa;
+      background: #181818;
+    }
+    .document-tab.is-active {
+      color: #d0d0d0;
+    }
+    .document-tab .tab-close {
+      opacity: .45;
+      transition: color 120ms ease, background 120ms ease, opacity 120ms ease;
+    }
+    .document-tab:hover .tab-close,
+    .document-tab.is-active .tab-close,
+    .tab-close:focus-visible {
+      opacity: 1;
+    }
+    .tab-close:hover {
+      color: #dddddd;
+      background: #292929;
+    }
+    .start-surface {
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+    }
+    .start-shell {
+      width: min(920px, 100%);
+      grid-template-columns: minmax(280px, .9fr) minmax(360px, 1fr);
+      gap: 48px;
+      align-items: center;
+    }
+    .start-title {
+      margin-bottom: 10px;
+      color: #d8d8d8;
+      font-size: 32px;
+      font-weight: 500;
+    }
+    .start-subtitle {
+      max-width: 500px;
+      color: #777777;
+      line-height: 1.65;
+    }
+    .recent-title {
+      color: #555555;
+    }
+    .recent-list {
+      gap: 6px;
+    }
+    .recent-empty,
+    .recent-project {
+      min-height: 46px;
+      border: 1px solid #252525;
+      border-radius: 6px;
+      color: #777777;
+      background: #151515;
+    }
+    .recent-project {
+      padding: 8px 12px;
+      text-align: left;
+    }
+    .recent-project strong {
+      color: #b8b8b8;
+      font-weight: 600;
+    }
+    .recent-project span {
+      color: #5a5a5a;
+    }
+    .recent-project:hover {
+      border-color: rgba(34,197,94,.3);
+      background: #191d1a;
+      transform: none;
+    }
+    .start-actions-panel {
+      gap: 10px;
+    }
+    .start-action {
+      grid-template-columns: 34px minmax(0, 1fr) 18px;
+      min-height: 68px;
+      padding: 10px 12px;
+      border: 1px solid #282828;
+      border-radius: 7px;
+      color: #aaaaaa;
+      background: #161616;
+      box-shadow: none;
+    }
+    .start-action:hover {
+      border-color: rgba(34,197,94,.4);
+      background: #191d1a;
+      transform: translateY(-1px);
+      box-shadow: 0 8px 20px rgba(0,0,0,.22);
+    }
+    .start-action-primary {
+      background: #0d2010;
+    }
+    .start-action-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 5px;
+    }
+    .start-action-title {
+      color: #d0d0d0;
+      font-size: 13px;
+    }
+    .start-action-note {
+      color: #5f5f5f;
+      line-height: 1.45;
+    }
+    .tool-tabs {
+      gap: 6px;
+      padding-inline: 12px;
+    }
+    .tool-tab {
+      padding-inline: 8px;
+      color: #555555;
+    }
+    .tool-tab:hover {
+      color: #888888;
+    }
+    .tool-tab.is-active {
+      color: #b8b8b8;
+    }
+    .tool-body {
+      color: #777777;
+      background: #131313;
+    }
+    .tool-empty {
+      color: #555555;
+    }
+    .log-line {
+      min-height: 22px;
+    }
+    .status-bar {
+      color: #555555;
+    }
+    .status-left,
+    .status-right {
+      gap: 14px;
+    }
+    .status-item,
+    .status-button {
+      color: #555555;
+    }
+    .status-button:hover {
+      color: #999999;
+      background: #1b1b1b;
+      transform: none;
+    }
+    .project-dialog {
+      background: rgba(0,0,0,.64);
+      backdrop-filter: blur(6px);
+    }
+    .project-dialog-card {
+      border-color: #303030;
+      border-radius: 8px;
+      background: #181818;
+      box-shadow: 0 24px 70px rgba(0,0,0,.62);
+    }
+    .project-dialog-card h2 {
+      color: #d8d8d8;
+    }
+    .template-card {
+      border-color: #292929;
+      border-radius: 6px;
+      background: #1b1b1b;
+    }
+    .template-card strong {
+      color: #c4c4c4;
+    }
+    .template-card span {
+      color: #666666;
+    }
+
+    /* Professional IDE finish */
+    ::selection {
+      color: #e6e6e6;
+      background: rgba(34,197,94,.24);
+    }
+    body {
+      color: #c8c8c8;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    input[type="checkbox"] {
+      accent-color: #22c55e;
+    }
+    button:disabled,
+    input:disabled,
+    select:disabled,
+    textarea:disabled {
+      cursor: not-allowed;
+      opacity: .42;
+      filter: none;
+      transform: none !important;
+    }
+    .app-shell {
+      border-color: #202020;
+      box-shadow: 0 24px 72px rgba(0,0,0,.48);
+    }
+    #windowChrome {
+      border-bottom-color: #202020;
+      background: #141414 !important;
+    }
+    #windowAppTitle {
+      color: #b8b8b8;
+      font-weight: 500;
+    }
+    #windowButtons .window-control-glyph {
+      opacity: .62;
+      transition: opacity 120ms ease;
+    }
+    #windowButtons .window-btn:hover .window-control-glyph {
+      opacity: .92;
+    }
+    .activity-bar {
+      border-right-color: #202020;
+      background: #141414;
+    }
+    .activity-button {
+      color: #606060;
+    }
+    .activity-button:hover {
+      color: #a8a8a8;
+      border-color: #303030;
+      background: #1c1c1c;
+      box-shadow: 0 5px 14px rgba(0,0,0,.2);
+    }
+    .activity-button.is-active {
+      color: #d0d0d0;
+      border-color: rgba(34,197,94,.3);
+      background: #102015;
+      box-shadow: inset 0 0 0 1px rgba(34,197,94,.06);
+    }
+    .side-panel {
+      border-right-color: #202020;
+      background: #141414;
+      box-shadow: inset -1px 0 0 rgba(255,255,255,.01);
+    }
+    .side-topbar,
+    .side-searchbar,
+    .side-content {
+      background: #141414;
+    }
+    .side-title {
+      color: #909090;
+    }
+    .icon-button {
+      color: #646464;
+    }
+    .icon-button:hover {
+      color: #b0b0b0;
+      border-color: #303030;
+      background: #1c1c1c;
+    }
+    .tree-row,
+    .search-result,
+    .function-row,
+    .outline-row,
+    .problem-row {
+      color: #737373;
+    }
+    .tree-row:hover,
+    .search-result:hover,
+    .function-row:hover,
+    .outline-row:hover,
+    .problem-row:hover {
+      color: #b2b2b2;
+      background: #1b1b1b;
+    }
+    .tree-row.is-active {
+      color: #d0d0d0;
+      background: #101d14;
+    }
+    .editor-surface {
+      background: #101010;
+    }
+    .menu-strip {
+      border-bottom-color: #222222;
+      background: #151515;
+      box-shadow: inset 0 -1px 0 rgba(255,255,255,.01);
+    }
+    .toolbar-separator {
+      height: 18px;
+      margin-inline: 3px;
+      background: #303030;
+    }
+    .toolbar-button,
+    .tool-action,
+    .dialog-button {
+      border-color: #2a2a2a;
+      color: #929292;
+      background: #1b1b1b;
+    }
+    .toolbar-button:hover,
+    .tool-action:hover,
+    .dialog-button:hover {
+      color: #d0d0d0;
+      border-color: #3a3a3a;
+      background: #202020;
+    }
+    #toolbarRun,
+    .dialog-button-primary,
+    .tool-action-primary {
+      color: #62e88f;
+      border-color: rgba(34,197,94,.8);
+      background: #0c2111;
+      box-shadow: inset 0 0 0 1px rgba(34,197,94,.04);
+    }
+    #toolbarRun:hover,
+    .dialog-button-primary:hover,
+    .tool-action-primary:hover {
+      color: #8df0ad;
+      border-color: #4ade80;
+      background: #102a17;
+    }
+    .runtime-controls select,
+    .runtime-controls input[type="text"],
+    .runtime-toggle {
+      border-color: #292929;
+      color: #8d8d8d;
+      background: #171717;
+    }
+    .runtime-toggle:has(input:checked) {
+      color: #b9b9b9;
+      border-color: rgba(34,197,94,.28);
+      background: #111d14;
+    }
+    .document-tabs {
+      border-bottom-color: #202020;
+      background: #101010;
+    }
+    .document-tab {
+      border-color: transparent;
+      color: #686868;
+      background: #131313;
+    }
+    .document-tab:hover {
+      color: #b4b4b4;
+      border-color: #262626;
+      background: #171717;
+    }
+    .document-tab.is-active {
+      color: #d8d8d8;
+      border-color: #262626;
+      border-bottom-color: #1a1a1a;
+      background: #1a1a1a;
+    }
+    .document-tab.is-active .tab-file-icon {
+      color: #4ade80;
+    }
+    .start-surface {
+      background: #101010 !important;
+    }
+    .start-title {
+      color: #e0e0e0;
+    }
+    .start-subtitle {
+      color: #858585;
+    }
+    .recent-empty,
+    .recent-project,
+    .start-action {
+      border-color: #292929;
+      background: #151515;
+    }
+    .recent-project:hover,
+    .start-action:hover {
+      border-color: rgba(34,197,94,.36);
+      background: #172019;
+    }
+    .start-action-primary {
+      border-color: rgba(34,197,94,.52);
+      background: #0d2010;
+    }
+    .start-action-primary .start-action-icon {
+      box-shadow: 0 0 0 1px rgba(34,197,94,.14);
+    }
+    .tool-window {
+      border-top-color: #202020;
+      background: #101010;
+    }
+    .tool-tabs {
+      border-bottom-color: #202020;
+      background: #121212;
+    }
+    .tool-tab {
+      color: #606060;
+    }
+    .tool-tab:hover {
+      color: #999999;
+    }
+    .tool-tab.is-active {
+      color: #c0c0c0;
+    }
+    .tool-body {
+      background: #101010;
+    }
+    .status-bar {
+      border-top-color: #1d1d1d;
+      background: #0d0d0d;
+    }
+    .status-item,
+    .status-button {
+      color: #626262;
+    }
+    .status-item:hover {
+      color: #8a8a8a;
+    }
+    .project-dialog-card {
+      border-color: #343434;
+      background: #171717;
+    }
+    .project-field {
+      color: #8c8c8c;
+    }
+    #newProjectName {
+      color: #c0c0c0;
+      background: #131313;
+    }
+    .template-card {
+      color: #8b8b8b;
+      background: #1a1a1a;
+    }
+    .template-card:hover,
+    .template-card.is-active {
+      background: #1c241e;
+    }
+
+    /* Dark, sleek tonal pass */
+    :root {
+      --bg: #090a09;
+      --panel: #101110;
+      --panel-2: #141514;
+      --panel-3: #181918;
+      --line: #1b1d1b;
+      --line-strong: #262826;
+      --text: #c4c7c4;
+      --text-soft: #949894;
+      --text-muted: #575b57;
+    }
+    html,
+    body,
+    #root,
+    .app-shell,
+    .workspace,
+    .editor-workbench,
+    .start-surface {
+      background: #090a09 !important;
+    }
+    .app-shell {
+      border-color: #181a18;
+      box-shadow: 0 26px 80px rgba(0,0,0,.62);
+    }
+    #windowChrome {
+      border-bottom-color: #1b1d1b;
+      background: #101110 !important;
+    }
+    .activity-bar,
+    .side-panel,
+    .side-topbar,
+    .side-searchbar,
+    .side-content {
+      background: #0f100f;
+    }
+    .activity-bar,
+    .side-panel {
+      border-color: #1b1d1b;
+    }
+    .activity-button:hover,
+    .icon-button:hover {
+      background: #171917;
+    }
+    .activity-button.is-active {
+      background: #0e1b12;
+    }
+    .side-searchbar input,
+    .runtime-controls select,
+    .runtime-controls input[type="text"],
+    .runtime-toggle,
+    #newProjectName,
+    .terminal-input-row input {
+      border-color: #222422;
+      background: #121312;
+    }
+    .editor-surface,
+    .editor-workbench,
+    #monacoEditor,
+    .empty-editor-state {
+      background: #0c0d0c !important;
+    }
+    .menu-strip {
+      border-bottom-color: #1d1f1d;
+      background: #111211;
+    }
+    .toolbar-button,
+    .tool-action,
+    .dialog-button {
+      border-color: #242624;
+      background: #161716;
+    }
+    .toolbar-button:hover,
+    .tool-action:hover,
+    .dialog-button:hover {
+      border-color: #333633;
+      background: #1b1d1b;
+    }
+    #toolbarRun,
+    .dialog-button-primary,
+    .tool-action-primary {
+      background: #0a1d0f;
+    }
+    #toolbarRun:hover,
+    .dialog-button-primary:hover,
+    .tool-action-primary:hover {
+      background: #0e2514;
+    }
+    .document-tabs,
+    .tool-window,
+    .tool-tabs,
+    .tool-body {
+      border-color: #1b1d1b;
+      background: #0d0e0d;
+    }
+    .document-tab {
+      background: #101110;
+    }
+    .document-tab:hover {
+      background: #151715;
+    }
+    .document-tab.is-active {
+      border-color: #222522;
+      border-bottom-color: #171917;
+      background: #171917;
+    }
+    .start-surface {
+      background: #0c0d0c !important;
+    }
+    .recent-empty,
+    .recent-project,
+    .start-action {
+      border-color: #222422;
+      background: #111211;
+    }
+    .recent-project:hover,
+    .start-action:hover {
+      background: #131b15;
+    }
+    .start-action-primary {
+      background: #0a1d0f;
+    }
+    .tool-body {
+      background: #0b0c0b;
+    }
+    .status-bar {
+      border-top-color: #181a18;
+      background: #080908;
+    }
+    .project-dialog-card {
+      border-color: #292c29;
+      background: #111211;
+    }
+    .template-card {
+      border-color: #232523;
+      background: #151615;
+    }
+    .template-card:hover,
+    .template-card.is-active {
+      background: #172019;
+    }
     @media (max-width: 980px) {
       :root { --side-width: 190px; }
       .workspace { grid-template-columns: 46px minmax(170px, 190px) minmax(0, 1fr); }
       .runtime-controls input[type="text"] { width: 170px; }
+      .start-shell {
+        grid-template-columns: 1fr;
+        gap: 28px;
+        align-items: start;
+      }
+      .start-actions-panel {
+        width: 100%;
+      }
     }
     @media (max-width: 760px) {
       .workspace { grid-template-columns: 46px minmax(0, 1fr); }
       .side-panel { display: none; }
       .editor-surface { grid-column: 2; }
+      .menu-strip {
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+      .start-surface {
+        align-items: flex-start;
+        padding: 24px;
+      }
       .runtime-toggle span,
       .runtime-controls input[type="text"] { display: none !important; }
     }
@@ -4150,18 +5166,21 @@ function bindEvents() {
       goToLine(Number(problem.dataset.problemLine || "1"));
       return;
     }
-    const start = event.target.closest("#terminalStart");
-    if (start) startTerminal();
-  });
-
-  document.getElementById("toolBody")?.addEventListener("input", (event) => {
-    if (event.target.id === "terminalInput") ideState.terminalInput = event.target.value;
-  });
-
-  document.getElementById("toolBody")?.addEventListener("submit", async (event) => {
-    if (event.target.id !== "terminalForm") return;
-    event.preventDefault();
-    await sendTerminalCommand(event.target.querySelector("#terminalInput")?.value ?? "");
+    const closeTerminal = event.target.closest("[data-terminal-close]");
+    if (closeTerminal) {
+      closeTerminalSession(closeTerminal.dataset.terminalClose);
+      return;
+    }
+    const selectTerminal = event.target.closest("[data-terminal-id]");
+    if (selectTerminal) {
+      ideState.activeTerminalId = selectTerminal.dataset.terminalId;
+      renderToolWindow();
+      return;
+    }
+    if (event.target.closest("#terminalNew")) {
+      const shell = document.getElementById("terminalShellChoice")?.value || "powershell";
+      createTerminalSession(shell);
+    }
   });
 
   document.getElementById("newProjectCancel")?.addEventListener("click", () => setProjectDialogOpen(false));
