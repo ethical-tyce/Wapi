@@ -1865,10 +1865,6 @@ function renderWindowBar() {
             </div>
           </div>
           <div id="sideContent" class="side-content"></div>
-          <div class="side-footer">
-            <button type="button" data-panel-jump="outline">${iconSvg(ListTree)}<span>Outline</span></button>
-            <button type="button" data-panel-jump="functions">${iconSvg(Database)}<span>Dependencies</span></button>
-          </div>
         </aside>
 
         <section class="editor-surface" aria-label="Editor">
