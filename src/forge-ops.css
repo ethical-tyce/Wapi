@@ -22,3 +22,124 @@
 #toolbarCheck:hover{color:#090b09;background:var(--accent-strong);border-color:var(--accent-strong);box-shadow:0 0 30px rgb(183 239 45/.15)}
 #toolbarRun{min-width:88px;color:var(--text-soft);background:#101310;border-color:var(--line-strong);box-shadow:none}
 #toolbarRun:hover{color:var(--accent);background:#141814;border-color:#7f9e27}
+
+
+/* Keep the IDE chrome on one consistent spacing rhythm. */
+:root{
+  --status-height:32px;
+  --space-1:4px;
+  --space-2:8px;
+  --space-3:12px;
+  --space-4:16px;
+}
+.menu-strip{
+  gap:var(--space-4);
+  padding-inline:var(--space-4) var(--space-3);
+}
+.runtime-controls{margin-left:0}
+.runtime-field{padding-inline:var(--space-3)}
+.runtime-field:first-child{padding-left:0}
+.toolbar-actions{gap:var(--space-2);padding-left:0}
+.side-topbar{padding-inline:var(--space-4) var(--space-3)}
+.side-actions{gap:var(--space-1)}
+.side-content{padding-block:var(--space-3)}
+.side-footer{padding-block:var(--space-2)}
+.start-action{padding-block:20px}
+.status-bar{
+  height:var(--status-height);
+  min-height:var(--status-height);
+  padding:0 6px;
+  border:0;
+  border-top:1px solid var(--line);
+}
+.status-left,.status-right{height:100%;gap:0}
+.status-left>*:not(.status-dot),.status-right>*:not(.status-dot){
+  display:inline-flex;
+  align-items:center;
+  height:100%;
+  padding-inline:11px;
+}
+.status-left>*:first-child{padding-left:8px}
+.status-right>*:last-child{padding-right:8px;border-right:0}
+.status-right>.status-dot{
+  flex:0 0 7px;
+  width:7px;
+  height:7px;
+  margin-inline:10px;
+  padding:0;
+  border:0;
+}
+
+
+/* Compact runtime toolbar without sacrificing legibility. */
+:root{--toolbar-height:64px}
+.menu-strip{
+  gap:var(--space-2);
+  padding-inline:var(--space-3) 10px;
+}
+.runtime-controls{gap:0}
+.runtime-field{
+  min-width:105px;
+  padding-inline:10px;
+}
+.runtime-field:first-child{padding-left:0}
+.runtime-field>span:first-child{margin-bottom:6px}
+.runtime-field select,.runtime-field input[type=text]{height:26px}
+.runtime-switch{min-width:86px}
+.switch-control{min-width:68px;height:26px}
+.runtime-caps{width:min(220px,18vw)}
+.capability-input{height:26px}
+.runtime-field .capability-input input{height:24px}
+.toolbar-actions{gap:6px}
+.save-actions{padding-right:6px}
+.toolbar-icon{width:26px;height:30px}
+.toolbar-inspector,.toolbar-button{
+  height:36px;
+  gap:6px;
+  padding-inline:12px;
+}
+#toolbarCheck{min-width:104px}
+#toolbarRun{min-width:76px}
+.runtime-inspector-drawer{top:calc(var(--toolbar-height) - 1px)}
+
+@media(max-width:1260px){
+  .runtime-field{min-width:88px;padding-inline:8px}
+  .runtime-caps{width:150px}
+  .toolbar-inspector{width:36px;padding:0}
+}
+@media(max-width:1050px){
+  :root{--toolbar-height:60px}
+  .toolbar-button{padding-inline:8px}
+  #toolbarCheck{min-width:88px}
+  #toolbarRun{min-width:70px}
+}
+
+
+/* Keep the document tabs in their own visible row on every editor state. */
+:root{--tabs-height:38px}
+.editor-surface{
+  grid-template-rows:var(--toolbar-height) var(--tabs-height) minmax(0,1fr) var(--tool-height);
+}
+.editor-surface:has(.editor-workbench.is-start-mode){
+  grid-template-rows:var(--toolbar-height) var(--tabs-height) minmax(0,1fr) 0;
+}
+.editor-surface:has(.editor-workbench.is-start-mode):has(.tool-window.is-forced-open){
+  grid-template-rows:var(--toolbar-height) var(--tabs-height) minmax(0,1fr) minmax(180px,var(--tool-height));
+}
+.document-tabs{
+  position:relative;
+  z-index:10;
+  align-items:stretch;
+  height:var(--tabs-height);
+  min-height:var(--tabs-height);
+  padding:0;
+}
+.document-tab{
+  height:100%;
+  min-height:var(--tabs-height);
+  border:0;
+  border-right:1px solid var(--line);
+  border-radius:0;
+  box-shadow:none;
+}
+.document-tab.is-active{box-shadow:none}
