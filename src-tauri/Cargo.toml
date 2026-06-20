@@ -1,0 +1,23 @@
+[package]
+name = "wapi-ide"
+version = "0.1.0"
+description = "Tauri desktop IDE for the Wapi language"
+authors = ["Wapi contributors"]
+edition = "2021"
+
+[lib]
+name = "wapi_ide_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+portable-pty = "0.9"
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+wait-timeout = "0.2"

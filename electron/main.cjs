@@ -43,6 +43,19 @@ function emitTerminalData(webContents, payload) {
   }
 }
 
+function lockDefaultZoom(webContents) {
+  const resetZoom = () => webContents.setZoomLevel(0);
+
+  resetZoom();
+  webContents.on("did-finish-load", resetZoom);
+  webContents.on("before-input-event", (event, input) => {
+    if (!(input.control || input.meta)) return;
+    if (!["+", "-", "=", "0"].includes(input.key)) return;
+    event.preventDefault();
+    resetZoom();
+  });
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -62,6 +75,7 @@ function createWindow() {
     }
   });
 
+  lockDefaultZoom(win.webContents);
   win.__wapiDirty = false;
   win.once("ready-to-show", () => win.show());
   win.on("close", (event) => {

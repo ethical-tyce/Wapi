@@ -2,23 +2,25 @@
   "name": "wapi-ide",
   "version": "0.1.0",
   "private": true,
-  "description": "Dark minimal Electron IDE for the Wapi language.",
-  "main": "electron/main.cjs",
+  "description": "Tauri desktop IDE for the Wapi language.",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/dev-electron.mjs",
-    "build": "vite build",
-    "start": "npm run build && electron ."
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "start": "tauri dev",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "tauri": "tauri"
   },
   "devDependencies": {
-    "electron": "^33.3.1",
+    "@tauri-apps/cli": "2.11.3",
     "vite": "^6.0.7"
   },
   "dependencies": {
+    "@tauri-apps/api": "2.11.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "lucide": "^1.18.0",
-    "monaco-editor": "^0.55.1",
-    "node-pty": "^1.1.0"
+    "monaco-editor": "^0.55.1"
   }
 }

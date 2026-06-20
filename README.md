@@ -159,3 +159,28 @@ Tip: start Notepad before running `wapi test` for process-dependent checks.
 ## License
 
 MIT - see `LICENSE`.
+
+
+## Wapi IDE (Tauri)
+
+The desktop IDE uses Tauri 2 with a vanilla HTML, CSS, and JavaScript renderer. The native host preserves guarded `check` / `run` execution, project dialogs, recent projects, file persistence, custom window controls, and PTY terminal sessions.
+
+Requirements:
+
+- Node.js 20 or newer
+- Rust stable with the MSVC toolchain
+- Microsoft Edge WebView2 Runtime
+- Visual Studio Build Tools with Desktop development with C++
+
+Run the desktop app:
+
+```powershell
+npm install
+npm run dev
+```
+
+Build the installer and executable:
+
+```powershell
+npm run build
+```
