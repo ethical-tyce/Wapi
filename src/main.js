@@ -1,4 +1,5 @@
 import wapiIconUrl from "../wapi.png";
+import wapiBannerUrl from "../banner icon.png";
 import evaluatorSource from "../evaluator.cpp?raw";
 import bridge from "./tauri-bridge.js";
 import "./styles.css";
@@ -6,7 +7,7 @@ import "./forge-ops.css";
 import {
   Activity,
   ArrowRight,
-  Braces,
+  Syringe,
   ChevronDown,
   ChevronRight,
   Cpu,
@@ -1808,7 +1809,7 @@ function renderWindowBar() {
     <main class="app-shell">
       <header id="windowChrome" data-tauri-drag-region>
         <div class="window-brand" data-tauri-drag-region>
-          <span class="window-wordmark">WAPI</span>
+          <span class="window-banner-slot"><img class="window-wordmark" src="${wapiBannerUrl}" alt="Wapi"></span>
           <span class="window-brand-rule" aria-hidden="true"></span>
           <span id="windowProjectTitle" class="window-project-title">WapiProject</span>
           <span class="window-branch"><span aria-hidden="true">branch</span> main</span>
@@ -1922,7 +1923,7 @@ function renderWindowBar() {
         </aside>
 
         <section class="editor-surface" aria-label="Editor">
-          <div class="menu-strip">
+          <div class="menu-strip" role="toolbar" aria-label="Execution toolbar">
             <div class="runtime-controls" aria-label="Runtime controls">
               <label class="runtime-field runtime-mode runtime-compact" title="Runtime mode">
                 <span class="runtime-control-icon">${iconSvg(Activity)}</span>
@@ -1933,25 +1934,25 @@ function renderWindowBar() {
                 </select>
               </label>
               <label class="runtime-field runtime-switch runtime-compact" title="Strict enforcement">
-                <span class="runtime-control-icon">${iconSvg(ShieldCheck)}</span>
-                <span class="switch-control"><input id="runtimeStrict" type="checkbox" aria-label="Strict enforcement"><b>On</b></span>
+                <span class="runtime-control-icon strict-control-icon">${iconSvg(ShieldCheck)}</span>
+                <span class="switch-control"><input id="runtimeStrict" type="checkbox" aria-label="Strict enforcement"></span>
               </label>
               <label class="runtime-field runtime-switch runtime-compact" title="Injection policy">
-                <span class="runtime-control-icon">${iconSvg(Braces)}</span>
-                <span class="switch-control"><input id="runtimeInjection" type="checkbox" aria-label="Block injection"><b>Block</b></span>
+                <span class="runtime-control-icon injection-control-icon">${iconSvg(Syringe)}</span>
+                <span class="switch-control"><input id="runtimeInjection" type="checkbox" aria-label="Allow injection"></span>
               </label>
-              <label class="runtime-field runtime-caps">
-                <span>Capabilities</span>
-                <span class="capability-input">${iconSvg(Database)}<input id="runtimeCapabilities" type="text" spellcheck="false" title="Capabilities" placeholder="proc.list"></span>
+              <label class="runtime-field runtime-caps runtime-compact" title="Capabilities">
+                <span class="runtime-control-icon modules-control-icon">${iconSvg(Database)}</span>
+                <span class="capability-input"><input id="runtimeCapabilities" type="text" spellcheck="false" aria-label="Capabilities" placeholder="proc.list"></span>
               </label>
             </div>
 
             <div class="toolbar-actions">
 
-              <button id="toolbarCheck" class="toolbar-button toolbar-button-primary" type="button">
+              <button id="toolbarCheck" class="toolbar-button toolbar-button-check" type="button" title="Check project">
                 ${iconSvg(ShieldCheck)}<span>Check</span>
               </button>
-              <button id="toolbarRun" class="toolbar-button toolbar-button-run" type="button">
+              <button id="toolbarRun" class="toolbar-button toolbar-button-run toolbar-button-primary" type="button" title="Run project">
                 ${iconSvg(Play)}<span>Run</span>
               </button>
             </div>
