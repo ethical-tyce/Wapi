@@ -520,12 +520,13 @@ function recordRuntimeResult(command, result, file) {
 function renderRuntimeInspector() {
   const drawer = document.getElementById("runtimeInspectorDrawer");
   const toggle = document.getElementById("toolbarInspector");
-  if (!drawer || !toggle) return;
+  if (!drawer) return;
 
   drawer.classList.toggle("is-open", ideState.inspectorOpen);
   drawer.setAttribute("aria-hidden", String(!ideState.inspectorOpen));
-  toggle.classList.toggle("is-active", ideState.inspectorOpen);
-  toggle.setAttribute("aria-expanded", String(ideState.inspectorOpen));
+  drawer.closest(".editor-surface")?.classList.toggle("has-runtime-inspector", ideState.inspectorOpen);
+  toggle?.classList.toggle("is-active", ideState.inspectorOpen);
+  toggle?.setAttribute("aria-expanded", String(ideState.inspectorOpen));
 
   const process = ideState.runtimeInspector.process;
   const processBody = drawer.querySelector("[data-inspector-process]");
@@ -1812,6 +1813,59 @@ function renderWindowBar() {
           <span id="windowProjectTitle" class="window-project-title">WapiProject</span>
           <span class="window-branch"><span aria-hidden="true">branch</span> main</span>
         </div>
+        <nav id="windowMenuBar" class="window-menu-bar" aria-label="Application menu">
+          <div class="window-menu">
+            <button class="window-menu-trigger" type="button" data-window-menu="file" aria-haspopup="menu" aria-expanded="false">File</button>
+            <div class="window-menu-popover" role="menu">
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="new-project"><span>New Project</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="open-project"><span>Open Project</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="add-files"><span>Add Files</span></button>
+              <div class="window-menu-separator" role="separator"></div>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="save"><span>Save</span><kbd>Ctrl+S</kbd></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="save-as"><span>Save As</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="save-all"><span>Save All</span><kbd>Ctrl+Shift+S</kbd></button>
+              <div class="window-menu-separator" role="separator"></div>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="close-window"><span>Exit</span></button>
+            </div>
+          </div>
+          <div class="window-menu">
+            <button class="window-menu-trigger" type="button" data-window-menu="edit" aria-haspopup="menu" aria-expanded="false">Edit</button>
+            <div class="window-menu-popover" role="menu">
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="undo"><span>Undo</span><kbd>Ctrl+Z</kbd></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="redo"><span>Redo</span><kbd>Ctrl+Y</kbd></button>
+              <div class="window-menu-separator" role="separator"></div>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="editor-find"><span>Find in Editor</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="select-all"><span>Select All</span><kbd>Ctrl+A</kbd></button>
+            </div>
+          </div>
+          <div class="window-menu">
+            <button class="window-menu-trigger" type="button" data-window-menu="view" aria-haspopup="menu" aria-expanded="false">View</button>
+            <div class="window-menu-popover" role="menu">
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-explorer"><span>Explorer</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-search"><span>Search</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-functions"><span>Knowledge</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-outline"><span>Outline</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-settings"><span>Settings</span></button>
+              <div class="window-menu-separator" role="separator"></div>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="toggle-terminal"><span>Terminal</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="toggle-inspector"><span>Runtime Inspector</span></button>
+            </div>
+          </div>
+          <div class="window-menu">
+            <button class="window-menu-trigger" type="button" data-window-menu="build" aria-haspopup="menu" aria-expanded="false">Build</button>
+            <div class="window-menu-popover" role="menu">
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="check"><span>Check Project</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="run"><span>Run Project</span></button>
+            </div>
+          </div>
+          <div class="window-menu">
+            <button class="window-menu-trigger" type="button" data-window-menu="help" aria-haspopup="menu" aria-expanded="false">Help</button>
+            <div class="window-menu-popover" role="menu">
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="welcome"><span>Welcome</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-functions"><span>Runtime Knowledge</span></button>
+            </div>
+          </div>
+        </nav>
         <div id="windowButtons">
           <button id="windowMinimize" class="window-btn" type="button" aria-label="Minimize">${iconSvg(Minus)}</button>
           <button id="windowMaximize" class="window-btn" type="button" aria-label="Maximize">${iconSvg(Maximize2)}</button>
@@ -1870,21 +1924,21 @@ function renderWindowBar() {
         <section class="editor-surface" aria-label="Editor">
           <div class="menu-strip">
             <div class="runtime-controls" aria-label="Runtime controls">
-              <label class="runtime-field runtime-mode">
-                <span>Runtime</span>
-                <select id="runtimeMode" title="Runtime mode">
+              <label class="runtime-field runtime-mode runtime-compact" title="Runtime mode">
+                <span class="runtime-control-icon">${iconSvg(Activity)}</span>
+                <select id="runtimeMode" aria-label="Runtime mode">
                   <option value="safe">Safe</option>
                   <option value="dev">Dev</option>
                   <option value="unsafe">Unsafe</option>
                 </select>
               </label>
-              <label class="runtime-field runtime-switch">
-                <span>Strict</span>
-                <span class="switch-control"><input id="runtimeStrict" type="checkbox"><b>On</b></span>
+              <label class="runtime-field runtime-switch runtime-compact" title="Strict enforcement">
+                <span class="runtime-control-icon">${iconSvg(ShieldCheck)}</span>
+                <span class="switch-control"><input id="runtimeStrict" type="checkbox" aria-label="Strict enforcement"><b>On</b></span>
               </label>
-              <label class="runtime-field runtime-switch">
-                <span>Injection</span>
-                <span class="switch-control"><input id="runtimeInjection" type="checkbox"><b>Block</b></span>
+              <label class="runtime-field runtime-switch runtime-compact" title="Injection policy">
+                <span class="runtime-control-icon">${iconSvg(Braces)}</span>
+                <span class="switch-control"><input id="runtimeInjection" type="checkbox" aria-label="Block injection"><b>Block</b></span>
               </label>
               <label class="runtime-field runtime-caps">
                 <span>Capabilities</span>
@@ -1893,14 +1947,7 @@ function renderWindowBar() {
             </div>
 
             <div class="toolbar-actions">
-              <div class="save-actions">
-                <button id="toolbarSave" class="toolbar-icon" type="button" title="Save">${iconSvg(Save)}</button>
-                <button id="toolbarSaveAs" class="toolbar-icon" type="button" title="Save as">${iconSvg(FileText)}</button>
-                <button id="toolbarSaveAll" class="toolbar-icon" type="button" title="Save all">${iconSvg(SaveAll)}</button>
-              </div>
-              <button id="toolbarInspector" class="toolbar-inspector" type="button" aria-label="Runtime Inspector" aria-expanded="false">
-                ${iconSvg(Activity)}<span>Runtime Inspector</span>${iconSvg(ChevronDown, "ui-icon disclosure")}
-              </button>
+
               <button id="toolbarCheck" class="toolbar-button toolbar-button-primary" type="button">
                 ${iconSvg(ShieldCheck)}<span>Check</span>
               </button>
@@ -2022,6 +2069,51 @@ function renderWindowBar() {
   `;
 }
 
+
+function closeWindowMenus() {
+  document.querySelectorAll(".window-menu.is-open").forEach((menu) => menu.classList.remove("is-open"));
+  document.querySelectorAll(".window-menu-trigger[aria-expanded='true']").forEach((trigger) => trigger.setAttribute("aria-expanded", "false"));
+}
+
+async function executeWindowMenuCommand(command) {
+  if (command === "new-project") return openCreateProjectDialog();
+  if (command === "open-project") return uploadProjectIntoExplorer();
+  if (command === "add-files") return addFilesToExplorer();
+  if (command === "save") return saveActiveFile(false);
+  if (command === "save-as") return saveActiveFile(true);
+  if (command === "save-all") return saveAllFiles();
+  if (command === "close-window") return requestWindowClose();
+  if (command === "check" || command === "run") return runWapiCommand(command);
+  if (command === "toggle-terminal") return setActiveTool("terminal");
+  if (command === "toggle-inspector") {
+    ideState.inspectorOpen = !ideState.inspectorOpen;
+    renderRuntimeInspector();
+    return;
+  }
+  if (command === "welcome") {
+    ideState.welcomeTabOpen = true;
+    ideState.activeFileId = welcomeTabId;
+    renderAll();
+    setEditorModel(null);
+    return;
+  }
+  if (command.startsWith("panel-")) {
+    setActivePanel(command.slice(6));
+    return;
+  }
+  const editorCommands = {
+    undo: "undo",
+    redo: "redo",
+    "editor-find": "actions.find",
+    "select-all": "editor.action.selectAll"
+  };
+  const editorCommand = editorCommands[command];
+  if (editorCommand && editorState.editor) {
+    editorState.editor.trigger("window-menu", editorCommand, null);
+    editorState.editor.focus();
+  }
+}
+
 function bindEvents() {
   document.getElementById("windowMinimize")?.addEventListener("click", () => bridge.window.minimize());
   document.getElementById("windowMaximize")?.addEventListener("click", () => bridge.window.toggleMaximize());
@@ -2029,10 +2121,27 @@ function bindEvents() {
   document.getElementById("windowChrome")?.addEventListener("dblclick", (event) => {
     if (!event.target.closest("button")) bridge.window.toggleMaximize();
   });
-  document.getElementById("toolbarInspector")?.addEventListener("click", () => {
-    ideState.inspectorOpen = !ideState.inspectorOpen;
-    renderRuntimeInspector();
+  document.getElementById("windowMenuBar")?.addEventListener("click", async (event) => {
+    const trigger = event.target.closest("[data-window-menu]");
+    if (trigger) {
+      const menu = trigger.closest(".window-menu");
+      const shouldOpen = !menu.classList.contains("is-open");
+      closeWindowMenus();
+      if (shouldOpen) {
+        menu.classList.add("is-open");
+        trigger.setAttribute("aria-expanded", "true");
+      }
+      return;
+    }
+    const command = event.target.closest("[data-app-command]")?.dataset.appCommand;
+    if (!command) return;
+    closeWindowMenus();
+    await executeWindowMenuCommand(command);
   });
+  document.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest("#windowMenuBar")) closeWindowMenus();
+  });
+
   document.getElementById("runtimeInspectorClose")?.addEventListener("click", () => {
     ideState.inspectorOpen = false;
     renderRuntimeInspector();
@@ -2050,9 +2159,6 @@ function bindEvents() {
     if (!recent) return;
     await uploadProjectIntoExplorer(recent.dataset.recentRoot);
   });
-  document.getElementById("toolbarSave")?.addEventListener("click", () => saveActiveFile(false));
-  document.getElementById("toolbarSaveAs")?.addEventListener("click", () => saveActiveFile(true));
-  document.getElementById("toolbarSaveAll")?.addEventListener("click", saveAllFiles);
   document.getElementById("toolbarCheck")?.addEventListener("click", () => runWapiCommand("check"));
   document.getElementById("toolbarRun")?.addEventListener("click", () => runWapiCommand("run"));
   document.getElementById("statusTerminal")?.addEventListener("click", () => setActiveTool("terminal"));
@@ -2199,6 +2305,10 @@ function bindEvents() {
     const modifier = event.ctrlKey || event.metaKey;
     if (modifier && ["+", "-", "=", "0"].includes(event.key)) {
       event.preventDefault();
+      return;
+    }
+    if (event.key === "Escape" && document.querySelector(".window-menu.is-open")) {
+      closeWindowMenus();
       return;
     }
     if (event.key === "Escape" && ideState.inspectorOpen) {

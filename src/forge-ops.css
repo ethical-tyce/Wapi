@@ -1,8 +1,8 @@
-:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;--chrome-height:44px;--status-height:38px;--activity-width:70px;--side-width:280px;--tool-height:222px;--toolbar-height:80px;--accent:#b7ef2d;--accent-strong:#c8ff3d;--danger:#ff6d59;--warning:#e7b94e;--success:#59db8b;--bg:#080a08;--panel:#0e110e;--panel-2:#121512;--panel-3:#171b17;--line:#272c27;--line-strong:#3c433c;--text:#d4d8d0;--text-soft:#a3aaa0;--text-muted:#747b72;--shadow:0 24px 60px rgb(0 0 0/.54);--focus:0 0 0 1px #b7ef2d,0 0 0 4px rgb(183 239 45/.13)}
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;--chrome-height:44px;--status-height:38px;--activity-width:54px;--side-width:280px;--tool-height:222px;--toolbar-height:80px;--accent:#b7ef2d;--accent-strong:#c8ff3d;--danger:#ff6d59;--warning:#e7b94e;--success:#59db8b;--bg:#080a08;--panel:#0e110e;--panel-2:#121512;--panel-3:#171b17;--line:#272c27;--line-strong:#3c433c;--text:#d4d8d0;--text-soft:#a3aaa0;--text-muted:#747b72;--shadow:0 24px 60px rgb(0 0 0/.54);--focus:0 0 0 1px #b7ef2d,0 0 0 4px rgb(183 239 45/.13)}
 *{box-sizing:border-box}html,body,#root{width:100%;height:100%;margin:0;overflow:hidden}body{color:var(--text);background:var(--bg);font-size:13px;font-weight:450;letter-spacing:.01em;-webkit-font-smoothing:antialiased}button,input,select,textarea{color:inherit;font:inherit}button{border:0}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:0;box-shadow:var(--focus)}::selection{color:#070907;background:var(--accent)}::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-track{background:#0b0d0b}::-webkit-scrollbar-thumb{background:#353b35;border:2px solid #0b0d0b}.ui-icon{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:square;stroke-linejoin:miter}
 .app-shell{display:grid;grid-template-rows:var(--chrome-height) minmax(0,1fr) var(--status-height);width:100%;height:100%;background:var(--bg);border:1px solid #252b25}
 #windowChrome{display:flex;align-items:stretch;justify-content:space-between;height:var(--chrome-height);background:#090b09;border-bottom:1px solid var(--line);user-select:none}.window-brand{display:flex;align-items:center;min-width:0;padding-left:18px}.window-wordmark{color:var(--accent);font-family:"Bahnschrift Condensed","DIN Condensed",sans-serif;font-size:27px;font-weight:800;letter-spacing:.055em;line-height:1}.window-brand-rule{width:1px;height:24px;margin:0 18px;background:var(--line-strong)}.window-project-title{overflow:hidden;max-width:240px;color:var(--text-soft);font:12px/1.2 "Cascadia Mono",Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.window-branch{display:flex;gap:7px;align-items:center;margin-left:14px;color:var(--text-muted);font:11px/1 "Cascadia Mono",Consolas,monospace}.window-branch span{color:var(--text-muted);font-size:0}.window-branch span:before{content:"Y";font-size:10px}#windowButtons{display:grid;grid-template-columns:repeat(3,48px)}.window-btn{display:grid;place-items:center;color:#8d948b;background:transparent;border-left:1px solid transparent;cursor:default}.window-btn:hover{color:var(--text);background:#161916;border-left-color:var(--line)}.window-btn-close:hover{color:#fff;background:#b23b32}
-.workspace{display:grid;grid-template-columns:var(--activity-width) var(--side-width) minmax(0,1fr);min-width:0;min-height:0;background:#0b0d0b}.activity-bar{display:flex;flex-direction:column;align-items:stretch;min-height:0;background:#090b09;border-right:1px solid var(--line)}.activity-button{position:relative;display:grid;place-items:center;width:100%;height:54px;color:#777f76;background:transparent;border-bottom:1px solid #1a1f1a;cursor:pointer}.activity-button:before{position:absolute;inset:0 auto 0 0;width:3px;background:transparent;content:""}.activity-button .ui-icon{width:23px;height:23px;stroke-width:1.45}.activity-button span{position:absolute;overflow:hidden;width:1px;height:1px;color:transparent}.activity-button:hover{color:#c3c9bf;background:#111411}.activity-button.is-active{color:var(--accent);background:#131711}.activity-button.is-active:before{background:var(--accent)}.activity-spacer{flex:1}
+.workspace{display:grid;grid-template-columns:var(--activity-width) var(--side-width) minmax(0,1fr);min-width:0;min-height:0;background:#0b0d0b}.activity-bar{display:flex;flex-direction:column;align-items:stretch;min-height:0;background:#090b09;border-right:1px solid var(--line)}.activity-button{position:relative;display:grid;place-items:center;width:100%;height:48px;color:#777f76;background:transparent;border-bottom:1px solid #1a1f1a;cursor:pointer}.activity-button:before{position:absolute;inset:0 auto 0 0;width:3px;background:transparent;content:""}.activity-button .ui-icon{width:19px;height:19px;stroke-width:1.5}.activity-button span{position:absolute;overflow:hidden;width:1px;height:1px;color:transparent}.activity-button:hover{color:#c3c9bf;background:#111411}.activity-button.is-active{color:var(--accent);background:#131711}.activity-button.is-active:before{background:var(--accent)}.activity-spacer{flex:1}
 .side-panel{position:relative;display:grid;grid-template-rows:56px 38px minmax(0,1fr);min-width:0;min-height:0;background:#0e110e;border-right:1px solid var(--line)}.side-topbar{position:relative;display:flex;align-items:center;justify-content:space-between;padding:0 13px 0 16px;border-bottom:1px solid var(--line)}.side-title{color:var(--text);font:600 11px/1 "Cascadia Mono",Consolas,monospace;letter-spacing:.12em}.side-meta{margin-top:7px;color:var(--text-muted);font-size:11px}.side-actions{display:flex;gap:2px}.side-actions.is-hidden{visibility:hidden}.icon-button,.toolbar-icon,.tool-utility{display:grid;place-items:center;width:30px;height:30px;color:var(--text-muted);background:transparent;border:1px solid transparent;cursor:pointer}.icon-button:hover,.toolbar-icon:hover,.tool-utility:hover{color:var(--accent);background:#171b16;border-color:var(--line-strong)}.side-action-menu{top:56px;right:10px;width:190px;padding:6px;background:#101310;border:1px solid var(--line-strong);box-shadow:var(--shadow)}.menu-item{padding:9px 10px;color:var(--text-soft);background:transparent}.menu-item:hover{color:#0a0c0a;background:var(--accent)}
 .side-searchbar{display:flex;align-items:center;padding:5px 10px;border-bottom:1px solid var(--line)}.search-wrap{display:flex;align-items:center;width:100%;height:27px;color:var(--text-muted);background:#090b09;border:1px solid var(--line)}.search-wrap .ui-icon{width:14px;margin:0 8px}.search-wrap input{min-width:0;flex:1;height:100%;color:var(--text);background:transparent;border:0;outline:0;font:11px/1 "Cascadia Mono",Consolas,monospace}.side-content{min-height:0;overflow:auto;padding:8px 0}
 .tree-row{min-height:29px;color:var(--text-soft);border-left:2px solid transparent}.tree-row:hover,.search-result:hover,.function-row:hover,.outline-row:hover,.problem-row:hover,.recent-project:hover{color:var(--text);background:#161916}.tree-row.is-active{color:var(--accent);background:#1a2017;border-left-color:var(--accent)}.is-dirty .dirty-dot{background:var(--accent)}.panel-empty strong,.side-section-title{color:var(--accent)}.settings-field select,.settings-field textarea{color:var(--text);background:#090b09;border-color:var(--line)}.capability-chip{color:var(--text-muted);background:#0a0c0a;border-color:var(--line)}.capability-chip.is-active{color:var(--accent);border-color:#7f9e27}
@@ -14,8 +14,8 @@
 .status-bar{color:#80877d;background:#090b09;border-top:1px solid var(--line);font:9px/1 "Cascadia Mono",Consolas,monospace;letter-spacing:.06em}.status-left>*,.status-right>*{gap:5px;padding:0 12px;border-right:1px solid var(--line)}.status-left b,.status-right b,.status-mode{color:var(--accent)}.status-mode .ui-icon,.status-button .ui-icon{width:13px;height:13px}.status-file{max-width:240px}.status-button{color:var(--text-muted);background:transparent}.status-button:hover{color:var(--accent)}.status-dot{width:7px;height:7px;margin:0 10px;padding:0;background:var(--accent);border:0;border-radius:0;box-shadow:0 0 9px rgb(183 239 45/.3)}
 .project-dialog{background:rgb(0 0 0/.68)}.project-dialog-card{width:min(620px,100%);padding:26px;background:#0d100d;border:1px solid var(--line-strong);box-shadow:var(--shadow);border-radius:0}.dialog-heading>span{color:var(--accent);font:600 9px/1 "Cascadia Mono",Consolas,monospace;letter-spacing:.12em}.dialog-heading h2{margin:8px 0 22px;font-family:"Bahnschrift Condensed","DIN Condensed",sans-serif;font-size:29px}.project-field input{color:var(--text);background:#090b09;border-color:var(--line-strong);border-radius:0}.template-picker{grid-template-columns:repeat(3,1fr);gap:7px}.template-card{min-height:106px;color:var(--text-soft);background:#0a0c0a;border-color:var(--line);border-radius:0}.template-card:hover,.template-card.is-active{border-color:#7f9e27}.template-card.is-active strong{color:var(--accent)}.dialog-button{border-radius:0;color:var(--text-soft);background:#111411;border-color:var(--line-strong)}.dialog-button-primary{color:#080a08;background:var(--accent);border-color:var(--accent)}
 @media(max-width:1260px){:root{--side-width:250px}.runtime-field{min-width:98px;padding-inline:9px}.runtime-caps{width:170px}.toolbar-inspector span{display:none}.toolbar-inspector{width:42px;padding:0}.save-actions{display:none}}
-@media(max-width:1050px){:root{--activity-width:56px;--side-width:220px;--toolbar-height:72px}.runtime-caps{display:none}.toolbar-button{min-width:74px;padding-inline:10px}.activity-button{height:58px}.start-shell{grid-template-columns:1fr;gap:34px}.start-actions-panel{max-width:560px}.status-left>*,.status-right>*{padding-inline:8px}#statusFile,#statusDirty,#statusInstance{display:none}}
-@media(max-height:720px){:root{--tool-height:170px}.activity-button{height:54px}.side-panel{grid-template-rows:52px 36px minmax(0,1fr)}.start-surface{padding-block:24px}}
+@media(max-width:1050px){:root{--activity-width:48px;--side-width:220px;--toolbar-height:72px}.runtime-caps{display:none}.toolbar-button{min-width:74px;padding-inline:10px}.activity-button{height:46px}.start-shell{grid-template-columns:1fr;gap:34px}.start-actions-panel{max-width:560px}.status-left>*,.status-right>*{padding-inline:8px}#statusFile,#statusDirty,#statusInstance{display:none}}
+@media(max-height:720px){:root{--tool-height:170px}.activity-button{height:46px}.side-panel{grid-template-rows:52px 36px minmax(0,1fr)}.start-surface{padding-block:24px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
 
 #toolbarCheck{min-width:118px;color:#090b09;background:var(--accent);border-color:var(--accent);box-shadow:0 0 26px rgb(183 239 45/.1)}
@@ -158,10 +158,10 @@
   top:50%;
   left:50%;
   z-index:0;
-  width:40px;
-  height:40px;
+  width:34px;
+  height:34px;
   border:1px solid transparent;
-  border-radius:8px;
+  border-radius:7px;
   background:transparent;
   content:"";
   transform:translate(-50%,-50%);
@@ -205,3 +205,219 @@
 @media(max-height:720px){
   .activity-bar:has(.activity-button[data-panel="functions"].is-active)+.side-panel{grid-template-rows:52px minmax(0,1fr)}
 }
+
+
+/* Desktop application menus keep project commands out of the runtime strip. */
+#windowChrome{position:relative;z-index:70;overflow:visible}
+.window-menu-bar{
+  position:relative;
+  z-index:80;
+  display:flex;
+  align-items:stretch;
+  height:100%;
+  margin-right:auto;
+  margin-left:14px;
+}
+.window-menu{position:relative;display:flex}
+.window-menu-trigger{
+  min-width:0;
+  height:100%;
+  padding:0 10px;
+  color:var(--text-muted);
+  background:transparent;
+  border:0;
+  font:10px/1 "Cascadia Mono",Consolas,monospace;
+  letter-spacing:.03em;
+  cursor:pointer;
+}
+.window-menu-trigger:hover,.window-menu.is-open>.window-menu-trigger{
+  color:var(--text);
+  background:#151815;
+}
+.window-menu-popover{
+  position:absolute;
+  top:calc(100% - 1px);
+  left:0;
+  display:none;
+  min-width:208px;
+  padding:5px;
+  color:var(--text-soft);
+  background:#0d100d;
+  border:1px solid var(--line-strong);
+  box-shadow:var(--shadow);
+}
+.window-menu.is-open>.window-menu-popover{display:grid}
+.window-menu-item{
+  display:grid;
+  grid-template-columns:minmax(120px,1fr) auto;
+  gap:20px;
+  align-items:center;
+  min-height:30px;
+  padding:0 10px;
+  color:var(--text-soft);
+  background:transparent;
+  border:0;
+  text-align:left;
+  font:10px/1 "Cascadia Mono",Consolas,monospace;
+  cursor:pointer;
+}
+.window-menu-item:hover,.window-menu-item:focus-visible{
+  color:#090b09;
+  background:var(--accent);
+  box-shadow:none;
+}
+.window-menu-item kbd{
+  color:var(--text-muted);
+  font:9px/1 "Cascadia Mono",Consolas,monospace;
+}
+.window-menu-item:hover kbd,.window-menu-item:focus-visible kbd{color:#28300f}
+.window-menu-separator{height:1px;margin:4px 6px;background:var(--line)}
+@media(max-width:1050px){
+  .window-menu-bar{margin-left:8px}
+  .window-menu-trigger{padding-inline:7px;font-size:9px}
+  .window-project-title,.window-branch{display:none}
+}
+
+/* Dock the runtime inspector beside the editor instead of covering it. */
+.editor-surface{
+  grid-template-columns:minmax(0,1fr) 0;
+  transition:grid-template-columns .2s ease;
+}
+.editor-surface.has-runtime-inspector{
+  grid-template-columns:minmax(0,1fr) clamp(280px,27vw,360px);
+}
+.menu-strip{grid-column:1 / -1;grid-row:1}
+.document-tabs{grid-column:1;grid-row:2}
+.editor-workbench{grid-column:1;grid-row:3;min-width:0;min-height:0}
+.tool-window{grid-column:1;grid-row:4;min-width:0;min-height:0}
+.runtime-inspector-drawer{
+  position:relative;
+  z-index:12;
+  top:auto;
+  right:auto;
+  grid-column:2;
+  grid-row:2 / 5;
+  width:auto;
+  min-width:0;
+  max-height:none;
+  overflow:auto;
+  border-width:0 0 0 1px;
+  box-shadow:-18px 0 36px rgb(0 0 0/.18);
+  visibility:hidden;
+  opacity:0;
+  transform:translateX(18px);
+  transition:opacity .16s ease,transform .2s ease,visibility 0s linear .2s;
+}
+.runtime-inspector-drawer.is-open{
+  visibility:visible;
+  opacity:1;
+  transform:translateX(0);
+  transition-delay:0s;
+}
+.runtime-inspector-drawer .inspector-topline{
+  position:sticky;
+  z-index:2;
+  top:0;
+  height:54px;
+}
+.runtime-inspector-drawer .inspector-grid{grid-template-columns:minmax(0,1fr)}
+.runtime-inspector-drawer .inspector-section{
+  min-height:0;
+  padding:15px 16px 18px;
+  border-right:0;
+}
+.editor-surface.has-runtime-inspector .start-surface{padding-inline:clamp(24px,4vw,54px)}
+.editor-surface.has-runtime-inspector .start-shell{
+  grid-template-columns:minmax(0,1fr);
+  gap:34px;
+  width:min(650px,100%);
+}
+.editor-surface.has-runtime-inspector .start-actions-panel{width:min(560px,100%)}
+@media(max-width:980px){
+  .editor-surface.has-runtime-inspector{grid-template-columns:minmax(0,1fr) 270px}
+  .editor-surface.has-runtime-inspector .start-title{font-size:clamp(30px,5vw,44px)}
+}
+/* Canonical tab geometry: centered content and a fixed close inset. */
+.document-tab{
+  position:relative;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  height:var(--tabs-height);
+  min-height:var(--tabs-height);
+  padding:0 36px 0 12px;
+  line-height:1;
+}
+.document-tab .tab-file-icon{
+  flex:0 0 15px;
+  width:15px;
+  height:15px;
+  align-self:center;
+}
+.document-tab .document-tab-name{
+  min-width:0;
+  flex:1 1 auto;
+  overflow:hidden;
+  line-height:1;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.document-tab .dirty-dot{
+  flex:0 0 auto;
+  align-self:center;
+}
+.document-tab .tab-close{
+  position:absolute;
+  top:50%;
+  right:10px;
+  display:grid;
+  place-items:center;
+  width:18px;
+  height:18px;
+  margin:0;
+  transform:translateY(-50%);
+}
+.document-tab .tab-close .ui-icon{
+  width:12px;
+  height:12px;
+}
+/* Reduce chrome noise while preserving structural boundaries. */
+.menu-strip{border-bottom:1px solid var(--line)}
+.runtime-field{border-right:0}
+.runtime-controls{gap:2px}
+.document-tabs{border-bottom:0}
+.status-bar{border-top:0}
+.status-left>*,.status-right>*{border-right:0}
+/* Use the native Apple system face across all application chrome. */
+:root{
+  --ui-font:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue","Segoe UI",sans-serif;
+}
+.app-shell,
+.app-shell *:not(.monaco-editor):not(.monaco-editor *){
+  font-family:var(--ui-font)!important;
+}
+/* Single-row runtime controls use icons instead of redundant headings. */
+.runtime-field.runtime-compact{
+  display:flex;
+  align-items:center;
+  align-content:normal;
+  gap:7px;
+  min-width:auto;
+  padding-inline:8px;
+}
+.runtime-field.runtime-compact:first-child{padding-left:0}
+.runtime-compact>.runtime-control-icon{
+  display:grid;
+  flex:0 0 16px;
+  place-items:center;
+  width:16px;
+  height:26px;
+  margin:0;
+  color:var(--text-muted);
+}
+.runtime-compact>.runtime-control-icon .ui-icon{
+  width:14px;
+  height:14px;
+}
+.runtime-compact.runtime-mode select{width:104px}
+.runtime-compact.runtime-switch{min-width:auto}
