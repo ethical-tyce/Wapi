@@ -707,3 +707,71 @@ img.window-wordmark{
   height:100%;
   min-height:0;
 }
+/* Unified geometry: pill selections, rounded controls, straight workspace structure. */
+:root{
+  --radius-control:6px;
+  --radius-surface:9px;
+  --radius-pill:999px;
+}
+.window-menu-bar{
+  align-self:center;
+  align-items:center;
+  height:28px;
+  padding:2px;
+  background:#0f130f;
+  border:1px solid #242b24;
+  border-radius:var(--radius-pill);
+}
+.window-menu{align-items:center;height:100%}
+.window-menu-trigger{
+  height:22px;
+  padding-inline:10px;
+  border-radius:var(--radius-pill);
+}
+.window-menu-trigger:hover,
+.window-menu.is-open>.window-menu-trigger{
+  color:var(--accent);
+  background:rgb(74 222 128 / .13);
+}
+.window-menu-popover{
+  top:calc(100% + 9px);
+  overflow:hidden;
+  border-radius:var(--radius-surface);
+}
+.window-menu-item{border-radius:5px}
+
+.toolbar-button,
+.runtime-compact.runtime-mode select,
+.runtime-caps.runtime-compact .capability-input,
+.search-wrap,
+.icon-button,
+.tool-utility,
+.menu-item,
+.capability-chip,
+.dialog-button,
+.project-field input,
+.settings-field select,
+.settings-field textarea,
+.template-card,
+.start-action,
+.recent-list{
+  border-radius:var(--radius-control);
+}
+.side-action-menu,
+.project-dialog-card,
+.runtime-inspector-drawer{
+  overflow:hidden;
+  border-radius:var(--radius-surface);
+}
+.document-tab{border-radius:7px 7px 0 0}
+#windowButtons .window-btn{
+  width:40px;
+  min-width:40px;
+  height:30px;
+  min-height:30px;
+  margin:auto;
+  border-radius:var(--radius-control);
+}
+
+/* Interactive title-bar controls must sit outside the draggable window region. */
+.window-menu-bar,.window-menu-trigger,.window-menu-popover{-webkit-app-region:no-drag}

@@ -1,4 +1,4 @@
-﻿#include "evaluator.h"
+#include "evaluator.h"
 
 #include <Windows.h>
 #include <TlHelp32.h>
@@ -541,7 +541,8 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         {"window.find", "findWindow"},
         {"inject.dll", "injectDLL"},
         {"inject.testDll", "testInjectDLL"},
-        {"inject.test", "testInjectDLL"}
+        {"inject.test", "testInjectDLL"},
+        {"testInjectDll", "testInjectDLL"}
     };
 
     auto found = functions.find(call->name);
@@ -1002,13 +1003,26 @@ WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
 }
 
 WapiValue Evaluator::wapi_testInjectDLL(int pid) {
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    std::wstring dir(exePath);
-    dir = dir.substr(0, dir.find_last_of(L"\\/"));
-    std::wstring dllPathW = dir + L"\\TestDLL.dll";
-    std::string dllPath = wideToUtf8(dllPathW);
+    wchar_t exePath[MAX_PATH]{};
+    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) {
+        throw WapiUnstableException("Failed to resolve Wapi executable path");
+    }
 
-    return wapi_injectDLL(pid, dllPath);
+    const std::filesystem::path exeDirectory = std::filesystem::path(exePath).parent_path();
+    std::filesystem::path dllPath = exeDirectory / L"TestDLL.dll";
+
+    if (!std::filesystem::exists(dllPath)) {
+        const std::filesystem::path configuration = exeDirectory.filename();
+        const std::filesystem::path platform = exeDirectory.parent_path().filename();
+        const std::filesystem::path projectRoot = exeDirectory.parent_path().parent_path();
+        const std::filesystem::path projectDll = projectRoot / L"TestDLL" / platform / configuration / L"TestDLL.dll";
+        if (std::filesystem::exists(projectDll)) dllPath = projectDll;
+    }
+
+    if (!std::filesystem::exists(dllPath)) {
+        throw WapiUnstableException("TestDLL.dll was not found beside Wapi.exe or in the matching TestDLL build output");
+    }
+
+    return wapi_injectDLL(pid, wideToUtf8(dllPath.wstring()));
 }
 

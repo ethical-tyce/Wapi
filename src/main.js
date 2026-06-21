@@ -263,8 +263,8 @@ const projectTemplates = [
     source: (name) => [
       `// ${name} - Memory Sandbox`,
       "int pid = findProcessPID(\"notepad\")",
-      "int handle = openProcess(pid)",
-      "int address = allocMemory(handle, 64)",
+      "long handle = openProcess(pid)",
+      "long address = allocMemory(handle, 64)",
       "writeMemory(handle, address, 1234)",
       "int value = readMemory(handle, address)",
       "freeMemory(handle, address)",
