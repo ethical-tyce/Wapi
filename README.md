@@ -19,12 +19,14 @@ This repository is an early version (`v0.01`) with:
 
 ## Project Structure
 
-- `Wapi.cpp` - CLI entrypoint, command parsing, test harness.
-- `lexer.cpp/.h` - tokenization.
-- `parser.cpp/.h` - AST parsing.
-- `evaluator.cpp/.h` - runtime evaluation + Windows API bindings + policy enforcement.
-- `TestDLL/` - sample DLL project used by `testInjectDLL(pid)`.
-- `Wapi.vcxproj` - main Visual Studio project.
+- `native/src/` - C++ CLI, lexer, parser, evaluator, and Windows API runtime.
+- `native/TestDLL/` - sample DLL project used by `testInjectDLL(pid)`.
+- `native/Wapi.vcxproj` - main Visual Studio project.
+- `src/` - Vite renderer for the desktop IDE.
+- `src-tauri/` - Tauri host, guarded runtime execution, projects, and terminal integration.
+- `docs/assets/` - application branding shared by the renderer and desktop bundle.
+- `docs/design/` - design reference and visual QA notes.
+- `Wapi.slnx` - root Visual Studio solution for the native projects.
 
 ## Language Snapshot
 
@@ -133,14 +135,14 @@ Audit lines are emitted as `[WAPI_AUDIT] ...`.
 
 ## Build (Visual Studio)
 
-1. Open `Wapi.vcxproj` (or solution) in Visual Studio.
+1. Open `Wapi.slnx` (or `native/Wapi.vcxproj`) in Visual Studio.
 2. Select target platform (`x64` or `ARM64`) and configuration (`Debug`/`Release`).
 3. Build the main `Wapi` project.
 4. Build `TestDLL` too if you want `testInjectDLL(pid)` to work.
 
 ## Running Locally
 
-From the build output directory (for example `x64\Debug`):
+From the build output directory (typically `x64\Debug` from the solution or `native\x64\Debug` from the project):
 
 ```powershell
 .\Wapi.exe run "listProcesses()"

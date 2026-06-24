@@ -200,15 +200,15 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="evaluator.cpp" />
-    <ClCompile Include="lexer.cpp" />
-    <ClCompile Include="parser.cpp" />
-    <ClCompile Include="Wapi.cpp" />
+    <ClCompile Include="src\evaluator.cpp" />
+    <ClCompile Include="src\lexer.cpp" />
+    <ClCompile Include="src\parser.cpp" />
+    <ClCompile Include="src\Wapi.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="evaluator.h" />
-    <ClInclude Include="lexer.h" />
-    <ClInclude Include="parser.h" />
+    <ClInclude Include="src\evaluator.h" />
+    <ClInclude Include="src\lexer.h" />
+    <ClInclude Include="src\parser.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

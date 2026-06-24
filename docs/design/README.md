@@ -1,4 +1,4 @@
-# Design QA
+# Wapi IDE Design QA
 
 ## Visual truth
 - Source: `docs/design/forge-grid-ops.png`

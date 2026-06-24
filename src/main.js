@@ -1,6 +1,6 @@
-import wapiIconUrl from "../wapi.png";
-import wapiBannerUrl from "../banner icon.png";
-import evaluatorSource from "../evaluator.cpp?raw";
+import wapiIconUrl from "../docs/assets/wapi-icon.png";
+import wapiBannerUrl from "../docs/assets/wapi-banner.png";
+import evaluatorSource from "../native/src/evaluator.cpp?raw";
 import bridge from "./tauri-bridge.js";
 import "./styles.css";
 import "./forge-ops.css";

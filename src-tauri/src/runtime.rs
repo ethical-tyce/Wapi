@@ -57,6 +57,10 @@ fn candidate_executables() -> Vec<PathBuf> {
 
     for root in roots {
         for relative in [
+            PathBuf::from("native/x64/Debug/Wapi.exe"),
+            PathBuf::from("native/x64/Release/Wapi.exe"),
+            PathBuf::from("native/ARM64/Debug/Wapi.exe"),
+            PathBuf::from("native/ARM64/Release/Wapi.exe"),
             PathBuf::from("x64/Debug/Wapi.exe"),
             PathBuf::from("x64/Release/Wapi.exe"),
             PathBuf::from("ARM64/Debug/Wapi.exe"),

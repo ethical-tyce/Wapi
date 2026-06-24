@@ -34,7 +34,7 @@
     "active": true,
     "targets": "all",
     "icon": [
-      "../icon.ico"
+      "../docs/assets/wapi.ico"
     ]
   }
 }
