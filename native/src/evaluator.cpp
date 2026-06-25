@@ -1188,10 +1188,14 @@ WapiValue Evaluator::wapi_getThreadContext(long long threadHandle) {
     if (options.checkOnly) { emitAudit("getThreadContext", "debug.registers", "allow", "checkOnly no side-effects"); return 0; }
     CONTEXT context{}; context.ContextFlags = CONTEXT_CONTROL;
     if (!GetThreadContext(thread, &context)) throw WapiUnstableException("Failed to read thread context");
-#if defined(_M_X64) || defined(__x86_64__)
+#if defined(_M_X64)
     return static_cast<long long>(context.Rip);
-#else
+#elif defined(_M_IX86)
     return static_cast<long long>(context.Eip);
+#elif defined(_M_ARM64)
+    return static_cast<long long>(context.Pc);
+#else
+    #error Unsupported architecture
 #endif
 }
 
@@ -1201,10 +1205,14 @@ WapiValue Evaluator::wapi_setThreadContext(long long threadHandle, long long con
     if (options.checkOnly) { emitAudit("setThreadContext", "thread.context.write", "allow", "checkOnly no side-effects"); return 0; }
     CONTEXT context{}; context.ContextFlags = CONTEXT_CONTROL;
     if (!GetThreadContext(thread, &context)) throw WapiUnstableException("Failed to read thread context");
-#if defined(_M_X64) || defined(__x86_64__)
+#if defined(_M_X64)
     context.Rip = static_cast<DWORD64>(contextAddress);
-#else
+#elif defined(_M_IX86)
     context.Eip = static_cast<DWORD>(contextAddress);
+#elif defined(_M_ARM64)
+    context.Pc = static_cast<DWORD64>(contextAddress);
+#else
+    #error Unsupported architecture
 #endif
     if (!SetThreadContext(thread, &context)) throw WapiUnstableException("Failed to write thread context");
     return 0;
