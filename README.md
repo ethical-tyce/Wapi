@@ -119,19 +119,53 @@ Audit lines are emitted as `[WAPI_AUDIT] ...`.
 - `mem.alloc(handle, size)`
 - `freeMemory(handle, address)`
 - `mem.free(handle, address)`
+- `protectMemory(handle, address, size, protection)`
+- `mem.protect(handle, address, size, protection)`
+- `queryMemory(handle, address)`
+- `mem.query(handle, address)`
+
+### Modules
+- `listModules(pid)`
+- `proc.modules(pid)`
+- `getModuleBase(pid, moduleName)`
+- `getModuleBaseAddress(pid, moduleName)`
+- `getModuleSize(pid, moduleName)`
+- `proc.module.base(pid, moduleName)`
+- `proc.module.size(pid, moduleName)`
 
 ### Runtime
 - `print(value)`
 
+### Threads
+- `listThreads(pid)`
+- `openThread(tid)`
+- `suspendThread(threadHandle)`
+- `resumeThread(threadHandle)`
+- `getThreadContext(threadHandle)`
+- `setThreadContext(threadHandle, instructionPointer)`
+
 ### Window
 - `findWindow(windowTitle)`
 - `window.find(windowTitle)`
+- `listWindowsByPID(pid)`
+- `findWindowByPID(pid, title)`
+- `sendWindowMessage(hwnd, message, wparam, lparam)`
 
 ### Injection
 - `injectDLL(pid, dllPath)`
 - `inject.dll(pid, dllPath)`
 - `testInjectDLL(pid)` (loads `TestDLL.dll` next to the built executable)
 - `inject.test(pid)`
+- `injectShellcode(pid, hexBytes)` (check-mode guard implemented; execution currently blocked until byte decoding lands)
+- `createRemoteThread(pid, startAddress, parameter)`
+
+### Debug / Token
+- `debugAttach(pid)`
+- `debugWaitEvent()`
+- `debugReadRegisters(tid)`
+- `debugContinue(eventCode)`
+- `openProcessToken(handle)`
+- `enablePrivilege(privilegeName)`
 
 ## Build (Visual Studio)
 
@@ -156,7 +190,7 @@ Tip: start Notepad before running `wapi test` for process-dependent checks.
 
 - This project uses low-level Windows APIs and can be unstable if used on invalid targets/addresses.
 - `check` mode is intended for preflight/static-style verification with side effects suppressed.
-- Several APIs shown by `wapi test` are roadmap placeholders and are expected to fail until implemented.
+- High-risk APIs are capability-gated and require `--mode dev` or `--mode unsafe` in addition to the relevant `--cap` grant; injection APIs still require `--allow-injection` outside unsafe mode. Use `--json` to emit machine-readable event lines for IDE integrations while preserving normal CLI output.
 
 ## License
 
