@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -19,6 +19,7 @@ struct WapiRuntimeOptions {
     bool allowInjection = false;
     bool checkOnly = false;
     bool strictPermissions = false;
+    bool jsonOutput = false;
     std::unordered_set<std::string> capabilities;
 };
 
@@ -53,6 +54,7 @@ private:
     std::string valueToString(const WapiValue& value) const;
     bool isTruthy(const WapiValue& value) const;
     long long asNumberValue(const WapiValue& value, const std::string& context) const;
+    void emitJsonEvent(const std::string& kind, const std::string& payload) const;
     void emitAudit(const std::string& functionName, const std::string& capability, const std::string& result, const std::string& detail = "") const;
     void enforcePolicy(const std::string& functionName, const std::string& capability, bool requiresInjectionFlag = false) const;
     [[noreturn]] void throwArgType(const std::string& functionName, int argIndex, const std::string& expectedType) const;
@@ -80,10 +82,13 @@ private:
     WapiValue wapi_writeMemory(long long handle, long long address, int value);
     WapiValue wapi_allocMemory(long long handle, int size);
     WapiValue wapi_freeMemory(long long handle, long long address);
+    WapiValue wapi_protectMemory(long long handle, long long address, int size, int protection);
+    WapiValue wapi_queryMemory(long long handle, long long address);
 
 
     WapiValue wapi_listModules(int pid);
 	WapiValue wapi_getModuleBaseAddress(int pid, const std::string& moduleName);
+    WapiValue wapi_getModuleSize(int pid, const std::string& moduleName);
 
 
 
@@ -92,9 +97,26 @@ private:
 
 
     WapiValue wapi_findWindow(const std::string& name);
+    WapiValue wapi_listThreads(int pid);
+    WapiValue wapi_openThread(int tid);
+    WapiValue wapi_suspendThread(long long threadHandle);
+    WapiValue wapi_resumeThread(long long threadHandle);
+    WapiValue wapi_getThreadContext(long long threadHandle);
+    WapiValue wapi_setThreadContext(long long threadHandle, long long contextAddress);
+    WapiValue wapi_listWindowsByPID(int pid);
+    WapiValue wapi_findWindowByPID(int pid, const std::string& title);
+    WapiValue wapi_sendWindowMessage(long long hwndValue, int message, long long wparam, long long lparam);
+    WapiValue wapi_debugAttach(int pid);
+    WapiValue wapi_debugWaitEvent();
+    WapiValue wapi_debugReadRegisters(int tid);
+    WapiValue wapi_debugContinue(int eventCode);
+    WapiValue wapi_openProcessToken(long long handle);
+    WapiValue wapi_enablePrivilege(const std::string& privilegeName);
 
 
 
+    WapiValue wapi_injectShellcode(int pid, const std::string& hexBytes);
+    WapiValue wapi_createRemoteThread(int pid, long long startAddress, long long parameter);
     WapiValue wapi_injectDLL(int pid, const std::string& dllPath);
     WapiValue wapi_testInjectDLL(int pid);
 };

@@ -1,5 +1,15 @@
 #include "parser.h"
 #include <stdexcept>
+#include <sstream>
+
+namespace {
+std::runtime_error parseError(const Token& token, const std::string& message) {
+    std::ostringstream oss;
+    oss << "E_PARSE line=" << token.line << " column=" << token.column << " message=\"" << message << "\"";
+    return std::runtime_error(oss.str());
+}
+}
+
 
 Parser::Parser(const std::vector<Token>& tokens) : tokens(tokens), pos(0) {}
 
@@ -18,7 +28,7 @@ Token Parser::consume() { return tokens[pos++]; }
 
 Token Parser::expect(TokenType type) {
     if (current().type != type)
-        throw std::runtime_error("Unexpected token: " + current().value);
+        throw parseError(current(), "Unexpected token: " + current().value);
     return consume();
 }
 
@@ -129,7 +139,7 @@ std::shared_ptr<ASTNode> Parser::parseFunctionCall(const std::string& name) {
     while (!check(RPAREN) && !check(END_OF_FILE)) {
         call->args.push_back(parseExpression());
         if (match(COMMA)) continue;
-        if (!check(RPAREN)) throw std::runtime_error("Expected ',' or ')' in call to " + name);
+        if (!check(RPAREN)) throw parseError(current(), "Expected , or ) in call to " + name);
     }
 
     expect(RPAREN);
@@ -237,7 +247,7 @@ std::shared_ptr<ASTNode> Parser::parsePrimary() {
         return expr;
     }
 
-    throw std::runtime_error("Unknown expression: " + t.value);
+    throw parseError(t, "Unknown expression: " + t.value);
 }
 
 std::string Parser::parseQualifiedName() {

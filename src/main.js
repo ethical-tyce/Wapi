@@ -187,7 +187,8 @@ function defaultProjectConfig(name = "WapiProject") {
     defaultMode: "safe",
     strictPermissions: true,
     allowInjection: false,
-    capabilities: ["proc.list", "proc.modules"]
+    capabilities: ["proc.list", "proc.modules"],
+    jsonOutput: true
   };
 }
 
@@ -199,6 +200,7 @@ function normalizeProjectConfig(config = {}, fallbackName = "WapiProject") {
   next.defaultMode = ["safe", "dev", "unsafe"].includes(next.defaultMode) ? next.defaultMode : "safe";
   next.strictPermissions = Boolean(next.strictPermissions);
   next.allowInjection = Boolean(next.allowInjection);
+  next.jsonOutput = next.jsonOutput !== false;
   next.capabilities = Array.isArray(next.capabilities)
     ? [...new Set(next.capabilities.map((cap) => String(cap).trim()).filter(Boolean))]
     : defaultProjectConfig(fallbackName).capabilities;
@@ -320,7 +322,8 @@ function runtimeOptions() {
     mode: ideState.projectConfig.defaultMode,
     strictPermissions: ideState.projectConfig.strictPermissions,
     allowInjection: ideState.projectConfig.allowInjection,
-    capabilities: ideState.projectConfig.capabilities
+    capabilities: ideState.projectConfig.capabilities,
+    jsonOutput: ideState.projectConfig.jsonOutput !== false
   };
 }
 
@@ -716,7 +719,7 @@ function applyMarkers() {
 }
 
 function inferProblemLocation(text) {
-  const match = text.match(/\b(?:line|Line)\s+(\d+)(?:\D+(?:column|col|Col)\s+(\d+))?/);
+  const match = text.match(/\b(?:line|Line)[:=\s]+(\d+)(?:\D+(?:column|col|Col)[:=\s]+(\d+))?/);
   return {
     line: match ? Math.max(1, Number(match[1])) : 1,
     column: match?.[2] ? Math.max(1, Number(match[2])) : 1,
@@ -841,7 +844,8 @@ function installMonacoLanguage() {
         [/\/\/.*$/, "comment"],
         [/"([^"\\]|\\.)*$/, "string.invalid"],
         [/"/, "string", "@string"],
-        [/\b(?:print|let|if|else|while|for|return|true|false|null|check|run|int|string|bool|long)\b/, "keyword"],
+        [/\b(?:print|if|else|while|true|false|int|string|bool|long)\b/, "keyword"],
+        [/[=+\-*\/<>!]+/, "operator"],
         [wapiFunctionNameRegex, "type.identifier"],
         [/\b0x[0-9a-fA-F]+\b/, "number.hex"],
         [/\b\d+(?:\.\d+)?\b/, "number"],
