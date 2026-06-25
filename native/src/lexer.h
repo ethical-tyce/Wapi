@@ -19,6 +19,9 @@ enum TokenType {
 struct Token {
     TokenType type;
     std::string value;
+    int line = 1;
+    int column = 1;
+    size_t offset = 0;
 };
 
 class Lexer {
@@ -29,7 +32,10 @@ public:
 private:
     std::string src;
     size_t pos;
+    int line;
+    int column;
 
+    void advance();
     void skipWhitespace();
     Token readHex();
     Token readInt();

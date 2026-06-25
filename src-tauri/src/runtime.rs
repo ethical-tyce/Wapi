@@ -102,6 +102,9 @@ fn build_args(command: &str, source: &str, options: &ExecuteOptions) -> Vec<Stri
     if options.strict_permissions {
         args.push("--strict-permissions".into());
     }
+    if options.json_output {
+        args.push("--json".into());
+    }
     for capability in &options.capabilities {
         let capability = capability.trim();
         if !capability.is_empty() {
@@ -206,6 +209,11 @@ fn run_process(
     let output_truncated = stdout_truncated || stderr_truncated;
 
     let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
+    let structured_output = stdout
+        .lines()
+        .filter(|line| line.trim_start().starts_with('{'))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
     if timed_out {
         stderr.push_str(&format!(
@@ -228,6 +236,11 @@ fn run_process(
         duration_ms: started.elapsed().as_millis(),
         timed_out,
         output_truncated,
+        structured_output: if structured_output.is_empty() {
+            None
+        } else {
+            Some(structured_output)
+        },
     }
 }
 

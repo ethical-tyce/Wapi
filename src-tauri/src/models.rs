@@ -9,6 +9,8 @@ pub struct ProjectConfig {
     pub strict_permissions: bool,
     pub allow_injection: bool,
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub json_output: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +78,8 @@ pub struct ExecuteOptions {
     pub strict_permissions: bool,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub json_output: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +103,7 @@ pub struct ExecuteResult {
     pub duration_ms: u128,
     pub timed_out: bool,
     pub output_truncated: bool,
+    pub structured_output: Option<String>,
 }
 
 impl ExecuteResult {
@@ -113,6 +118,7 @@ impl ExecuteResult {
             duration_ms: 0,
             timed_out: false,
             output_truncated: false,
+            structured_output: None,
         }
     }
 }
