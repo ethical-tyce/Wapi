@@ -2,7 +2,7 @@
 #include <cctype>
 #include <stdexcept>
 
-Lexer::Lexer(const std::string& source) : src(source), pos(0) {}
+Lexer::Lexer(const std::string& source) : src(source), pos(0), line(1), column(1) {}
 
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> tokens;
@@ -13,48 +13,74 @@ std::vector<Token> Lexer::tokenize() {
         char c = src[pos];
 
         if (c == '/' && pos + 1 < src.size() && src[pos + 1] == '/') {
-            while (pos < src.size() && src[pos] != '\n') pos++;
+            while (pos < src.size() && src[pos] != '\n') advance();
             continue;
         }
 
         if (c == '0' && pos + 1 < src.size() && src[pos + 1] == 'x')
             tokens.push_back(readHex());
         else if (c == '.') {
-            tokens.push_back({ DOT_CALL, "." });
-            pos++;
+            const int tokenLine = line;
+            const int tokenColumn = column;
+            const size_t tokenOffset = pos;
+            advance();
+            tokens.push_back({ DOT_CALL, ".", tokenLine, tokenColumn, tokenOffset });
         }
         else if (isdigit(static_cast<unsigned char>(c))) tokens.push_back(readInt());
         else if (c == '"')          tokens.push_back(readString());
         else if (isalpha(static_cast<unsigned char>(c)) || c == '_') tokens.push_back(readIdentifierOrKeyword());
         else                        tokens.push_back(readSymbol());
     }
-    tokens.push_back({ END_OF_FILE, "" });
+    tokens.push_back({ END_OF_FILE, "", line, column, pos });
     return tokens;
 }
 
+void Lexer::advance() {
+    if (pos >= src.size()) return;
+    if (src[pos] == '\n') {
+        line++;
+        column = 1;
+    }
+    else {
+        column++;
+    }
+    pos++;
+}
+
 void Lexer::skipWhitespace() {
-    while (pos < src.size() && isspace(static_cast<unsigned char>(src[pos]))) pos++;
+    while (pos < src.size() && isspace(static_cast<unsigned char>(src[pos]))) advance();
 }
 
 Token Lexer::readHex() {
-    pos += 2; // skip 0x
+    const int tokenLine = line;
+    const int tokenColumn = column;
+    const size_t tokenOffset = pos;
+    advance();
+    advance(); // skip 0x
     std::string num;
-    while (pos < src.size() && isxdigit(static_cast<unsigned char>(src[pos]))) num += src[pos++];
-    return { HEX_LITERAL, num };
+    while (pos < src.size() && isxdigit(static_cast<unsigned char>(src[pos]))) { num += src[pos]; advance(); }
+    return { HEX_LITERAL, num, tokenLine, tokenColumn, tokenOffset };
 }
 
 Token Lexer::readInt() {
+    const int tokenLine = line;
+    const int tokenColumn = column;
+    const size_t tokenOffset = pos;
     std::string num;
-    while (pos < src.size() && isdigit(static_cast<unsigned char>(src[pos]))) num += src[pos++];
-    return { INT_LITERAL, num };
+    while (pos < src.size() && isdigit(static_cast<unsigned char>(src[pos]))) { num += src[pos]; advance(); }
+    return { INT_LITERAL, num, tokenLine, tokenColumn, tokenOffset };
 }
 
 Token Lexer::readString() {
-    pos++;
+    const int tokenLine = line;
+    const int tokenColumn = column;
+    const size_t tokenOffset = pos;
+    advance();
     std::string str;
     while (pos < src.size() && src[pos] != '"') {
         if (src[pos] == '\\' && pos + 1 < src.size()) {
-            char escaped = src[++pos];
+            advance();
+            char escaped = src[pos];
             switch (escaped) {
             case 'n': str += '\n'; break;
             case 't': str += '\t'; break;
@@ -62,68 +88,76 @@ Token Lexer::readString() {
             case '\\': str += '\\'; break;
             default: str += escaped; break;
             }
-            pos++;
+            advance();
             continue;
         }
-        str += src[pos++];
+        str += src[pos];
+        advance();
     }
     if (pos >= src.size()) throw std::runtime_error("Unterminated string literal");
-    pos++;
-    return { STRING_LITERAL, str };
+    advance();
+    return { STRING_LITERAL, str, tokenLine, tokenColumn, tokenOffset };
 }
 
 Token Lexer::readIdentifierOrKeyword() {
+    const int tokenLine = line;
+    const int tokenColumn = column;
+    const size_t tokenOffset = pos;
     std::string word;
-    while (pos < src.size() && (isalnum(static_cast<unsigned char>(src[pos])) || src[pos] == '_')) word += src[pos++];
-    if (word == "if")     return { IF, word };
-    if (word == "else")   return { ELSE, word };
-    if (word == "while")  return { WHILE, word };
-    if (word == "int")    return { TYPE_INT, word };
-    if (word == "long")   return { TYPE_LONG, word };
-    if (word == "string") return { TYPE_STRING, word };
-    if (word == "bool")   return { TYPE_BOOL, word };
-    if (word == "true")   return { BOOL_LITERAL, word };
-    if (word == "false")  return { BOOL_LITERAL, word };
-    return { IDENTIFIER, word };
+    while (pos < src.size() && (isalnum(static_cast<unsigned char>(src[pos])) || src[pos] == '_')) { word += src[pos]; advance(); }
+    if (word == "if")     return { IF, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "else")   return { ELSE, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "while")  return { WHILE, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "int")    return { TYPE_INT, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "long")   return { TYPE_LONG, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "string") return { TYPE_STRING, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "bool")   return { TYPE_BOOL, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "true")   return { BOOL_LITERAL, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "false")  return { BOOL_LITERAL, word, tokenLine, tokenColumn, tokenOffset };
+    return { IDENTIFIER, word, tokenLine, tokenColumn, tokenOffset };
 }
 
 Token Lexer::readSymbol() {
-    char c = src[pos++];
+    const int tokenLine = line;
+    const int tokenColumn = column;
+    const size_t tokenOffset = pos;
+    char c = src[pos];
+    advance();
     switch (c) {
-    case '(': return { LPAREN, "(" };
-    case ')': return { RPAREN, ")" };
-    case '{': return { LBRACE, "{" };
-    case '}': return { RBRACE, "}" };
-    case ';': return { SEMICOLON, ";" };
-    case ',': return { COMMA, "," };
-    case '+': return { PLUS, "+" };
-    case '-': return { MINUS, "-" };
-    case '*': return { STAR, "*" };
-    case '/': return { SLASH, "/" };
+    case '(': return { LPAREN, "(", tokenLine, tokenColumn, tokenOffset };
+    case ')': return { RPAREN, ")", tokenLine, tokenColumn, tokenOffset };
+    case '{': return { LBRACE, "{", tokenLine, tokenColumn, tokenOffset };
+    case '}': return { RBRACE, "}", tokenLine, tokenColumn, tokenOffset };
+    case ';': return { SEMICOLON, ";", tokenLine, tokenColumn, tokenOffset };
+    case ',': return { COMMA, ",", tokenLine, tokenColumn, tokenOffset };
+    case '+': return { PLUS, "+", tokenLine, tokenColumn, tokenOffset };
+    case '-': return { MINUS, "-", tokenLine, tokenColumn, tokenOffset };
+    case '*': return { STAR, "*", tokenLine, tokenColumn, tokenOffset };
+    case '/': return { SLASH, "/", tokenLine, tokenColumn, tokenOffset };
     case '=':
         if (pos < src.size() && src[pos] == '=') {
-            pos++;
-            return { EQUALS, "==" };
+            advance();
+            return { EQUALS, "==", tokenLine, tokenColumn, tokenOffset };
         }
-        return { ASSIGN, "=" };
+        return { ASSIGN, "=", tokenLine, tokenColumn, tokenOffset };
     case '!':
         if (pos < src.size() && src[pos] == '=') {
-            pos++;
-            return { NOT_EQUALS, "!=" };
+            advance();
+            return { NOT_EQUALS, "!=", tokenLine, tokenColumn, tokenOffset };
         }
         break;
     case '<':
         if (pos < src.size() && src[pos] == '=') {
-            pos++;
-            return { LESS_EQUALS, "<=" };
+            advance();
+            return { LESS_EQUALS, "<=", tokenLine, tokenColumn, tokenOffset };
         }
-        return { LESS, "<" };
+        return { LESS, "<", tokenLine, tokenColumn, tokenOffset };
     case '>':
         if (pos < src.size() && src[pos] == '=') {
-            pos++;
-            return { GREATER_EQUALS, ">=" };
+            advance();
+            return { GREATER_EQUALS, ">=", tokenLine, tokenColumn, tokenOffset };
         }
-        return { GREATER, ">" };
+        return { GREATER, ">", tokenLine, tokenColumn, tokenOffset };
     }
     throw std::runtime_error("Unexpected character: " + std::string(1, c));
 }

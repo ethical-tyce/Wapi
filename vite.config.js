@@ -14,6 +14,16 @@ export default defineConfig({
   build: {
     target: "es2022",
     outDir: "dist",
-    emptyOutDir: true
+    emptyOutDir: true,
+    chunkSizeWarningLimit: 3000,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          monaco: ["monaco-editor"],
+          terminal: ["@xterm/xterm", "@xterm/addon-fit"],
+          icons: ["lucide"]
+        }
+      }
+    }
   }
 });

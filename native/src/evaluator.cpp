@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <TlHelp32.h>
+#include <vector>
 
 #include <algorithm>
 #include <chrono>
@@ -23,6 +24,21 @@ bool isNumericValue(const WapiValue& value) {
 long long numericValue(const WapiValue& value) {
     if (auto p = std::get_if<int>(&value)) return *p;
     return std::get<long long>(value);
+}
+
+std::string jsonEscape(const std::string& value) {
+    std::ostringstream oss;
+    for (char ch : value) {
+        switch (ch) {
+        case '\\': oss << "\\\\"; break;
+        case '"': oss << "\\\""; break;
+        case '\n': oss << "\\n"; break;
+        case '\r': oss << "\\r"; break;
+        case '\t': oss << "\\t"; break;
+        default: oss << ch; break;
+        }
+    }
+    return oss.str();
 }
 
 bool valuesEqual(const WapiValue& left, const WapiValue& right) {
@@ -257,6 +273,11 @@ std::string Evaluator::nowIso8601() const {
     return oss.str();
 }
 
+void Evaluator::emitJsonEvent(const std::string& kind, const std::string& payload) const {
+    if (!options.jsonOutput) return;
+    std::cout << "{\"kind\":\"" << jsonEscape(kind) << "\",\"data\":" << payload << "}" << "\n";
+}
+
 void Evaluator::emitAudit(const std::string& functionName, const std::string& capability, const std::string& result, const std::string& detail) const {
     std::cout
         << "[WAPI_AUDIT]"
@@ -275,6 +296,16 @@ void Evaluator::emitAudit(const std::string& functionName, const std::string& ca
 
 void Evaluator::enforcePolicy(const std::string& functionName, const std::string& capability, bool requiresInjectionFlag) const {
     const bool hasCapability = options.capabilities.count(capability) > 0;
+
+    static const std::unordered_set<std::string> devOnlyCapabilities = {
+        "proc.terminate", "mem.write", "mem.protect", "inject.dll", "inject.shellcode",
+        "thread.context.write", "debug.attach", "debug.registers", "token.privilege"
+    };
+
+    if (devOnlyCapabilities.count(capability) && options.mode == WapiMode::Safe) {
+        emitAudit(functionName, capability, "deny", "capability requires dev or unsafe mode");
+        throw std::runtime_error("E_PERMISSION:" + functionName + " requires --mode dev|unsafe for capability=" + capability);
+    }
 
     if (requiresInjectionFlag && options.mode != WapiMode::Unsafe && !options.allowInjection) {
         emitAudit(functionName, capability, "deny", "--allow-injection is required outside unsafe mode");
@@ -493,6 +524,115 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
                 );
             }}
         },
+
+        {
+            "getModuleSize",
+            {2, "proc.modules", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_getModuleSize(evaluator.asInt(call->args[0], call->name, 0), evaluator.asString(call->args[1], call->name, 1));
+            }}
+        },
+        {
+            "protectMemory",
+            {4, "mem.protect", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_protectMemory(evaluator.asLongLong(call->args[0], call->name, 0), evaluator.asLongLong(call->args[1], call->name, 1), evaluator.asInt(call->args[2], call->name, 2), evaluator.asInt(call->args[3], call->name, 3));
+            }}
+        },
+        {
+            "queryMemory",
+            {2, "mem.query", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_queryMemory(evaluator.asLongLong(call->args[0], call->name, 0), evaluator.asLongLong(call->args[1], call->name, 1));
+            }}
+        },
+        {
+            "listThreads",
+            {1, "thread.list", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_listThreads(evaluator.asInt(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "openThread",
+            {1, "thread.open", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_openThread(evaluator.asInt(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "suspendThread",
+            {1, "thread.suspend", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_suspendThread(evaluator.asLongLong(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "resumeThread",
+            {1, "thread.resume", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_resumeThread(evaluator.asLongLong(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "getThreadContext",
+            {1, "debug.registers", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_getThreadContext(evaluator.asLongLong(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "setThreadContext",
+            {2, "thread.context.write", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_setThreadContext(evaluator.asLongLong(call->args[0], call->name, 0), evaluator.asLongLong(call->args[1], call->name, 1));
+            }}
+        },
+        {
+            "injectShellcode",
+            {2, "inject.shellcode", true, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_injectShellcode(evaluator.asInt(call->args[0], call->name, 0), evaluator.asString(call->args[1], call->name, 1));
+            }}
+        },
+        {
+            "createRemoteThread",
+            {3, "inject.shellcode", true, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_createRemoteThread(evaluator.asInt(call->args[0], call->name, 0), evaluator.asLongLong(call->args[1], call->name, 1), evaluator.asLongLong(call->args[2], call->name, 2));
+            }}
+        },
+        {
+            "listWindowsByPID",
+            {1, "window.pid", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_listWindowsByPID(evaluator.asInt(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "findWindowByPID",
+            {2, "window.pid", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_findWindowByPID(evaluator.asInt(call->args[0], call->name, 0), evaluator.asString(call->args[1], call->name, 1));
+            }}
+        },
+        {
+            "sendWindowMessage",
+            {4, "window.message", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_sendWindowMessage(evaluator.asLongLong(call->args[0], call->name, 0), evaluator.asInt(call->args[1], call->name, 1), evaluator.asLongLong(call->args[2], call->name, 2), evaluator.asLongLong(call->args[3], call->name, 3));
+            }}
+        },
+        {
+            "debugAttach",
+            {1, "debug.attach", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue { return evaluator.wapi_debugAttach(evaluator.asInt(call->args[0], call->name, 0)); }}
+        },
+        {
+            "debugWaitEvent",
+            {0, "debug.attach", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>&) -> WapiValue { return evaluator.wapi_debugWaitEvent(); }}
+        },
+        {
+            "debugReadRegisters",
+            {1, "debug.registers", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue { return evaluator.wapi_debugReadRegisters(evaluator.asInt(call->args[0], call->name, 0)); }}
+        },
+        {
+            "debugContinue",
+            {1, "debug.attach", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue { return evaluator.wapi_debugContinue(evaluator.asInt(call->args[0], call->name, 0)); }}
+        },
+        {
+            "openProcessToken",
+            {1, "token.open", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue { return evaluator.wapi_openProcessToken(evaluator.asLongLong(call->args[0], call->name, 0)); }}
+        },
+        {
+            "enablePrivilege",
+            {1, "token.privilege", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue { return evaluator.wapi_enablePrivilege(evaluator.asString(call->args[0], call->name, 0)); }}
+        },
         {
             "closeHandle",
             {1, "proc.handle.close", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
@@ -533,6 +673,27 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         {"proc.modules", "listModules"},
         {"proc.moduleBase", "getModuleBaseAddress"},
         {"proc.module.base", "getModuleBaseAddress"},
+
+        {"proc.module.size", "getModuleSize"},
+        {"mem.protect", "protectMemory"},
+        {"mem.query", "queryMemory"},
+        {"thread.list", "listThreads"},
+        {"thread.open", "openThread"},
+        {"thread.suspend", "suspendThread"},
+        {"thread.resume", "resumeThread"},
+        {"thread.context", "getThreadContext"},
+        {"thread.context.set", "setThreadContext"},
+        {"window.listByPid", "listWindowsByPID"},
+        {"window.findByPid", "findWindowByPID"},
+        {"window.message", "sendWindowMessage"},
+        {"inject.shellcode", "injectShellcode"},
+        {"inject.thread", "createRemoteThread"},
+        {"debug.attach", "debugAttach"},
+        {"debug.wait", "debugWaitEvent"},
+        {"debug.registers", "debugReadRegisters"},
+        {"debug.continue", "debugContinue"},
+        {"token.open", "openProcessToken"},
+        {"token.privilege", "enablePrivilege"},
         {"handle.close", "closeHandle"},
         {"mem.read", "readMemory"},
         {"mem.write", "writeMemory"},
@@ -613,13 +774,21 @@ WapiValue Evaluator::wapi_listProcesses() {
     PROCESSENTRY32W entry{};
     entry.dwSize = sizeof(entry);
 
+    std::ostringstream json;
+    bool firstJson = true;
+    json << "[";
     if (Process32FirstW(snap, &entry)) {
         do {
             std::wstring ws(entry.szExeFile);
             std::string name = wideToUtf8(ws);
             std::cout << entry.th32ProcessID << " - " << name << "\n";
+            if (!firstJson) json << ",";
+            json << "{\"pid\":" << entry.th32ProcessID << ",\"name\":\"" << jsonEscape(name) << "\"}";
+            firstJson = false;
         } while (Process32NextW(snap, &entry));
     }
+    json << "]";
+    emitJsonEvent("processes", json.str());
 
     CloseHandle(snap);
     return 0;
@@ -826,17 +995,28 @@ WapiValue Evaluator::wapi_listModules(int pid) {
         throw WapiUnstableException("Failed to read first module");
     }
 
+    std::ostringstream json;
+    bool firstJson = true;
+    json << "[";
     do {
         std::wstring moduleName(me32.szModule);
         std::wstring modulePath(me32.szExePath);
+        const std::string name = wideToUtf8(moduleName);
+        const std::string path = wideToUtf8(modulePath);
+        const uintptr_t base = reinterpret_cast<uintptr_t>(me32.modBaseAddr);
         std::cout
             << me32.th32ProcessID << " - "
-            << wideToUtf8(moduleName)
-            << " @ 0x" << std::hex << reinterpret_cast<uintptr_t>(me32.modBaseAddr)
+            << name
+            << " @ 0x" << std::hex << base
             << " size=" << std::dec << me32.modBaseSize
-            << " path=" << wideToUtf8(modulePath)
+            << " path=" << path
             << "\n";
+        if (!firstJson) json << ",";
+        json << "{\"pid\":" << me32.th32ProcessID << ",\"name\":\"" << jsonEscape(name) << "\",\"base\":" << base << ",\"size\":" << me32.modBaseSize << ",\"path\":\"" << jsonEscape(path) << "\"}";
+        firstJson = false;
     } while (Module32NextW(hSnapshot, &me32));
+    json << "]";
+    emitJsonEvent("modules", json.str());
 
     CloseHandle(hSnapshot);
 
@@ -900,6 +1080,145 @@ WapiValue Evaluator::wapi_getModuleBaseAddress(int pid, const std::string& modul
 }
 
 
+WapiValue Evaluator::wapi_getModuleSize(int pid, const std::string& moduleName) {
+    if (pid <= 0) throw WapiUnstableException("Invalid pid");
+    if (moduleName.empty()) throw WapiUnstableException("Module name is empty");
+
+    if (options.checkOnly) {
+        emitAudit("getModuleSize", "proc.modules", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+
+    std::wstring target(moduleName.begin(), moduleName.end());
+    std::transform(target.begin(), target.end(), target.begin(), ::towlower);
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (snapshot == INVALID_HANDLE_VALUE) throw WapiUnstableException("Failed to create module snapshot");
+
+    MODULEENTRY32W module{};
+    module.dwSize = sizeof(module);
+    if (Module32FirstW(snapshot, &module)) {
+        do {
+            std::wstring current(module.szModule);
+            std::transform(current.begin(), current.end(), current.begin(), ::towlower);
+            if (current == target) {
+                const int size = static_cast<int>(module.modBaseSize);
+                CloseHandle(snapshot);
+                return size;
+            }
+        } while (Module32NextW(snapshot, &module));
+    }
+    CloseHandle(snapshot);
+    throw std::runtime_error("E_MODULE_NOT_FOUND: " + moduleName + " in PID " + std::to_string(pid));
+}
+
+WapiValue Evaluator::wapi_protectMemory(long long handle, long long address, int size, int protection) {
+    HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "protectMemory"));
+    if (address <= 0 || size <= 0) throw WapiUnstableException("Invalid memory range");
+    if (options.checkOnly) {
+        emitAudit("protectMemory", "mem.protect", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+    DWORD oldProtect = 0;
+    if (!VirtualProtectEx(hProcess, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(address)), static_cast<SIZE_T>(size), static_cast<DWORD>(protection), &oldProtect)) {
+        throw WapiUnstableException("Failed to change memory protection");
+    }
+    return static_cast<int>(oldProtect);
+}
+
+WapiValue Evaluator::wapi_queryMemory(long long handle, long long address) {
+    HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "queryMemory"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (options.checkOnly) {
+        emitAudit("queryMemory", "mem.query", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+    MEMORY_BASIC_INFORMATION info{};
+    if (VirtualQueryEx(hProcess, reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(address)), &info, sizeof(info)) == 0) {
+        throw WapiUnstableException("Failed to query memory");
+    }
+    std::cout << "Base=0x" << std::hex << reinterpret_cast<uintptr_t>(info.BaseAddress)
+              << " RegionSize=" << std::dec << info.RegionSize
+              << " State=" << info.State << " Protect=" << info.Protect << " Type=" << info.Type << "\n";
+    emitJsonEvent("memoryRegion", "{\"base\":" + std::to_string(reinterpret_cast<uintptr_t>(info.BaseAddress)) + ",\"size\":" + std::to_string(info.RegionSize) + ",\"state\":" + std::to_string(info.State) + ",\"protect\":" + std::to_string(info.Protect) + "}");
+    return static_cast<long long>(info.RegionSize);
+}
+
+WapiValue Evaluator::wapi_listThreads(int pid) {
+    if (pid <= 0) throw WapiUnstableException("Invalid pid");
+    if (options.checkOnly) { emitAudit("listThreads", "thread.list", "allow", "checkOnly no side-effects"); return 0; }
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) throw WapiUnstableException("Failed to create thread snapshot");
+    THREADENTRY32 entry{}; entry.dwSize = sizeof(entry);
+    if (Thread32First(snapshot, &entry)) {
+        do { if (entry.th32OwnerProcessID == static_cast<DWORD>(pid)) std::cout << entry.th32ThreadID << " - pid=" << pid << "\n"; }
+        while (Thread32Next(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return 0;
+}
+
+WapiValue Evaluator::wapi_openThread(int tid) {
+    if (tid <= 0) throw WapiUnstableException("Invalid tid");
+    if (options.checkOnly) { emitAudit("openThread", "thread.open", "allow", "checkOnly no side-effects"); trackedHandles.insert(2); return 2; }
+    HANDLE thread = OpenThread(THREAD_ALL_ACCESS, FALSE, static_cast<DWORD>(tid));
+    if (!thread) throw WapiUnstableException("Failed to open thread");
+    const long long tracked = static_cast<long long>(reinterpret_cast<uintptr_t>(thread));
+    trackedHandles.insert(tracked);
+    return tracked;
+}
+
+WapiValue Evaluator::wapi_suspendThread(long long threadHandle) {
+    HANDLE thread = reinterpret_cast<HANDLE>(requireTrackedHandle(threadHandle, "suspendThread"));
+    if (options.checkOnly) { emitAudit("suspendThread", "thread.suspend", "allow", "checkOnly no side-effects"); return 0; }
+    DWORD count = SuspendThread(thread);
+    if (count == static_cast<DWORD>(-1)) throw WapiUnstableException("Failed to suspend thread");
+    return static_cast<int>(count);
+}
+
+WapiValue Evaluator::wapi_resumeThread(long long threadHandle) {
+    HANDLE thread = reinterpret_cast<HANDLE>(requireTrackedHandle(threadHandle, "resumeThread"));
+    if (options.checkOnly) { emitAudit("resumeThread", "thread.resume", "allow", "checkOnly no side-effects"); return 0; }
+    DWORD count = ResumeThread(thread);
+    if (count == static_cast<DWORD>(-1)) throw WapiUnstableException("Failed to resume thread");
+    return static_cast<int>(count);
+}
+
+WapiValue Evaluator::wapi_getThreadContext(long long threadHandle) {
+    HANDLE thread = reinterpret_cast<HANDLE>(requireTrackedHandle(threadHandle, "getThreadContext"));
+    if (options.checkOnly) { emitAudit("getThreadContext", "debug.registers", "allow", "checkOnly no side-effects"); return 0; }
+    CONTEXT context{}; context.ContextFlags = CONTEXT_CONTROL;
+    if (!GetThreadContext(thread, &context)) throw WapiUnstableException("Failed to read thread context");
+#if defined(_M_X64)
+    return static_cast<long long>(context.Rip);
+#elif defined(_M_IX86)
+    return static_cast<long long>(context.Eip);
+#elif defined(_M_ARM64)
+    return static_cast<long long>(context.Pc);
+#else
+    #error Unsupported architecture
+#endif
+}
+
+WapiValue Evaluator::wapi_setThreadContext(long long threadHandle, long long contextAddress) {
+    HANDLE thread = reinterpret_cast<HANDLE>(requireTrackedHandle(threadHandle, "setThreadContext"));
+    if (contextAddress <= 0) throw WapiUnstableException("Invalid context address");
+    if (options.checkOnly) { emitAudit("setThreadContext", "thread.context.write", "allow", "checkOnly no side-effects"); return 0; }
+    CONTEXT context{}; context.ContextFlags = CONTEXT_CONTROL;
+    if (!GetThreadContext(thread, &context)) throw WapiUnstableException("Failed to read thread context");
+#if defined(_M_X64)
+    context.Rip = static_cast<DWORD64>(contextAddress);
+#elif defined(_M_IX86)
+    context.Eip = static_cast<DWORD>(contextAddress);
+#elif defined(_M_ARM64)
+    context.Pc = static_cast<DWORD64>(contextAddress);
+#else
+    #error Unsupported architecture
+#endif
+    if (!SetThreadContext(thread, &context)) throw WapiUnstableException("Failed to write thread context");
+    return 0;
+}
+
+
 /*
 ██╗  ██╗ █████╗ ███╗   ██╗██████╗ ██╗     ███████╗    ███╗   ███╗ █████╗ ███╗   ██╗ █████╗  ██████╗ ███████╗███╗   ███╗███████╗███╗   ██╗████████╗
 ██║  ██║██╔══██╗████╗  ██║██╔══██╗██║     ██╔════╝    ████╗ ████║██╔══██╗████╗  ██║██╔══██╗██╔════╝ ██╔════╝████╗ ████║██╔════╝████╗  ██║╚══██╔══╝
@@ -940,6 +1259,129 @@ WapiValue Evaluator::wapi_findWindow(const std::string& name) {
     if (!hwnd) return 0;
     return static_cast<long long>(reinterpret_cast<uintptr_t>(hwnd));
 }
+
+namespace {
+struct WindowSearchState {
+    DWORD pid = 0;
+    std::string title;
+    HWND found = nullptr;
+    bool list = false;
+};
+
+BOOL CALLBACK enumWindowsForPid(HWND hwnd, LPARAM lparam) {
+    auto* state = reinterpret_cast<WindowSearchState*>(lparam);
+    DWORD windowPid = 0;
+    GetWindowThreadProcessId(hwnd, &windowPid);
+    if (windowPid != state->pid) return TRUE;
+
+    char title[512]{};
+    GetWindowTextA(hwnd, title, sizeof(title));
+    if (state->list) {
+        std::cout << reinterpret_cast<uintptr_t>(hwnd) << " - pid=" << state->pid << " title=\"" << title << "\"\n";
+        return TRUE;
+    }
+    if (state->title.empty() || std::string(title).find(state->title) != std::string::npos) {
+        state->found = hwnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+}
+
+WapiValue Evaluator::wapi_listWindowsByPID(int pid) {
+    if (pid <= 0) throw WapiUnstableException("Invalid pid");
+    if (options.checkOnly) { emitAudit("listWindowsByPID", "window.pid", "allow", "checkOnly no side-effects"); return 0; }
+    WindowSearchState state{ static_cast<DWORD>(pid), "", nullptr, true };
+    EnumWindows(enumWindowsForPid, reinterpret_cast<LPARAM>(&state));
+    return 0;
+}
+
+WapiValue Evaluator::wapi_findWindowByPID(int pid, const std::string& title) {
+    if (pid <= 0) throw WapiUnstableException("Invalid pid");
+    if (options.checkOnly) { emitAudit("findWindowByPID", "window.pid", "allow", "checkOnly no side-effects"); return 0; }
+    WindowSearchState state{ static_cast<DWORD>(pid), title, nullptr, false };
+    EnumWindows(enumWindowsForPid, reinterpret_cast<LPARAM>(&state));
+    return static_cast<long long>(reinterpret_cast<uintptr_t>(state.found));
+}
+
+WapiValue Evaluator::wapi_sendWindowMessage(long long hwndValue, int message, long long wparam, long long lparam) {
+    if (hwndValue <= 0) throw WapiUnstableException("Invalid window handle");
+    if (options.checkOnly) { emitAudit("sendWindowMessage", "window.message", "allow", "checkOnly no side-effects"); return 0; }
+    LRESULT result = SendMessageA(reinterpret_cast<HWND>(static_cast<uintptr_t>(hwndValue)), static_cast<UINT>(message), static_cast<WPARAM>(wparam), static_cast<LPARAM>(lparam));
+    return static_cast<long long>(result);
+}
+
+WapiValue Evaluator::wapi_debugAttach(int pid) {
+    if (pid <= 0) throw WapiUnstableException("Invalid pid");
+    if (options.checkOnly) { emitAudit("debugAttach", "debug.attach", "allow", "checkOnly no side-effects"); return 0; }
+    if (!DebugActiveProcess(static_cast<DWORD>(pid))) throw WapiUnstableException("Failed to attach debugger");
+    return 0;
+}
+
+WapiValue Evaluator::wapi_debugWaitEvent() {
+    if (options.checkOnly) { emitAudit("debugWaitEvent", "debug.attach", "allow", "checkOnly no side-effects"); return 0; }
+    DEBUG_EVENT event{};
+    if (!WaitForDebugEvent(&event, 1000)) throw WapiUnstableException("No debug event received");
+    std::cout << "Debug event code=" << event.dwDebugEventCode << " pid=" << event.dwProcessId << " tid=" << event.dwThreadId << "\n";
+    return static_cast<int>(event.dwDebugEventCode);
+}
+
+WapiValue Evaluator::wapi_debugReadRegisters(int tid) {
+    long long thread = numericValue(wapi_openThread(tid));
+    WapiValue result = wapi_getThreadContext(thread);
+    closeTrackedHandle(thread);
+    return result;
+}
+
+WapiValue Evaluator::wapi_debugContinue(int eventCode) {
+    if (options.checkOnly) { emitAudit("debugContinue", "debug.attach", "allow", "checkOnly no side-effects"); return 0; }
+    return eventCode;
+}
+
+WapiValue Evaluator::wapi_openProcessToken(long long handle) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "openProcessToken"));
+    if (options.checkOnly) { emitAudit("openProcessToken", "token.open", "allow", "checkOnly no side-effects"); trackedHandles.insert(3); return 3; }
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(process, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) throw WapiUnstableException("Failed to open process token");
+    const long long tracked = static_cast<long long>(reinterpret_cast<uintptr_t>(token));
+    trackedHandles.insert(tracked);
+    return tracked;
+}
+
+WapiValue Evaluator::wapi_enablePrivilege(const std::string& privilegeName) {
+    if (privilegeName.empty()) throw WapiUnstableException("Privilege name is empty");
+    if (options.checkOnly) { emitAudit("enablePrivilege", "token.privilege", "allow", "checkOnly no side-effects"); return 0; }
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) throw WapiUnstableException("Failed to open current process token");
+    TOKEN_PRIVILEGES privileges{};
+    if (!LookupPrivilegeValueA(nullptr, privilegeName.c_str(), &privileges.Privileges[0].Luid)) { CloseHandle(token); throw WapiUnstableException("Failed to resolve privilege"); }
+    privileges.PrivilegeCount = 1;
+    privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    if (!AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), nullptr, nullptr) || GetLastError() == ERROR_NOT_ALL_ASSIGNED) { CloseHandle(token); throw WapiUnstableException("Failed to enable privilege"); }
+    CloseHandle(token);
+    return 0;
+}
+
+WapiValue Evaluator::wapi_createRemoteThread(int pid, long long startAddress, long long parameter) {
+    if (pid <= 0 || startAddress <= 0) throw WapiUnstableException("Invalid remote thread arguments");
+    if (options.checkOnly) { emitAudit("createRemoteThread", "inject.shellcode", "allow", "checkOnly no side-effects"); return 0; }
+    HANDLE process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, static_cast<DWORD>(pid));
+    if (!process) throw WapiUnstableException("Failed to open process");
+    HANDLE thread = CreateRemoteThread(process, nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(static_cast<uintptr_t>(startAddress)), reinterpret_cast<LPVOID>(static_cast<uintptr_t>(parameter)), 0, nullptr);
+    if (!thread) { CloseHandle(process); throw WapiUnstableException("Failed to create remote thread"); }
+    const long long tracked = static_cast<long long>(reinterpret_cast<uintptr_t>(thread));
+    trackedHandles.insert(tracked);
+    CloseHandle(process);
+    return tracked;
+}
+
+WapiValue Evaluator::wapi_injectShellcode(int pid, const std::string& hexBytes) {
+    if (pid <= 0) throw WapiUnstableException("Invalid pid");
+    if (hexBytes.empty()) throw WapiUnstableException("Shellcode is empty");
+    if (options.checkOnly) { emitAudit("injectShellcode", "inject.shellcode", "allow", "checkOnly no side-effects"); return 0; }
+    throw WapiUnstableException("injectShellcode requires a byte decoder implementation before execution; check mode is supported");
+}
+
 
 /*
 ██████╗ ██╗     ██╗         ██╗███╗   ██╗     ██╗███████╗ ██████╗████████╗██╗ ██████╗ ███╗   ██╗

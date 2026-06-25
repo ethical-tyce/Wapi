@@ -1,4 +1,4 @@
-﻿/*
+/*
 ██╗    ██╗ █████╗ ██████╗ ██╗    ██╗   ██╗ ██████╗     ██████╗ ██████╗
 ██║    ██║██╔══██╗██╔══██╗██║    ██║   ██║██╔═████╗   ██╔═████╗╚════██╗
 ██║ █╗ ██║███████║██████╔╝██║    ██║   ██║██║██╔██║   ██║██╔██║ █████╔╝
@@ -22,8 +22,8 @@ namespace {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  wapi run \"<script>\" [--mode safe|dev|unsafe] [--allow-injection] [--strict-permissions] [--cap <name>]...\n"
-        << "  wapi check \"<script>\" [--mode safe|dev|unsafe] [--allow-injection] [--strict-permissions] [--cap <name>]...\n"
+        << "  wapi run \"<script>\" [--mode safe|dev|unsafe] [--allow-injection] [--strict-permissions] [--json] [--cap <name>]...\n"
+        << "  wapi check \"<script>\" [--mode safe|dev|unsafe] [--allow-injection] [--strict-permissions] [--json] [--cap <name>]...\n"
         << "  wapi test\n"
         << "\n"
         << "Examples:\n"
@@ -55,6 +55,10 @@ WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool check
         }
         if (args[i] == "--strict-permissions") {
             options.strictPermissions = true;
+            continue;
+        }
+        if (args[i] == "--json") {
+            options.jsonOutput = true;
             continue;
         }
         if (args[i] == "--cap") {
@@ -103,7 +107,7 @@ void runStandardizedTests() {
     failed = 0;
 
     WapiRuntimeOptions options;
-    options.mode = WapiMode::Safe;
+    options.mode = WapiMode::Dev;
     options.checkOnly = true;
     options.allowInjection = true;
 
