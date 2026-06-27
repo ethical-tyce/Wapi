@@ -49,6 +49,15 @@ struct FunctionCall : ASTNode {
     std::vector<std::shared_ptr<ASTNode>> args;
 };
 
+struct ArrayLiteral : ASTNode {
+    std::vector<std::shared_ptr<ASTNode>> items;
+};
+
+struct IndexExpression : ASTNode {
+    std::shared_ptr<ASTNode> target;
+    std::shared_ptr<ASTNode> index;
+};
+
 struct VarDeclaration : ASTNode {
     std::string type;
     std::string name;
@@ -57,6 +66,12 @@ struct VarDeclaration : ASTNode {
 
 struct Assignment : ASTNode {
     std::string name;
+    std::shared_ptr<ASTNode> value;
+};
+
+struct IndexAssignment : ASTNode {
+    std::string name;
+    std::shared_ptr<ASTNode> index;
     std::shared_ptr<ASTNode> value;
 };
 
@@ -73,6 +88,37 @@ struct IfStatement : ASTNode {
 struct WhileStatement : ASTNode {
     std::shared_ptr<ASTNode> condition;
     std::shared_ptr<BlockStatement> body;
+};
+
+struct ForRangeStatement : ASTNode {
+    std::string variable;
+    std::shared_ptr<ASTNode> start;
+    std::shared_ptr<ASTNode> end;
+    std::shared_ptr<BlockStatement> body;
+};
+
+struct BreakStatement : ASTNode {};
+struct ContinueStatement : ASTNode {};
+
+struct ReturnStatement : ASTNode {
+    std::shared_ptr<ASTNode> value;
+};
+
+struct FunctionDeclaration : ASTNode {
+    std::string name;
+    std::string returnType;
+    std::vector<std::pair<std::string, std::string>> params;
+    std::shared_ptr<BlockStatement> body;
+};
+
+struct TryCatchStatement : ASTNode {
+    std::shared_ptr<BlockStatement> tryBlock;
+    std::string errorName;
+    std::shared_ptr<BlockStatement> catchBlock;
+};
+
+struct IncludeStatement : ASTNode {
+    std::string path;
 };
 
 struct Program : ASTNode {
@@ -102,13 +148,27 @@ private:
     std::shared_ptr<BlockStatement> parseBlock();
     std::shared_ptr<ASTNode> parseIfStatement();
     std::shared_ptr<ASTNode> parseWhileStatement();
+    std::shared_ptr<ASTNode> parseForStatement();
+    std::shared_ptr<ASTNode> parseFunctionDeclaration();
+    std::shared_ptr<ASTNode> parseReturnStatement();
+    std::shared_ptr<ASTNode> parseTryCatchStatement();
+    std::shared_ptr<ASTNode> parseIncludeStatement();
     std::shared_ptr<ASTNode> parseFunctionCall(const std::string& name);
     std::shared_ptr<ASTNode> parseExpression();
+    std::shared_ptr<ASTNode> parseLogicalOr();
+    std::shared_ptr<ASTNode> parseLogicalAnd();
+    std::shared_ptr<ASTNode> parseBitwiseOr();
+    std::shared_ptr<ASTNode> parseBitwiseXor();
+    std::shared_ptr<ASTNode> parseBitwiseAnd();
     std::shared_ptr<ASTNode> parseEquality();
     std::shared_ptr<ASTNode> parseComparison();
+    std::shared_ptr<ASTNode> parseShift();
     std::shared_ptr<ASTNode> parseTerm();
     std::shared_ptr<ASTNode> parseFactor();
     std::shared_ptr<ASTNode> parseUnary();
+    std::shared_ptr<ASTNode> parsePostfix();
     std::shared_ptr<ASTNode> parsePrimary();
+    std::shared_ptr<ASTNode> parseArrayLiteral();
+    std::string parseTypeName();
     std::string parseQualifiedName();
 };

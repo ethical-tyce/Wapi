@@ -1,6 +1,15 @@
 #include "lexer.h"
 #include <cctype>
 #include <stdexcept>
+#include <sstream>
+
+namespace {
+std::runtime_error lexError(int line, int column, const std::string& message) {
+    std::ostringstream oss;
+    oss << "E_LEX line=" << line << " column=" << column << " message=\"" << message << "\"";
+    return std::runtime_error(oss.str());
+}
+}
 
 Lexer::Lexer(const std::string& source) : src(source), pos(0), line(1), column(1) {}
 
@@ -56,9 +65,10 @@ Token Lexer::readHex() {
     const int tokenColumn = column;
     const size_t tokenOffset = pos;
     advance();
-    advance(); // skip 0x
+    advance();
     std::string num;
     while (pos < src.size() && isxdigit(static_cast<unsigned char>(src[pos]))) { num += src[pos]; advance(); }
+    if (num.empty()) throw lexError(tokenLine, tokenColumn, "Invalid hexadecimal literal");
     return { HEX_LITERAL, num, tokenLine, tokenColumn, tokenOffset };
 }
 
@@ -94,7 +104,7 @@ Token Lexer::readString() {
         str += src[pos];
         advance();
     }
-    if (pos >= src.size()) throw std::runtime_error("Unterminated string literal");
+    if (pos >= src.size()) throw lexError(tokenLine, tokenColumn, "Unterminated string literal");
     advance();
     return { STRING_LITERAL, str, tokenLine, tokenColumn, tokenOffset };
 }
@@ -105,15 +115,24 @@ Token Lexer::readIdentifierOrKeyword() {
     const size_t tokenOffset = pos;
     std::string word;
     while (pos < src.size() && (isalnum(static_cast<unsigned char>(src[pos])) || src[pos] == '_')) { word += src[pos]; advance(); }
-    if (word == "if")     return { IF, word, tokenLine, tokenColumn, tokenOffset };
-    if (word == "else")   return { ELSE, word, tokenLine, tokenColumn, tokenOffset };
-    if (word == "while")  return { WHILE, word, tokenLine, tokenColumn, tokenOffset };
-    if (word == "int")    return { TYPE_INT, word, tokenLine, tokenColumn, tokenOffset };
-    if (word == "long")   return { TYPE_LONG, word, tokenLine, tokenColumn, tokenOffset };
-    if (word == "string") return { TYPE_STRING, word, tokenLine, tokenColumn, tokenOffset };
-    if (word == "bool")   return { TYPE_BOOL, word, tokenLine, tokenColumn, tokenOffset };
-    if (word == "true")   return { BOOL_LITERAL, word, tokenLine, tokenColumn, tokenOffset };
-    if (word == "false")  return { BOOL_LITERAL, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "if")       return { IF, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "else")     return { ELSE, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "while")    return { WHILE, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "for")      return { FOR, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "in")       return { IN, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "func")     return { FUNC, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "return")   return { RETURN, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "break")    return { BREAK, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "continue") return { CONTINUE, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "try")      return { TRY, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "catch")    return { CATCH, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "include")  return { INCLUDE, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "int")      return { TYPE_INT, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "long")     return { TYPE_LONG, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "string")   return { TYPE_STRING, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "bool")     return { TYPE_BOOL, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "true")     return { BOOL_LITERAL, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "false")    return { BOOL_LITERAL, word, tokenLine, tokenColumn, tokenOffset };
     return { IDENTIFIER, word, tokenLine, tokenColumn, tokenOffset };
 }
 
@@ -128,12 +147,34 @@ Token Lexer::readSymbol() {
     case ')': return { RPAREN, ")", tokenLine, tokenColumn, tokenOffset };
     case '{': return { LBRACE, "{", tokenLine, tokenColumn, tokenOffset };
     case '}': return { RBRACE, "}", tokenLine, tokenColumn, tokenOffset };
+    case '[': return { LBRACKET, "[", tokenLine, tokenColumn, tokenOffset };
+    case ']': return { RBRACKET, "]", tokenLine, tokenColumn, tokenOffset };
     case ';': return { SEMICOLON, ";", tokenLine, tokenColumn, tokenOffset };
     case ',': return { COMMA, ",", tokenLine, tokenColumn, tokenOffset };
     case '+': return { PLUS, "+", tokenLine, tokenColumn, tokenOffset };
-    case '-': return { MINUS, "-", tokenLine, tokenColumn, tokenOffset };
+    case '-':
+        if (pos < src.size() && src[pos] == '>') {
+            advance();
+            return { ARROW, "->", tokenLine, tokenColumn, tokenOffset };
+        }
+        return { MINUS, "-", tokenLine, tokenColumn, tokenOffset };
     case '*': return { STAR, "*", tokenLine, tokenColumn, tokenOffset };
     case '/': return { SLASH, "/", tokenLine, tokenColumn, tokenOffset };
+    case '%': return { PERCENT, "%", tokenLine, tokenColumn, tokenOffset };
+    case '^': return { BIT_XOR, "^", tokenLine, tokenColumn, tokenOffset };
+    case '~': return { BIT_NOT, "~", tokenLine, tokenColumn, tokenOffset };
+    case '&':
+        if (pos < src.size() && src[pos] == '&') {
+            advance();
+            return { LOGICAL_AND, "&&", tokenLine, tokenColumn, tokenOffset };
+        }
+        return { BIT_AND, "&", tokenLine, tokenColumn, tokenOffset };
+    case '|':
+        if (pos < src.size() && src[pos] == '|') {
+            advance();
+            return { LOGICAL_OR, "||", tokenLine, tokenColumn, tokenOffset };
+        }
+        return { BIT_OR, "|", tokenLine, tokenColumn, tokenOffset };
     case '=':
         if (pos < src.size() && src[pos] == '=') {
             advance();
@@ -145,11 +186,15 @@ Token Lexer::readSymbol() {
             advance();
             return { NOT_EQUALS, "!=", tokenLine, tokenColumn, tokenOffset };
         }
-        break;
+        return { BANG, "!", tokenLine, tokenColumn, tokenOffset };
     case '<':
         if (pos < src.size() && src[pos] == '=') {
             advance();
             return { LESS_EQUALS, "<=", tokenLine, tokenColumn, tokenOffset };
+        }
+        if (pos < src.size() && src[pos] == '<') {
+            advance();
+            return { SHIFT_LEFT, "<<", tokenLine, tokenColumn, tokenOffset };
         }
         return { LESS, "<", tokenLine, tokenColumn, tokenOffset };
     case '>':
@@ -157,7 +202,11 @@ Token Lexer::readSymbol() {
             advance();
             return { GREATER_EQUALS, ">=", tokenLine, tokenColumn, tokenOffset };
         }
+        if (pos < src.size() && src[pos] == '>') {
+            advance();
+            return { SHIFT_RIGHT, ">>", tokenLine, tokenColumn, tokenOffset };
+        }
         return { GREATER, ">", tokenLine, tokenColumn, tokenOffset };
     }
-    throw std::runtime_error("Unexpected character: " + std::string(1, c));
+    throw lexError(tokenLine, tokenColumn, "Unexpected character: " + std::string(1, c));
 }

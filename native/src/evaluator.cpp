@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cctype>
+#include <optional>
 #include <cwctype>
 #include <filesystem>
 #include <iomanip>
@@ -51,7 +54,21 @@ bool valuesEqual(const WapiValue& left, const WapiValue& right) {
     if (auto l = std::get_if<bool>(&left)) {
         if (auto r = std::get_if<bool>(&right)) return *l == *r;
     }
+    if (auto l = std::get_if<WapiArrayPtr>(&left)) {
+        if (auto r = std::get_if<WapiArrayPtr>(&right)) return l->get() == r->get();
+    }
     return false;
+}
+
+struct BreakSignal {};
+struct ContinueSignal {};
+struct ReturnSignal { WapiValue value; };
+
+std::string toLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
 }
 
 std::string wideToUtf8(const std::wstring& value) {
@@ -96,7 +113,36 @@ std::string Evaluator::valueToString(const WapiValue& value) const {
     if (auto p = std::get_if<long long>(&value)) return std::to_string(*p);
     if (auto p = std::get_if<std::string>(&value)) return *p;
     if (auto p = std::get_if<bool>(&value)) return *p ? "true" : "false";
+    if (auto p = std::get_if<WapiArrayPtr>(&value)) {
+        std::ostringstream oss;
+        oss << "[";
+        if (*p) {
+            for (size_t i = 0; i < (*p)->values.size(); ++i) {
+                if (i) oss << ", ";
+                oss << valueToString((*p)->values[i]);
+            }
+        }
+        oss << "]";
+        return oss.str();
+    }
     return "";
+}
+
+bool Evaluator::typeMatches(const std::string& typeName, const WapiValue& value) const {
+    if (typeName == "any") return true;
+    if (typeName == "int") return std::holds_alternative<int>(value);
+    if (typeName == "long") return isNumericValue(value);
+    if (typeName == "string") return std::holds_alternative<std::string>(value);
+    if (typeName == "bool") return std::holds_alternative<bool>(value);
+    if (typeName.size() > 2 && typeName.substr(typeName.size() - 2) == "[]") return std::holds_alternative<WapiArrayPtr>(value);
+    return true;
+}
+
+WapiArrayPtr Evaluator::asArrayValue(const WapiValue& value, const std::string& context) const {
+    if (auto p = std::get_if<WapiArrayPtr>(&value)) {
+        if (*p) return *p;
+    }
+    throw std::runtime_error("E_TYPE:" + context + " expected array");
 }
 
 bool Evaluator::isTruthy(const WapiValue& value) const {
@@ -104,6 +150,7 @@ bool Evaluator::isTruthy(const WapiValue& value) const {
     if (auto p = std::get_if<long long>(&value)) return *p != 0;
     if (auto p = std::get_if<std::string>(&value)) return !p->empty();
     if (auto p = std::get_if<bool>(&value)) return *p;
+    if (auto p = std::get_if<WapiArrayPtr>(&value)) return *p && !(*p)->values.empty();
     return false;
 }
 
@@ -112,18 +159,63 @@ long long Evaluator::asNumberValue(const WapiValue& value, const std::string& co
     if (auto p = std::get_if<long long>(&value)) return *p;
     throw std::runtime_error("E_TYPE:" + context + " expected number");
 }
-
 void Evaluator::run(std::shared_ptr<Program> program) {
-    for (auto& stmt : program->statements) {
-        evalNode(stmt);
+    try {
+        for (auto& stmt : program->statements) {
+            evalNode(stmt);
+        }
+        if (options.jsonOutput) {
+            std::ostringstream payload;
+            payload << "{";
+            bool first = true;
+            for (const auto& [name, value] : variables) {
+                if (!first) payload << ",";
+                payload << "\"" << jsonEscape(name) << "\":\"" << jsonEscape(valueToString(value)) << "\"";
+                first = false;
+            }
+            payload << "}";
+            emitJsonEvent("variables", payload.str());
+        }
+    }
+    catch (const BreakSignal&) {
+        throw std::runtime_error("E_BREAK_OUTSIDE_LOOP");
+    }
+    catch (const ContinueSignal&) {
+        throw std::runtime_error("E_CONTINUE_OUTSIDE_LOOP");
+    }
+    catch (const ReturnSignal&) {
+        throw std::runtime_error("E_RETURN_OUTSIDE_FUNCTION");
     }
 }
 
 WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
     if (auto n = std::dynamic_pointer_cast<IntLiteral>(node)) return n->value;
     if (auto n = std::dynamic_pointer_cast<LongLongLiteral>(node)) return n->value;
-    if (auto n = std::dynamic_pointer_cast<StringLiteral>(node)) return n->value;
+    if (auto n = std::dynamic_pointer_cast<StringLiteral>(node)) {
+        std::string out = n->value;
+        size_t start = 0;
+        while ((start = out.find("${", start)) != std::string::npos) {
+            const size_t end = out.find("}", start + 2);
+            if (end == std::string::npos) break;
+            const std::string name = out.substr(start + 2, end - start - 2);
+            auto found = variables.find(name);
+            if (found != variables.end()) {
+                const std::string replacement = valueToString(found->second);
+                out.replace(start, end - start + 1, replacement);
+                start += replacement.size();
+            }
+            else {
+                start = end + 1;
+            }
+        }
+        return out;
+    }
     if (auto n = std::dynamic_pointer_cast<BoolLiteral>(node)) return n->value;
+    if (auto n = std::dynamic_pointer_cast<ArrayLiteral>(node)) {
+        auto array = std::make_shared<WapiArray>();
+        for (auto& item : n->items) array->values.push_back(evalNode(item));
+        return array;
+    }
 
     if (auto n = std::dynamic_pointer_cast<Identifier>(node)) {
         if (variables.count(n->name)) return variables[n->name];
@@ -132,6 +224,7 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
 
     if (auto n = std::dynamic_pointer_cast<VarDeclaration>(node)) {
         WapiValue val = evalNode(n->value);
+        if (!typeMatches(n->type, val)) throw std::runtime_error("E_TYPE:" + n->name + " expected " + n->type);
         variables[n->name] = val;
         return val;
     }
@@ -143,18 +236,24 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
         return val;
     }
 
+    if (auto n = std::dynamic_pointer_cast<IndexAssignment>(node)) {
+        if (!variables.count(n->name)) throw std::runtime_error("E_UNDEFINED_VAR: " + n->name);
+        auto array = asArrayValue(variables[n->name], "index assignment");
+        const long long index = asNumberValue(evalNode(n->index), "array index");
+        if (index < 0 || static_cast<size_t>(index) >= array->values.size()) throw std::runtime_error("E_INDEX_OUT_OF_RANGE:" + n->name);
+        WapiValue val = evalNode(n->value);
+        array->values[static_cast<size_t>(index)] = val;
+        return val;
+    }
+
     if (auto n = std::dynamic_pointer_cast<BlockStatement>(node)) {
         WapiValue last = 0;
-        for (auto& stmt : n->statements) {
-            last = evalNode(stmt);
-        }
+        for (auto& stmt : n->statements) last = evalNode(stmt);
         return last;
     }
 
     if (auto n = std::dynamic_pointer_cast<IfStatement>(node)) {
-        if (isTruthy(evalNode(n->condition))) {
-            return evalNode(n->thenBranch);
-        }
+        if (isTruthy(evalNode(n->condition))) return evalNode(n->thenBranch);
         if (n->elseBranch) return evalNode(n->elseBranch);
         return 0;
     }
@@ -163,28 +262,69 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
         constexpr int maxIterations = 100000;
         WapiValue last = 0;
         int iterations = 0;
-
         while (isTruthy(evalNode(n->condition))) {
-            if (++iterations > maxIterations) {
-                throw std::runtime_error("E_LOOP_LIMIT: while exceeded 100000 iterations");
+            if (++iterations > maxIterations) throw std::runtime_error("E_LOOP_LIMIT: while exceeded 100000 iterations");
+            try {
+                last = evalNode(n->body);
             }
-            last = evalNode(n->body);
+            catch (const ContinueSignal&) {
+                continue;
+            }
+            catch (const BreakSignal&) {
+                break;
+            }
         }
-
         return last;
     }
 
-    if (auto n = std::dynamic_pointer_cast<UnaryExpression>(node)) {
-        return evalUnaryExpression(*n);
+    if (auto n = std::dynamic_pointer_cast<ForRangeStatement>(node)) {
+        const long long start = asNumberValue(evalNode(n->start), "range start");
+        const long long end = asNumberValue(evalNode(n->end), "range end");
+        WapiValue last = 0;
+        int iterations = 0;
+        for (long long i = start; i < end; ++i) {
+            if (++iterations > 100000) throw std::runtime_error("E_LOOP_LIMIT: for exceeded 100000 iterations");
+            variables[n->variable] = (i >= (std::numeric_limits<int>::min)() && i <= (std::numeric_limits<int>::max)()) ? WapiValue(static_cast<int>(i)) : WapiValue(i);
+            try {
+                last = evalNode(n->body);
+            }
+            catch (const ContinueSignal&) {
+                continue;
+            }
+            catch (const BreakSignal&) {
+                break;
+            }
+        }
+        return last;
     }
 
-    if (auto n = std::dynamic_pointer_cast<BinaryExpression>(node)) {
-        return evalBinaryExpression(*n);
+    if (std::dynamic_pointer_cast<BreakStatement>(node)) throw BreakSignal{};
+    if (std::dynamic_pointer_cast<ContinueStatement>(node)) throw ContinueSignal{};
+
+    if (auto n = std::dynamic_pointer_cast<ReturnStatement>(node)) {
+        throw ReturnSignal{ n->value ? evalNode(n->value) : WapiValue(0) };
     }
 
-    if (auto n = std::dynamic_pointer_cast<FunctionCall>(node)) {
-        return evalFunctionCall(n);
+    if (auto n = std::dynamic_pointer_cast<FunctionDeclaration>(node)) {
+        userFunctions[n->name] = n;
+        return 0;
     }
+
+    if (auto n = std::dynamic_pointer_cast<TryCatchStatement>(node)) {
+        try {
+            return evalNode(n->tryBlock);
+        }
+        catch (const std::exception& error) {
+            if (!n->errorName.empty()) variables[n->errorName] = std::string(error.what());
+            return evalNode(n->catchBlock);
+        }
+    }
+
+    if (std::dynamic_pointer_cast<IncludeStatement>(node)) return 0;
+    if (auto n = std::dynamic_pointer_cast<IndexExpression>(node)) return evalIndexExpression(*n);
+    if (auto n = std::dynamic_pointer_cast<UnaryExpression>(node)) return evalUnaryExpression(*n);
+    if (auto n = std::dynamic_pointer_cast<BinaryExpression>(node)) return evalBinaryExpression(*n);
+    if (auto n = std::dynamic_pointer_cast<FunctionCall>(node)) return evalFunctionCall(n);
 
     throw std::runtime_error("E_UNKNOWN_NODE: unsupported AST node");
 }
@@ -201,11 +341,20 @@ WapiValue Evaluator::evalUnaryExpression(const UnaryExpression& expr) {
         }
         return number;
     }
+    if (expr.op == "!") return !isTruthy(value);
+    if (expr.op == "~") {
+        const long long number = ~asNumberValue(value, "unary '~'");
+        if (number >= (std::numeric_limits<int>::min)() && number <= (std::numeric_limits<int>::max)()) return static_cast<int>(number);
+        return number;
+    }
 
     throw std::runtime_error("E_UNKNOWN_OPERATOR:" + expr.op);
 }
 
 WapiValue Evaluator::evalBinaryExpression(const BinaryExpression& expr) {
+    if (expr.op == "&&") return isTruthy(evalNode(expr.left)) && isTruthy(evalNode(expr.right));
+    if (expr.op == "||") return isTruthy(evalNode(expr.left)) || isTruthy(evalNode(expr.right));
+
     WapiValue left = evalNode(expr.left);
     WapiValue right = evalNode(expr.right);
 
@@ -232,19 +381,34 @@ WapiValue Evaluator::evalBinaryExpression(const BinaryExpression& expr) {
         if (rhs == 0) throw std::runtime_error("E_DIVIDE_BY_ZERO");
         result = lhs / rhs;
     }
-    else {
-        throw std::runtime_error("E_UNKNOWN_OPERATOR:" + expr.op);
+    else if (expr.op == "%") {
+        if (rhs == 0) throw std::runtime_error("E_DIVIDE_BY_ZERO");
+        result = lhs % rhs;
     }
+    else if (expr.op == "&") result = lhs & rhs;
+    else if (expr.op == "|") result = lhs | rhs;
+    else if (expr.op == "^") result = lhs ^ rhs;
+    else if (expr.op == "<<") result = lhs << rhs;
+    else if (expr.op == ">>") result = lhs >> rhs;
+    else throw std::runtime_error("E_UNKNOWN_OPERATOR:" + expr.op);
 
     const bool promoteToLong = std::holds_alternative<long long>(left) || std::holds_alternative<long long>(right);
-    if (!promoteToLong &&
-        result >= (std::numeric_limits<int>::min)() &&
-        result <= (std::numeric_limits<int>::max)()) {
-        return static_cast<int>(result);
-    }
+    if (!promoteToLong && result >= (std::numeric_limits<int>::min)() && result <= (std::numeric_limits<int>::max)()) return static_cast<int>(result);
     return result;
 }
 
+WapiValue Evaluator::evalIndexExpression(const IndexExpression& expr) {
+    WapiValue target = evalNode(expr.target);
+    const long long index = asNumberValue(evalNode(expr.index), "index");
+    if (index < 0) throw std::runtime_error("E_INDEX_OUT_OF_RANGE");
+    if (auto p = std::get_if<std::string>(&target)) {
+        if (static_cast<size_t>(index) >= p->size()) throw std::runtime_error("E_INDEX_OUT_OF_RANGE");
+        return std::string(1, (*p)[static_cast<size_t>(index)]);
+    }
+    auto array = asArrayValue(target, "index");
+    if (static_cast<size_t>(index) >= array->values.size()) throw std::runtime_error("E_INDEX_OUT_OF_RANGE");
+    return array->values[static_cast<size_t>(index)];
+}
 void Evaluator::checkArgCount(const std::shared_ptr<FunctionCall>& call, size_t expected) {
     if (call->args.size() != expected) {
         throw std::runtime_error(
@@ -402,7 +566,110 @@ void Evaluator::cleanupTrackedResources() noexcept {
     trackedAllocations.clear();
 }
 
+WapiValue Evaluator::evalUserFunction(const std::shared_ptr<FunctionDeclaration>& declaration, const std::shared_ptr<FunctionCall>& call) {
+    if (call->args.size() != declaration->params.size()) {
+        throw std::runtime_error("E_ARG_COUNT:" + call->name + " expected=" + std::to_string(declaration->params.size()) + " got=" + std::to_string(call->args.size()));
+    }
+
+    std::vector<WapiValue> args;
+    for (auto& arg : call->args) args.push_back(evalNode(arg));
+    auto outerVariables = variables;
+
+    for (size_t i = 0; i < declaration->params.size(); ++i) {
+        const auto& [type, name] = declaration->params[i];
+        if (!typeMatches(type, args[i])) throw std::runtime_error("E_TYPE:" + call->name + " arg=" + std::to_string(i) + " expected " + type);
+        variables[name] = args[i];
+    }
+
+    WapiValue result = 0;
+    try {
+        evalNode(declaration->body);
+    }
+    catch (const ReturnSignal& returned) {
+        result = returned.value;
+    }
+
+    variables = outerVariables;
+    if (!typeMatches(declaration->returnType, result)) throw std::runtime_error("E_TYPE:" + call->name + " return expected " + declaration->returnType);
+    return result;
+}
 WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
+    auto userFunction = userFunctions.find(call->name);
+    if (userFunction != userFunctions.end()) return evalUserFunction(userFunction->second, call);
+
+    if (call->name == "len") {
+        checkArgCount(call, 1);
+        WapiValue value = evalNode(call->args[0]);
+        if (auto p = std::get_if<std::string>(&value)) return static_cast<int>(p->size());
+        return static_cast<int>(asArrayValue(value, "len")->values.size());
+    }
+    if (call->name == "substr") {
+        checkArgCount(call, 3);
+        const std::string value = asString(call->args[0], call->name, 0);
+        const int start = asInt(call->args[1], call->name, 1);
+        const int count = asInt(call->args[2], call->name, 2);
+        if (start < 0 || count < 0 || static_cast<size_t>(start) > value.size()) throw std::runtime_error("E_INDEX_OUT_OF_RANGE:substr");
+        return value.substr(static_cast<size_t>(start), static_cast<size_t>(count));
+    }
+    if (call->name == "contains") {
+        checkArgCount(call, 2);
+        return asString(call->args[0], call->name, 0).find(asString(call->args[1], call->name, 1)) != std::string::npos;
+    }
+    if (call->name == "replace") {
+        checkArgCount(call, 3);
+        std::string value = asString(call->args[0], call->name, 0);
+        const std::string needle = asString(call->args[1], call->name, 1);
+        const std::string replacement = asString(call->args[2], call->name, 2);
+        if (needle.empty()) return value;
+        size_t at = 0;
+        while ((at = value.find(needle, at)) != std::string::npos) {
+            value.replace(at, needle.size(), replacement);
+            at += replacement.size();
+        }
+        return value;
+    }
+    if (call->name == "toLower") {
+        checkArgCount(call, 1);
+        return toLowerAscii(asString(call->args[0], call->name, 0));
+    }
+    if (call->name == "toInt") {
+        checkArgCount(call, 1);
+        WapiValue value = evalNode(call->args[0]);
+        if (isNumericValue(value)) return static_cast<int>(numericValue(value));
+        if (auto p = std::get_if<std::string>(&value)) return std::stoi(*p);
+        throwArgType(call->name, 0, "string|number");
+    }
+    if (call->name == "abs") {
+        checkArgCount(call, 1);
+        const long long value = asNumberValue(evalNode(call->args[0]), "abs");
+        const long long result = value < 0 ? -value : value;
+        if (result <= (std::numeric_limits<int>::max)()) return static_cast<int>(result);
+        return result;
+    }
+    if (call->name == "min" || call->name == "max") {
+        checkArgCount(call, 2);
+        const long long a = asNumberValue(evalNode(call->args[0]), call->name);
+        const long long b = asNumberValue(evalNode(call->args[1]), call->name);
+        const long long result = call->name == "min" ? (std::min)(a, b) : (std::max)(a, b);
+        if (result >= (std::numeric_limits<int>::min)() && result <= (std::numeric_limits<int>::max)()) return static_cast<int>(result);
+        return result;
+    }
+    if (call->name == "push") {
+        checkArgCount(call, 2);
+        WapiValue value = evalNode(call->args[0]);
+        auto array = asArrayValue(value, "push");
+        array->values.push_back(evalNode(call->args[1]));
+        return array;
+    }
+    if (call->name == "pop") {
+        checkArgCount(call, 1);
+        WapiValue value = evalNode(call->args[0]);
+        auto array = asArrayValue(value, "pop");
+        if (array->values.empty()) throw std::runtime_error("E_EMPTY_ARRAY:pop");
+        WapiValue popped = array->values.back();
+        array->values.pop_back();
+        return popped;
+    }
     using FunctionInvoker = WapiValue(*)(Evaluator&, const std::shared_ptr<FunctionCall>&);
 
     struct FunctionBinding {
@@ -1517,4 +1784,3 @@ WapiValue Evaluator::wapi_testInjectDLL(int pid) {
 
     return wapi_injectDLL(pid, wideToUtf8(dllPath.wstring()));
 }
-

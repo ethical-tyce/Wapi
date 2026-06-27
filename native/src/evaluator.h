@@ -1,4 +1,6 @@
 #pragma once
+#include <exception>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -6,7 +8,10 @@
 #include <vector>
 #include "parser.h"
 
-using WapiValue = std::variant<int, long long, std::string, bool>;
+struct WapiArray;
+using WapiArrayPtr = std::shared_ptr<WapiArray>;
+using WapiValue = std::variant<int, long long, std::string, bool, WapiArrayPtr>;
+struct WapiArray { std::vector<WapiValue> values; };
 
 enum class WapiMode {
     Safe,
@@ -40,6 +45,7 @@ public:
 private:
     WapiRuntimeOptions options;
     std::unordered_map<std::string, WapiValue> variables;
+    std::unordered_map<std::string, std::shared_ptr<FunctionDeclaration>> userFunctions;
     std::unordered_set<long long> trackedHandles;
     std::unordered_map<long long, std::unordered_set<long long>> trackedAllocations;
 
@@ -47,11 +53,16 @@ private:
     WapiValue evalFunctionCall(std::shared_ptr<FunctionCall> call);
     WapiValue evalUnaryExpression(const UnaryExpression& expr);
     WapiValue evalBinaryExpression(const BinaryExpression& expr);
+    WapiValue evalIndexExpression(const IndexExpression& expr);
+    WapiValue evalUserFunction(const std::shared_ptr<FunctionDeclaration>& declaration, const std::shared_ptr<FunctionCall>& call);
+    WapiValue evalBuiltInFunction(const std::shared_ptr<FunctionCall>& call);
 
     void checkArgCount(const std::shared_ptr<FunctionCall>& call, size_t expected);
     std::string modeToString() const;
     std::string nowIso8601() const;
     std::string valueToString(const WapiValue& value) const;
+    bool typeMatches(const std::string& typeName, const WapiValue& value) const;
+    WapiArrayPtr asArrayValue(const WapiValue& value, const std::string& context) const;
     bool isTruthy(const WapiValue& value) const;
     long long asNumberValue(const WapiValue& value, const std::string& context) const;
     void emitJsonEvent(const std::string& kind, const std::string& payload) const;
@@ -67,7 +78,6 @@ private:
     void cleanupTrackedResources() noexcept;
     void releaseTrackedAllocations(long long handleValue) noexcept;
     void closeTrackedHandle(long long handleValue) noexcept;
-
     // Windows API bindings
     WapiValue wapi_findProcessPID(const std::string& name);
     WapiValue wapi_listProcesses();

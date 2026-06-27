@@ -152,7 +152,21 @@ function parseEvaluatorFunctionRegistry(source) {
   return functions.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const wapiRuntimeFunctions = parseEvaluatorFunctionRegistry(evaluatorSource);
+const wapiLanguageFunctions = [
+  { name: "len", argCount: 1, capability: "language.core", requiresInjectionFlag: false, params: [{ name: "value", type: "string|array" }] },
+  { name: "substr", argCount: 3, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "text", type: "string" }, { name: "start", type: "int" }, { name: "count", type: "int" }] },
+  { name: "contains", argCount: 2, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "text", type: "string" }, { name: "needle", type: "string" }] },
+  { name: "replace", argCount: 3, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "text", type: "string" }, { name: "needle", type: "string" }, { name: "replacement", type: "string" }] },
+  { name: "toLower", argCount: 1, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "text", type: "string" }] },
+  { name: "toInt", argCount: 1, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "value", type: "string|number" }] },
+  { name: "abs", argCount: 1, capability: "language.math", requiresInjectionFlag: false, params: [{ name: "number", type: "int|long" }] },
+  { name: "min", argCount: 2, capability: "language.math", requiresInjectionFlag: false, params: [{ name: "a", type: "int|long" }, { name: "b", type: "int|long" }] },
+  { name: "max", argCount: 2, capability: "language.math", requiresInjectionFlag: false, params: [{ name: "a", type: "int|long" }, { name: "b", type: "int|long" }] },
+  { name: "push", argCount: 2, capability: "language.array", requiresInjectionFlag: false, params: [{ name: "array", type: "array" }, { name: "value", type: "value" }] },
+  { name: "pop", argCount: 1, capability: "language.array", requiresInjectionFlag: false, params: [{ name: "array", type: "array" }] }
+];
+const wapiRuntimeFunctions = [...wapiLanguageFunctions, ...parseEvaluatorFunctionRegistry(evaluatorSource)]
+  .sort((a, b) => a.name.localeCompare(b.name));
 const wapiRuntimeFunctionMap = new Map(wapiRuntimeFunctions.map((fn) => [fn.name, fn]));
 const wapiFunctionNameRegex = wapiRuntimeFunctions.length
   ? new RegExp(`\\b(?:${wapiRuntimeFunctions.map((fn) => escapeRegExp(fn.name)).join("|")})\\b`)
@@ -295,6 +309,9 @@ const ideState = {
   outputLines: [],
   auditLines: [],
   problems: [],
+  executionHistory: [],
+  processExplorer: { loading: false, error: "", processes: [] },
+  variableWatch: [],
   terminalTabs: [],
   activeTerminalId: null,
   inspectorOpen: false,
@@ -793,7 +810,11 @@ async function runWapiCommand(command, { silent = false } = {}) {
 
   if (!silent) recordRuntimeEvent(`${command === "check" ? "Check" : "Run"} started for ${file.relativePath}`, "pending");
   const result = await bridge.execute({ command, source, options: runtimeOptions() });
-  if (!silent) recordRuntimeResult(command, result, file);
+  if (!silent) {
+    recordRuntimeResult(command, result, file);
+    recordExecutionHistory(command, result, file);
+    updateVariableWatchFromResult(result);
+  }
   if (silent && token !== editorState.diagnosticsToken) return result;
 
   const stdoutLines = splitLines(result.stdout);
@@ -844,8 +865,8 @@ function installMonacoLanguage() {
         [/\/\/.*$/, "comment"],
         [/"([^"\\]|\\.)*$/, "string.invalid"],
         [/"/, "string", "@string"],
-        [/\b(?:print|if|else|while|true|false|int|string|bool|long)\b/, "keyword"],
-        [/[=+\-*\/<>!]+/, "operator"],
+        [/\b(?:print|if|else|while|for|in|func|return|break|continue|try|catch|include|true|false|int|string|bool|long)\b/, "keyword"],
+        [/[=+\-*\/%<>!&|^~]+/, "operator"],
         [wapiFunctionNameRegex, "type.identifier"],
         [/\b0x[0-9a-fA-F]+\b/, "number.hex"],
         [/\b\d+(?:\.\d+)?\b/, "number"],
@@ -1155,6 +1176,10 @@ function renderSidePanel() {
     explorer: "SOLUTION EXPLORER",
     search: "SEARCH",
     functions: "FUNCTIONS",
+    processes: "PROCESSES",
+    history: "HISTORY",
+    watch: "WATCH",
+    templates: "TEMPLATES",
     outline: "OUTLINE",
     settings: "PROJECT"
   };
@@ -1242,6 +1267,95 @@ function renderSidePanel() {
     return;
   }
 
+  if (ideState.activePanel === "processes") {
+    if (meta) meta.textContent = ideState.processExplorer.loading ? "Loading processes" : `${ideState.processExplorer.processes.length} process${ideState.processExplorer.processes.length === 1 ? "" : "es"}`;
+    const refresh = document.createElement("button");
+    refresh.className = "function-row";
+    refresh.type = "button";
+    refresh.dataset.refreshProcesses = "true";
+    refresh.innerHTML = "<strong>Refresh process list</strong><span>Uses current Wapi safe-check settings</span>";
+    content.appendChild(refresh);
+    if (ideState.processExplorer.error) {
+      renderPanelEmpty(content, "PROCESS", ideState.processExplorer.error);
+      return;
+    }
+    if (ideState.processExplorer.loading) {
+      renderPanelEmpty(content, "PROCESS", "Loading live processes...");
+      return;
+    }
+    if (ideState.processExplorer.processes.length === 0) {
+      renderPanelEmpty(content, "PROCESS", "Refresh to load running processes.");
+      return;
+    }
+    for (const process of ideState.processExplorer.processes) {
+      const button = document.createElement("button");
+      button.className = "function-row";
+      button.type = "button";
+      button.dataset.insertPid = String(process.pid);
+      button.innerHTML = "<strong></strong><span></span>";
+      button.querySelector("strong").textContent = process.name;
+      button.querySelector("span").textContent = `PID ${process.pid}`;
+      content.appendChild(button);
+    }
+    return;
+  }
+
+  if (ideState.activePanel === "history") {
+    if (meta) meta.textContent = `${ideState.executionHistory.length} run${ideState.executionHistory.length === 1 ? "" : "s"}`;
+    if (ideState.executionHistory.length === 0) {
+      renderPanelEmpty(content, "HISTORY", "Run or check a script to record it here.");
+      return;
+    }
+    for (const item of ideState.executionHistory) {
+      const button = document.createElement("button");
+      button.className = "search-result";
+      button.type = "button";
+      button.dataset.historyFile = item.fileId;
+      button.innerHTML = "<strong></strong><span class=\"search-line\"></span><code></code>";
+      button.querySelector("strong").textContent = `${item.command.toUpperCase()} ${item.ok ? "passed" : "failed"}`;
+      button.querySelector(".search-line").textContent = `${item.at} - ${item.duration} ms - code ${item.code ?? "unknown"}`;
+      button.querySelector("code").textContent = item.file;
+      content.appendChild(button);
+    }
+    return;
+  }
+
+  if (ideState.activePanel === "watch") {
+    if (meta) meta.textContent = `${ideState.variableWatch.length} variable${ideState.variableWatch.length === 1 ? "" : "s"}`;
+    if (ideState.variableWatch.length === 0) {
+      renderPanelEmpty(content, "WATCH", "Run or check a script with JSON output enabled.");
+      return;
+    }
+    for (const item of ideState.variableWatch) {
+      const row = document.createElement("div");
+      row.className = "function-row";
+      row.innerHTML = "<strong></strong><span></span>";
+      row.querySelector("strong").textContent = item.name;
+      row.querySelector("span").textContent = item.value;
+      content.appendChild(row);
+    }
+    return;
+  }
+  if (ideState.activePanel === "templates") {
+    if (meta) meta.textContent = "Script snippets";
+    const snippets = [
+      ["poll-loop", "Polling loop", "while loop with break-ready counter"],
+      ["function-helper", "Typed function", "func, typed args, return value"],
+      ["array-scan", "Array loop", "push, len, for range"],
+      ["safe-process", "Process lookup", "find process and print PID"]
+    ];
+    for (const [id, title, note] of snippets) {
+      const button = document.createElement("button");
+      button.className = "function-row";
+      button.type = "button";
+      button.dataset.insertTemplate = id;
+      button.innerHTML = "<strong></strong><span></span>";
+      button.querySelector("strong").textContent = title;
+      button.querySelector("span").textContent = note;
+      content.appendChild(button);
+    }
+    return;
+  }
   if (ideState.activePanel === "outline") {
     const entries = outlineEntries();
     if (meta) meta.textContent = activeFile() ? activeFile().name : "No active file";
@@ -1651,10 +1765,109 @@ function goToLine(line) {
 function insertFunctionSnippet(functionName) {
   const fn = wapiRuntimeFunctionMap.get(functionName);
   if (!fn || !editorState.editor) return;
-  editorState.editor.focus();
-  editorState.editor.trigger("keyboard", "editor.action.insertSnippet", { snippet: wapiFunctionSnippet(fn) });
+  insertEditorSnippet(wapiFunctionSnippet(fn));
 }
 
+function insertEditorSnippet(snippet) {
+  if (!editorState.editor) return;
+  editorState.editor.focus();
+  editorState.editor.trigger("keyboard", "editor.action.insertSnippet", { snippet });
+}
+
+function insertTemplateSnippet(templateId) {
+  const snippets = {
+    "poll-loop": [
+      "int attempts = 0",
+      "while attempts < ${1:10} {",
+      "    attempts = attempts + 1",
+      "    print(\"attempt ${attempts}\")",
+      "}",
+      ""
+    ].join("\n"),
+    "function-helper": [
+      "func int ${1:add}(int ${2:a}, int ${3:b}) {",
+      "    return ${2:a} + ${3:b}",
+      "}",
+      "",
+      "int result = ${1:add}(1, 2)",
+      "print(result)",
+      ""
+    ].join("\n"),
+    "array-scan": [
+      "int[] values = []",
+      "push(values, 10)",
+      "push(values, 20)",
+      "for i in range(len(values)) {",
+      "    print(\"value ${i}: ${values}\")",
+      "}",
+      ""
+    ].join("\n"),
+    "safe-process": [
+      "string target = \"notepad\"",
+      "int pid = findProcessPID(target)",
+      "print(\"pid is ${pid}\")",
+      ""
+    ].join("\n")
+  };
+  insertEditorSnippet(snippets[templateId] ?? "");
+}
+
+function insertProcessPid(pid) {
+  insertEditorSnippet(String(pid));
+}
+
+function parseProcessLines(stdout = "") {
+  return splitLines(stdout)
+    .map((line) => line.match(/^\s*(\d+)\s+-\s+(.+)$/))
+    .filter(Boolean)
+    .map((match) => ({ pid: Number(match[1]), name: match[2].trim() }))
+    .slice(0, 250);
+}
+
+async function refreshProcessExplorer() {
+  ideState.processExplorer.loading = true;
+  ideState.processExplorer.error = "";
+  renderSidePanel();
+  const result = await bridge.execute({
+    command: "check",
+    source: "listProcesses()",
+    options: { ...runtimeOptions(), strictPermissions: false, capabilities: [...new Set([...runtimeOptions().capabilities, "proc.list"])] }
+  });
+  ideState.processExplorer.loading = false;
+  if (!result.ok) {
+    ideState.processExplorer.error = splitLines(result.stderr || result.stdout).join("\n") || "Could not load process list.";
+  } else {
+    ideState.processExplorer.processes = parseProcessLines(result.stdout);
+  }
+  renderSidePanel();
+}
+
+function updateVariableWatchFromResult(result) {
+  const lines = splitLines(result?.structuredOutput ?? result?.structured_output ?? "");
+  const variablesEvent = lines
+    .map((line) => {
+      try { return JSON.parse(line); }
+      catch { return null; }
+    })
+    .filter(Boolean)
+    .reverse()
+    .find((event) => event.kind === "variables" && event.data && typeof event.data === "object");
+  if (!variablesEvent) return;
+  ideState.variableWatch = Object.entries(variablesEvent.data).map(([name, value]) => ({ name, value: String(value) }));
+}
+function recordExecutionHistory(command, result, file) {
+  ideState.executionHistory.unshift({
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    command,
+    ok: Boolean(result?.ok),
+    code: result?.code ?? null,
+    duration: result?.durationMs ?? 0,
+    fileId: file?.id ?? "",
+    file: file?.relativePath ?? "script",
+    at: new Date().toLocaleTimeString([], { hour12: false })
+  });
+  ideState.executionHistory = ideState.executionHistory.slice(0, 50);
+}
 function updateRuntimeFromControls(source = "toolbar") {
   const prefix = source === "settings" ? "settings" : "runtime";
   const mode = document.getElementById(`${prefix}Mode`)?.value ?? ideState.projectConfig.defaultMode;
@@ -1888,6 +2101,18 @@ function renderWindowBar() {
           </button>
           <button class="activity-button" type="button" title="Runtime knowledge" data-panel="functions">
             ${iconSvg(Database)}<span>Knowledge</span>
+          </button>
+          <button class="activity-button" type="button" title="Process explorer" data-panel="processes">
+            ${iconSvg(Cpu)}<span>Processes</span>
+          </button>
+          <button class="activity-button" type="button" title="Script templates" data-panel="templates">
+            ${iconSvg(FileCode)}<span>Templates</span>
+          </button>
+          <button class="activity-button" type="button" title="Execution history" data-panel="history">
+            ${iconSvg(Activity)}<span>History</span>
+          </button>
+          <button class="activity-button" type="button" title="Variable watch" data-panel="watch">
+            ${iconSvg(SquareCheck)}<span>Watch</span>
           </button>
           <button class="activity-button" type="button" title="Outline" data-panel="outline">
             ${iconSvg(ListTree)}<span>Outline</span>
@@ -2210,6 +2435,29 @@ function bindEvents() {
       return;
     }
 
+    const refresh = event.target.closest("[data-refresh-processes]");
+    if (refresh) {
+      refreshProcessExplorer();
+      return;
+    }
+
+    const pid = event.target.closest("[data-insert-pid]");
+    if (pid) {
+      insertProcessPid(pid.dataset.insertPid);
+      return;
+    }
+
+    const template = event.target.closest("[data-insert-template]");
+    if (template) {
+      insertTemplateSnippet(template.dataset.insertTemplate);
+      return;
+    }
+
+    const history = event.target.closest("[data-history-file]");
+    if (history) {
+      openFileInEditor(history.dataset.historyFile);
+      return;
+    }
     const fn = event.target.closest("[data-insert-function]");
     if (fn) {
       insertFunctionSnippet(fn.dataset.insertFunction);

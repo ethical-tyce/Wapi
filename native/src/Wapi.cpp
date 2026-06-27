@@ -7,7 +7,11 @@
  ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝     ╚═╝      ╚═══╝   ╚═════╝ ╚═╝ ╚═════╝ ╚══════╝
 */
 
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -22,14 +26,17 @@ namespace {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  wapi run \"<script>\" [--mode safe|dev|unsafe] [--allow-injection] [--strict-permissions] [--json] [--cap <name>]...\n"
-        << "  wapi check \"<script>\" [--mode safe|dev|unsafe] [--allow-injection] [--strict-permissions] [--json] [--cap <name>]...\n"
+        << "  wapi run <script-or-file.wapi> [--mode safe|dev|unsafe] [--allow-injection] [--strict-permissions] [--json|--output json] [--cap <name>]...\n"
+        << "  wapi check <script-or-file.wapi> [--mode safe|dev|unsafe] [--allow-injection] [--strict-permissions] [--json|--output json] [--cap <name>]...\n"
+        << "  wapi repl [same options as run]\n"
+        << "  wapi fmt <script-or-file.wapi> [--write]\n"
+        << "  wapi help [function]\n"
         << "  wapi test\n"
         << "\n"
         << "Examples:\n"
         << "  wapi run \"int pid = findProcessPID(\\\"notepad\\\")\" --mode safe\n"
         << "  wapi check \"int pid = findProcessPID(\\\"notepad\\\") testInjectDLL(pid)\" --allow-injection\n"
-        << "  wapi test\n";
+        << "  wapi help len\n";
 }
 
 WapiMode parseMode(const std::string& value) {
@@ -61,6 +68,13 @@ WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool check
             options.jsonOutput = true;
             continue;
         }
+        if (args[i] == "--output") {
+            if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --output");
+            std::string value = args[++i];
+            if (value != "json") throw std::runtime_error("Invalid --output value: " + value + " (expected json)");
+            options.jsonOutput = true;
+            continue;
+        }
         if (args[i] == "--cap") {
             if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --cap");
             options.capabilities.insert(args[++i]);
@@ -72,6 +86,98 @@ WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool check
     return options;
 }
 
+std::string readTextFile(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("Could not read file: " + path.string());
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    return buffer.str();
+}
+
+std::string trimCopy(const std::string& value) {
+    const size_t start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    const size_t end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+std::string expandIncludes(const std::string& source, const std::filesystem::path& baseDir, std::unordered_set<std::string>& seen) {
+    std::ostringstream out;
+    std::istringstream input(source);
+    std::string line;
+    while (std::getline(input, line)) {
+        const std::string trimmed = trimCopy(line);
+        if (trimmed.rfind("include \"", 0) == 0 && trimmed.size() > 10 && trimmed.back() == '"') {
+            std::filesystem::path includePath = baseDir / trimmed.substr(9, trimmed.size() - 10);
+            includePath = std::filesystem::weakly_canonical(includePath);
+            const std::string key = includePath.string();
+            if (!seen.insert(key).second) throw std::runtime_error("E_INCLUDE_CYCLE: " + key);
+            out << expandIncludes(readTextFile(includePath), includePath.parent_path(), seen) << "\n";
+            continue;
+        }
+        out << line << "\n";
+    }
+    return out.str();
+}
+
+std::string resolveSourceArgument(const std::string& argument) {
+    std::filesystem::path path(argument);
+    std::unordered_set<std::string> seen;
+    if (std::filesystem::exists(path) && std::filesystem::is_regular_file(path)) {
+        path = std::filesystem::weakly_canonical(path);
+        seen.insert(path.string());
+        return expandIncludes(readTextFile(path), path.parent_path(), seen);
+    }
+    return expandIncludes(argument, std::filesystem::current_path(), seen);
+}
+
+std::string formatSource(const std::string& source) {
+    std::ostringstream out;
+    std::istringstream input(source);
+    std::string line;
+    int depth = 0;
+    while (std::getline(input, line)) {
+        std::string trimmed = trimCopy(line);
+        if (trimmed.empty()) { out << "\n"; continue; }
+        if (!trimmed.empty() && trimmed[0] == '}') depth = (std::max)(0, depth - 1);
+        out << std::string(static_cast<size_t>(depth * 4), ' ') << trimmed << "\n";
+        for (char ch : trimmed) {
+            if (ch == '{') depth++;
+            if (ch == '}') depth = (std::max)(0, depth - 1);
+        }
+    }
+    return out.str();
+}
+
+void printFunctionHelp(const std::string& name) {
+    struct Help { const char* name; const char* signature; const char* note; };
+    static const std::vector<Help> help = {
+        {"len", "len(value)", "Length of a string or array."},
+        {"substr", "substr(text, start, count)", "Slice part of a string."},
+        {"contains", "contains(text, needle)", "True when text contains needle."},
+        {"replace", "replace(text, needle, replacement)", "Replace all matching text."},
+        {"toLower", "toLower(text)", "Lowercase ASCII text."},
+        {"toInt", "toInt(value)", "Convert a string or number to int."},
+        {"abs", "abs(number)", "Absolute numeric value."},
+        {"min", "min(a, b)", "Smaller numeric value."},
+        {"max", "max(a, b)", "Larger numeric value."},
+        {"push", "push(array, value)", "Append to an array and return it."},
+        {"pop", "pop(array)", "Remove and return the last array item."},
+        {"print", "print(value)", "Write a value to stdout."}
+    };
+    if (name.empty()) {
+        std::cout << "Available help topics:\n";
+        for (const auto& item : help) std::cout << "  " << item.name << "\n";
+        return;
+    }
+    for (const auto& item : help) {
+        if (name == item.name) {
+            std::cout << item.signature << "\n" << item.note << "\n";
+            return;
+        }
+    }
+    std::cout << "No built-in help for " << name << ". Runtime WinAPI calls are listed in the IDE Functions panel.\n";
+}
 void runScript(const std::string& source, const WapiRuntimeOptions& options) {
     Lexer lexer(source);
     auto tokens = lexer.tokenize();
@@ -81,6 +187,24 @@ void runScript(const std::string& source, const WapiRuntimeOptions& options) {
 
     Evaluator evaluator(options);
     evaluator.run(program);
+}
+
+void runRepl(const WapiRuntimeOptions& options) {
+    std::cout << "Wapi REPL. Type :quit to exit.\n";
+    std::string line;
+    while (true) {
+        std::cout << "wapi> ";
+        if (!std::getline(std::cin, line)) break;
+        const std::string trimmed = trimCopy(line);
+        if (trimmed == ":quit" || trimmed == ":exit") break;
+        if (trimmed.empty()) continue;
+        try {
+            runScript(resolveSourceArgument(line), options);
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Wapi error: " << e.what() << "\n";
+        }
+    }
 }
 
 int passed = 0;
@@ -201,8 +325,44 @@ int main(int argc, char* argv[]) {
 
         std::string command = argv[1];
 
+        if (command == "help") {
+            printFunctionHelp(argc >= 3 ? argv[2] : "");
+            return 0;
+        }
+
         if (command == "test") {
             runStandardizedTests();
+            return 0;
+        }
+
+        if (command == "fmt") {
+            if (argc < 3) throw std::runtime_error("Missing script source or file for fmt");
+            const std::string target = argv[2];
+            bool write = false;
+            for (int i = 3; i < argc; ++i) {
+                const std::string option = argv[i];
+                if (option == "--write") write = true;
+                else throw std::runtime_error("Unknown fmt option: " + option);
+            }
+            const bool isFile = std::filesystem::exists(std::filesystem::path(target));
+            const std::string formatted = formatSource(isFile ? readTextFile(target) : target);
+            if (write) {
+                if (!isFile) throw std::runtime_error("fmt --write requires a file path");
+                std::ofstream out(target, std::ios::binary | std::ios::trunc);
+                if (!out) throw std::runtime_error("Could not write file: " + target);
+                out << formatted;
+            }
+            else {
+                std::cout << formatted;
+            }
+            return 0;
+        }
+
+        if (command == "repl") {
+            std::vector<std::string> optionArgs;
+            for (int i = 2; i < argc; ++i) optionArgs.emplace_back(argv[i]);
+            WapiRuntimeOptions options = parseOptions(optionArgs, false);
+            runRepl(options);
             return 0;
         }
 
@@ -211,16 +371,12 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        if (argc < 3) {
-            throw std::runtime_error("Missing script source argument");
-        }
+        if (argc < 3) throw std::runtime_error("Missing script source or file argument");
 
-        std::string source = argv[2];
+        std::string source = resolveSourceArgument(argv[2]);
 
         std::vector<std::string> optionArgs;
-        for (int i = 3; i < argc; ++i) {
-            optionArgs.emplace_back(argv[i]);
-        }
+        for (int i = 3; i < argc; ++i) optionArgs.emplace_back(argv[i]);
 
         WapiRuntimeOptions options = parseOptions(optionArgs, command == "check");
         runScript(source, options);
