@@ -3202,18 +3202,39 @@
   .editor-pref-controls { display: none; }
 }
 .workspace,
-.side-panel,
 .editor-surface {
   min-height: 0;
   overflow: hidden;
 }
-.side-panel {
+.workspace {
   height: 100%;
 }
-.side-content {
-  flex: 1 1 0;
+.activity-bar {
   min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.side-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.side-searchbar.is-hidden,
+.side-actions.is-hidden {
+  display: none;
+}
+.side-content {
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  overflow-y: auto;
+  align-self: stretch;
+}
+.side-action-menu {
+  max-height: min(460px, calc(100vh - var(--chrome-height) - var(--status-height) - 74px));
+  overflow-y: auto;
 }
 .menu-strip {
   justify-content: flex-end;

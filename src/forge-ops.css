@@ -775,3 +775,116 @@ img.window-wordmark{
 
 /* Interactive title-bar controls must sit outside the draggable window region. */
 .window-menu-bar,.window-menu-trigger,.window-menu-popover{-webkit-app-region:no-drag}
+/* Any sidebar panel that hides search should let content own the remaining height. */
+.side-panel:has(.side-searchbar.is-hidden){grid-template-rows:56px minmax(0,1fr)}
+@media(max-height:720px){.side-panel:has(.side-searchbar.is-hidden){grid-template-rows:52px minmax(0,1fr)}}
+/* Activity icons should not draw rounded selection boxes. */
+.activity-button::after,
+.activity-button:hover::after,
+.activity-button.is-active::after,
+.activity-button:focus-visible::after{display:none}
+.activity-button.is-active{color:var(--accent)}
+.activity-button:hover{color:var(--text-soft);background:transparent}
+/* Keep sidebar glyphs centered in their navigation cells at all times. */
+.activity-button,
+.activity-button:hover,
+.activity-button.is-active,
+.activity-button:active,
+.activity-button:focus-visible{
+  display:grid;
+  place-items:center;
+  align-content:center;
+  justify-content:center;
+  width:100%;
+  height:48px;
+  min-height:48px;
+  padding:0;
+  transform:none;
+}
+.activity-button .ui-icon{
+  position:static;
+  z-index:auto;
+  display:block;
+  width:19px;
+  height:19px;
+  margin:auto;
+  transform:none!important;
+}
+.activity-button span{
+  position:absolute;
+  inset:auto;
+  overflow:hidden;
+  width:1px;
+  height:1px;
+}
+@media(max-width:1050px), (max-height:720px){
+  .activity-button,
+  .activity-button:hover,
+  .activity-button.is-active,
+  .activity-button:active,
+  .activity-button:focus-visible{
+    height:46px;
+    min-height:46px;
+  }
+}
+/* Document tabs share the toolbar row and stay compact. */
+.editor-surface{
+  grid-template-rows:var(--toolbar-height) minmax(0,1fr) var(--tool-height);
+}
+.editor-surface:has(.editor-workbench.is-start-mode){
+  grid-template-rows:var(--toolbar-height) minmax(0,1fr) 0;
+}
+.editor-surface:has(.editor-workbench.is-start-mode):has(.tool-window.is-forced-open){
+  grid-template-rows:var(--toolbar-height) minmax(0,1fr) minmax(180px,var(--tool-height));
+}
+.menu-strip{
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+.menu-strip .document-tabs{
+  flex:1 1 auto;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+  height:100%;
+  min-height:0;
+  padding:0 0 0 2px;
+  overflow-x:auto;
+  border:0;
+  background:transparent;
+}
+.menu-strip .toolbar-actions{
+  flex:0 0 auto;
+  width:auto;
+  margin-left:auto;
+}
+.document-tabs{grid-column:auto;grid-row:auto}
+.document-tab{
+  flex:0 0 auto;
+  height:32px;
+  min-height:32px;
+  min-width:132px;
+  max-width:210px;
+  border:1px solid #1c211c;
+  border-radius:6px;
+  background:#0d100d;
+}
+.document-tab:hover{
+  border-color:#242b24;
+  background:#121512;
+}
+.document-tab.is-active{
+  border-color:#263026;
+  background:#151915;
+}
+.document-tab:after{
+  left:8px;
+  right:8px;
+  bottom:-1px;
+}
+.editor-workbench{grid-column:1;grid-row:2;min-width:0;min-height:0}
+.tool-window{grid-column:1;grid-row:3;min-width:0;min-height:0}
+.menu-strip .toolbar-actions-compact{width:auto}
+.runtime-inspector-drawer{grid-row:2 / 4}

@@ -1308,8 +1308,15 @@ function renderSidePanel() {
   };
   if (title) title.textContent = panelLabels[ideState.activePanel] ?? "SOLUTION EXPLORER";
   if (searchInput && searchInput.value !== ideState.searchQuery) searchInput.value = ideState.searchQuery;
-  if (searchInput) searchInput.placeholder = ideState.activePanel === "search" ? "Search project contents" : "Filter files";
-  searchbar?.classList.toggle("is-hidden", !["explorer", "search"].includes(ideState.activePanel));
+  if (searchInput) {
+    const placeholders = {
+      search: "Search project contents",
+      processes: "Filter processes",
+      capabilities: "Filter capabilities"
+    };
+    searchInput.placeholder = placeholders[ideState.activePanel] ?? "Filter files";
+  }
+  searchbar?.classList.toggle("is-hidden", !["explorer", "search", "processes", "capabilities"].includes(ideState.activePanel));
   actions?.classList.toggle("is-hidden", ideState.activePanel !== "explorer");
   document.getElementById("sideActionMenu")?.classList.toggle("is-open", ideState.menuOpen);
 
@@ -1392,7 +1399,17 @@ function renderSidePanel() {
   }
 
   if (ideState.activePanel === "processes") {
-    if (meta) meta.textContent = ideState.processExplorer.loading ? "Loading processes" : `${ideState.processExplorer.processes.length} process${ideState.processExplorer.processes.length === 1 ? "" : "es"}`;
+    const processQuery = ideState.searchQuery.trim().toLowerCase();
+    const filteredProcesses = processQuery
+      ? ideState.processExplorer.processes.filter((process) => `${process.name} ${process.pid}`.toLowerCase().includes(processQuery))
+      : ideState.processExplorer.processes;
+    if (meta) {
+      meta.textContent = ideState.processExplorer.loading
+        ? "Loading processes"
+        : processQuery
+          ? `${filteredProcesses.length}/${ideState.processExplorer.processes.length} processes`
+          : `${ideState.processExplorer.processes.length} process${ideState.processExplorer.processes.length === 1 ? "" : "es"}`;
+    }
     const refresh = document.createElement("button");
     refresh.className = "function-row";
     refresh.type = "button";
@@ -1411,7 +1428,11 @@ function renderSidePanel() {
       renderPanelEmpty(content, "PROCESS", "Refresh to load running processes.");
       return;
     }
-    for (const process of ideState.processExplorer.processes) {
+    if (filteredProcesses.length === 0) {
+      renderPanelEmpty(content, "PROCESS", "No matching processes.");
+      return;
+    }
+    for (const process of filteredProcesses) {
       const button = document.createElement("button");
       button.className = "function-row";
       button.type = "button";
@@ -1480,14 +1501,27 @@ function renderSidePanel() {
   }
 
   if (ideState.activePanel === "capabilities") {
-    if (meta) meta.textContent = `${ideState.projectConfig.capabilities.length} enabled`;
+    const capabilityQuery = ideState.searchQuery.trim().toLowerCase();
+    const filteredCapabilities = capabilityQuery
+      ? runtimeCapabilities.filter((capability) => capability.toLowerCase().includes(capabilityQuery))
+      : runtimeCapabilities;
+    if (meta) {
+      meta.textContent = capabilityQuery
+        ? `${filteredCapabilities.length}/${runtimeCapabilities.length} capabilities - ${ideState.projectConfig.capabilities.length} enabled`
+        : `${ideState.projectConfig.capabilities.length} enabled`;
+    }
     const section = document.createElement("section");
     section.className = "side-section";
     const heading = document.createElement("div");
     heading.className = "side-section-title";
     heading.textContent = "Runtime capability grants";
     section.appendChild(heading);
-    for (const capability of runtimeCapabilities) {
+    if (filteredCapabilities.length === 0) {
+      content.appendChild(section);
+      renderPanelEmpty(content, "CAPABILITY", "No matching capabilities.");
+      return;
+    }
+    for (const capability of filteredCapabilities) {
       const button = document.createElement("button");
       button.className = `function-row capability-row${ideState.projectConfig.capabilities.includes(capability) ? " is-active" : ""}`;
       button.type = "button";
@@ -2561,6 +2595,7 @@ function renderWindowBar() {
 
         <section class="editor-surface" aria-label="Editor">
           <div class="menu-strip" role="toolbar" aria-label="Execution toolbar">
+            <div id="documentTabs" class="document-tabs"></div>
             <div class="toolbar-actions toolbar-actions-compact">
               <button id="toolbarFind" class="icon-button" type="button" title="Find">${iconSvg(Search)}</button>
               <button id="toolbarReplace" class="icon-button" type="button" title="Replace">${iconSvg(FileText)}</button>
@@ -2603,8 +2638,6 @@ function renderWindowBar() {
               </section>
             </div>
           </aside>
-
-          <div id="documentTabs" class="document-tabs"></div>
           <div class="editor-workbench">
             <section id="startSurface" class="start-surface" aria-label="Start">
               <div class="start-shell">
