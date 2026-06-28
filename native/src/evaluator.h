@@ -10,7 +10,7 @@
 
 struct WapiArray;
 using WapiArrayPtr = std::shared_ptr<WapiArray>;
-using WapiValue = std::variant<int, long long, std::string, bool, WapiArrayPtr>;
+using WapiValue = std::variant<std::monostate, int, long long, double, std::string, bool, WapiArrayPtr>;
 struct WapiArray { std::vector<WapiValue> values; };
 
 enum class WapiMode {
@@ -25,6 +25,14 @@ struct WapiRuntimeOptions {
     bool checkOnly = false;
     bool strictPermissions = false;
     bool jsonOutput = false;
+    bool quiet = false;
+    bool verbose = false;
+    bool noColor = false;
+    bool trace = false;
+    bool profile = false;
+    int timeoutMs = 0;
+    int maxSteps = 100000;
+    std::string outputFormat = "text";
     std::unordered_set<std::string> capabilities;
 };
 
@@ -45,6 +53,7 @@ public:
 private:
     WapiRuntimeOptions options;
     std::unordered_map<std::string, WapiValue> variables;
+    std::unordered_set<std::string> constants;
     std::unordered_map<std::string, std::shared_ptr<FunctionDeclaration>> userFunctions;
     std::unordered_set<long long> trackedHandles;
     std::unordered_map<long long, std::unordered_set<long long>> trackedAllocations;

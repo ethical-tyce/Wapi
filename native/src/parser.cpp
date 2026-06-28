@@ -10,7 +10,7 @@ std::runtime_error parseError(const Token& token, const std::string& message) {
 }
 
 bool isTypeToken(TokenType type) {
-    return type == TYPE_INT || type == TYPE_LONG || type == TYPE_STRING || type == TYPE_BOOL;
+    return type == TYPE_INT || type == TYPE_LONG || type == TYPE_STRING || type == TYPE_BOOL || type == TYPE_DOUBLE || type == TYPE_FLOAT;
 }
 }
 
@@ -63,7 +63,7 @@ std::shared_ptr<Program> Parser::parse() {
 std::shared_ptr<ASTNode> Parser::parseStatement() {
     Token t = current();
 
-    if (isTypeToken(t.type)) return parseVarDeclaration();
+    if (t.type == CONST || isTypeToken(t.type)) return parseVarDeclaration();
     if (t.type == FUNC) return parseFunctionDeclaration();
     if (t.type == RETURN) return parseReturnStatement();
     if (t.type == BREAK) { consume(); return std::make_shared<BreakStatement>(); }
@@ -75,7 +75,7 @@ std::shared_ptr<ASTNode> Parser::parseStatement() {
     if (t.type == INCLUDE) return parseIncludeStatement();
     if (t.type == LBRACE) return parseBlock();
 
-    if (t.type == IDENTIFIER && (peek().type == ASSIGN || peek().type == LBRACKET))
+    if (t.type == IDENTIFIER && (peek().type == ASSIGN || peek().type == PLUS_ASSIGN || peek().type == MINUS_ASSIGN || peek().type == STAR_ASSIGN || peek().type == SLASH_ASSIGN || peek().type == PERCENT_ASSIGN || peek().type == INCREMENT || peek().type == DECREMENT || peek().type == LBRACKET))
         return parseAssignment();
 
     return parseExpression();
@@ -93,6 +93,7 @@ std::string Parser::parseTypeName() {
 
 std::shared_ptr<ASTNode> Parser::parseVarDeclaration() {
     auto decl = std::make_shared<VarDeclaration>();
+    if (match(CONST)) decl->isConst = true;
     decl->type = parseTypeName();
     decl->name = expect(IDENTIFIER).value;
     expect(ASSIGN);
@@ -114,9 +115,22 @@ std::shared_ptr<ASTNode> Parser::parseAssignment() {
 
     auto assignment = std::make_shared<Assignment>();
     assignment->name = name;
-    expect(ASSIGN);
-    assignment->value = parseExpression();
-    return assignment;
+    if (match(INCREMENT)) {
+        assignment->op = "+=";
+        assignment->value = std::make_shared<IntLiteral>(1);
+        return assignment;
+    }
+    if (match(DECREMENT)) {
+        assignment->op = "-=";
+        assignment->value = std::make_shared<IntLiteral>(1);
+        return assignment;
+    }
+    if (check(ASSIGN) || check(PLUS_ASSIGN) || check(MINUS_ASSIGN) || check(STAR_ASSIGN) || check(SLASH_ASSIGN) || check(PERCENT_ASSIGN)) {
+        assignment->op = consume().value;
+        assignment->value = parseExpression();
+        return assignment;
+    }
+    throw parseError(current(), "Expected assignment operator");
 }
 
 std::shared_ptr<BlockStatement> Parser::parseBlock() {
@@ -168,6 +182,7 @@ std::shared_ptr<ASTNode> Parser::parseForStatement() {
     if (match(COMMA)) {
         stmt->start = first;
         stmt->end = parseExpression();
+        if (match(COMMA)) stmt->step = parseExpression();
     }
     else {
         stmt->start = std::make_shared<IntLiteral>(0);
@@ -237,7 +252,20 @@ std::shared_ptr<ASTNode> Parser::parseFunctionCall(const std::string& name) {
     return call;
 }
 
-std::shared_ptr<ASTNode> Parser::parseExpression() { return parseLogicalOr(); }
+std::shared_ptr<ASTNode> Parser::parseExpression() { return parseTernary(); }
+
+std::shared_ptr<ASTNode> Parser::parseTernary() {
+    auto expr = parseLogicalOr();
+    if (match(QUESTION)) {
+        auto ternary = std::make_shared<TernaryExpression>();
+        ternary->condition = expr;
+        ternary->whenTrue = parseExpression();
+        expect(COLON);
+        ternary->whenFalse = parseExpression();
+        return ternary;
+    }
+    return expr;
+}
 
 std::shared_ptr<ASTNode> Parser::parseLogicalOr() {
     auto expr = parseLogicalAnd();
@@ -403,6 +431,14 @@ std::shared_ptr<ASTNode> Parser::parsePrimary() {
     if (t.type == INT_LITERAL) {
         consume();
         return std::make_shared<IntLiteral>(std::stoi(t.value));
+    }
+    if (t.type == DOUBLE_LITERAL) {
+        consume();
+        return std::make_shared<DoubleLiteral>(std::stod(t.value));
+    }
+    if (t.type == NULL_LITERAL) {
+        consume();
+        return std::make_shared<NullLiteral>();
     }
     if (t.type == STRING_LITERAL) {
         consume();

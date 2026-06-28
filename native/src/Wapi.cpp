@@ -8,10 +8,13 @@
 */
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <thread>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -26,17 +29,41 @@ namespace {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  wapi run <script-or-file.wapi> [--mode safe|dev|unsafe] [--allow-injection] [--strict-permissions] [--json|--output json] [--cap <name>]...\n"
-        << "  wapi check <script-or-file.wapi> [--mode safe|dev|unsafe] [--allow-injection] [--strict-permissions] [--json|--output json] [--cap <name>]...\n"
-        << "  wapi repl [same options as run]\n"
+        << "  wapi run <script-or-file.wapi|-> [options]\n"
+        << "  wapi check <script-or-file.wapi|-> [options]\n"
+        << "  wapi repl [options]\n"
         << "  wapi fmt <script-or-file.wapi> [--write]\n"
-        << "  wapi help [function]\n"
+        << "  wapi init [dir]\n"
+        << "  wapi lint|validate <script-or-file.wapi|-> [options]\n"
+        << "  wapi bundle <file.wapi>... [-o output.wapi]\n"
+        << "  wapi completions [powershell|bash]\n"
+        << "  wapi doc [function]\n"
+        << "  wapi audit-report\n"
+        << "  wapi errors\n"
         << "  wapi test\n"
+        << "  wapi --version\n"
+        << "\n"
+        << "Options:\n"
+        << "  --mode safe|dev|unsafe   Runtime safety mode; WAPI_MODE is used when omitted.\n"
+        << "  --cap <name>             Add a capability grant.\n"
+        << "  --allow-injection        Permit injection helpers outside unsafe mode.\n"
+        << "  --strict-permissions     Turn missing capabilities into errors.\n"
+        << "  --json|--output json     Emit JSON runtime events.\n"
+        << "  --output csv             Accepted for tooling compatibility.\n"
+        << "  --quiet                  Suppress audit/warning chatter.\n"
+        << "  --verbose                Enable verbose CLI status.\n"
+        << "  --trace                  Print a CLI trace line before execution.\n"
+        << "  --profile                Print elapsed execution time.\n"
+        << "  --timeout <ms>           Parsed for wrappers; native calls are not interrupted yet.\n"
+        << "  --max-steps <n>          Override loop guard iteration limit.\n"
+        << "  --env KEY=VALUE          Set an environment variable for this run.\n"
+        << "  --dry-run                Alias for check/preflight mode.\n"
+        << "  --watch                  Accepted by run/check for editor integrations.\n"
         << "\n"
         << "Examples:\n"
         << "  wapi run \"int pid = findProcessPID(\\\"notepad\\\")\" --mode safe\n"
-        << "  wapi check \"int pid = findProcessPID(\\\"notepad\\\") testInjectDLL(pid)\" --allow-injection\n"
-        << "  wapi help len\n";
+        << "  wapi check script.wapi --quiet --max-steps 1000\n"
+        << "  type script.wapi | wapi run -\n";
 }
 
 WapiMode parseMode(const std::string& value) {
@@ -49,6 +76,13 @@ WapiMode parseMode(const std::string& value) {
 WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool checkOnly) {
     WapiRuntimeOptions options;
     options.checkOnly = checkOnly;
+
+    char* envMode = nullptr;
+    size_t envModeSize = 0;
+    if (_dupenv_s(&envMode, &envModeSize, "WAPI_MODE") == 0 && envMode != nullptr) {
+        if (*envMode) options.mode = parseMode(envMode);
+        free(envMode);
+    }
 
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--mode") {
@@ -66,18 +100,65 @@ WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool check
         }
         if (args[i] == "--json") {
             options.jsonOutput = true;
+            options.outputFormat = "json";
             continue;
         }
         if (args[i] == "--output") {
             if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --output");
             std::string value = args[++i];
-            if (value != "json") throw std::runtime_error("Invalid --output value: " + value + " (expected json)");
-            options.jsonOutput = true;
+            if (value != "json" && value != "csv" && value != "text") throw std::runtime_error("Invalid --output value: " + value + " (expected text|json|csv)");
+            options.outputFormat = value;
+            options.jsonOutput = value == "json";
             continue;
         }
         if (args[i] == "--cap") {
             if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --cap");
             options.capabilities.insert(args[++i]);
+            continue;
+        }
+        if (args[i] == "--quiet") {
+            options.quiet = true;
+            continue;
+        }
+        if (args[i] == "--verbose") {
+            options.verbose = true;
+            continue;
+        }
+        if (args[i] == "--no-color") {
+            options.noColor = true;
+            continue;
+        }
+        if (args[i] == "--trace") {
+            options.trace = true;
+            continue;
+        }
+        if (args[i] == "--profile") {
+            options.profile = true;
+            continue;
+        }
+        if (args[i] == "--timeout") {
+            if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --timeout");
+            options.timeoutMs = std::stoi(args[++i]);
+            continue;
+        }
+        if (args[i] == "--max-steps") {
+            if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --max-steps");
+            options.maxSteps = (std::max)(1, std::stoi(args[++i]));
+            continue;
+        }
+        if (args[i] == "--env") {
+            if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --env");
+            const std::string pair = args[++i];
+            const size_t equals = pair.find('=');
+            if (equals == std::string::npos) throw std::runtime_error("Invalid --env value, expected KEY=VALUE");
+            _putenv_s(pair.substr(0, equals).c_str(), pair.substr(equals + 1).c_str());
+            continue;
+        }
+        if (args[i] == "--dry-run") {
+            options.checkOnly = true;
+            continue;
+        }
+        if (args[i] == "--watch") {
             continue;
         }
         throw std::runtime_error("Unknown option: " + args[i]);
@@ -94,6 +175,65 @@ std::string readTextFile(const std::filesystem::path& path) {
     return buffer.str();
 }
 
+std::string readStdin() {
+    std::ostringstream buffer;
+    buffer << std::cin.rdbuf();
+    return buffer.str();
+}
+
+void writeTextFileIfMissing(const std::filesystem::path& path, const std::string& content) {
+    if (std::filesystem::exists(path)) return;
+    if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path());
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file) throw std::runtime_error("Could not write file: " + path.string());
+    file << content;
+}
+
+void runInit(const std::filesystem::path& dir) {
+    std::filesystem::create_directories(dir / "src");
+    writeTextFileIfMissing(dir / "wapi.toml", "mode = \"safe\"\nentry = \"src/main.wapi\"\n");
+    writeTextFileIfMissing(dir / "src" / "main.wapi", "print(\"hello from wapi\")\n");
+    std::cout << "Initialized Wapi project at " << std::filesystem::weakly_canonical(dir).string() << "\n";
+}
+
+void printErrors() {
+    std::cout
+        << "E_LEX             Lexer error\n"
+        << "E_PARSE           Parser error\n"
+        << "E_TYPE            Type mismatch\n"
+        << "E_ARG_COUNT       Wrong argument count\n"
+        << "E_ARG_TYPE        Wrong argument type\n"
+        << "E_UNDEFINED_VAR   Missing variable\n"
+        << "E_CONST_ASSIGN    Assignment to const variable\n"
+        << "E_DIVIDE_BY_ZERO  Divide or modulo by zero\n"
+        << "E_INDEX_OUT_OF_RANGE Index outside string/array\n"
+        << "E_LOOP_LIMIT      Loop guard exceeded\n"
+        << "E_PERMISSION      Runtime capability denied\n"
+        << "E_ASSERT          assert(...) failed\n";
+}
+
+void printCompletions(const std::string& shell) {
+    if (shell == "bash") {
+        std::cout << "complete -W 'run check repl fmt help test init lint validate bundle completions doc audit-report errors --version' wapi\n";
+        return;
+    }
+    std::cout << "Register-ArgumentCompleter -Native -CommandName wapi -ScriptBlock { param($wordToComplete) 'run','check','repl','fmt','help','test','init','lint','validate','bundle','completions','doc','audit-report','errors','--version' | Where-Object { $_ -like \"$wordToComplete*\" } }\n";
+}
+
+void printAuditReportTemplate() {
+    std::cout
+        << "{\n"
+        << "  \"tool\": \"wapi\",\n"
+        << "  \"mode\": \"safe\",\n"
+        << "  \"events\": []\n"
+        << "}\n";
+}
+
+void printUpdateInfo() {
+    std::cout
+        << "Wapi does not have a self-updater yet. Build from source or install a packaged release when one is published.\n"
+        << "Winget packaging is not configured in this repo yet.\n";
+}
 std::string trimCopy(const std::string& value) {
     const size_t start = value.find_first_not_of(" \t\r\n");
     if (start == std::string::npos) return "";
@@ -121,6 +261,7 @@ std::string expandIncludes(const std::string& source, const std::filesystem::pat
 }
 
 std::string resolveSourceArgument(const std::string& argument) {
+    if (argument == "-") return readStdin();
     std::filesystem::path path(argument);
     std::unordered_set<std::string> seen;
     if (std::filesystem::exists(path) && std::filesystem::is_regular_file(path)) {
@@ -129,6 +270,12 @@ std::string resolveSourceArgument(const std::string& argument) {
         return expandIncludes(readTextFile(path), path.parent_path(), seen);
     }
     return expandIncludes(argument, std::filesystem::current_path(), seen);
+}
+
+std::string resolveSourceArguments(const std::vector<std::string>& arguments) {
+    std::ostringstream source;
+    for (const auto& argument : arguments) source << resolveSourceArgument(argument) << "\n";
+    return source.str();
 }
 
 std::string formatSource(const std::string& source) {
@@ -320,18 +467,73 @@ int main(int argc, char* argv[]) {
     try {
         if (argc < 2) {
             printUsage();
-            return 1;
+            return 64;
         }
 
         std::string command = argv[1];
 
-        if (command == "help") {
+        if (command == "--version" || command == "-v") {
+            std::cout << "wapi 0.2\n";
+            return 0;
+        }
+
+        if (command == "help" || command == "doc") {
             printFunctionHelp(argc >= 3 ? argv[2] : "");
+            return 0;
+        }
+
+        if (command == "errors") {
+            printErrors();
+            return 0;
+        }
+
+        if (command == "completions") {
+            printCompletions(argc >= 3 ? argv[2] : "powershell");
+            return 0;
+        }
+
+        if (command == "audit-report") {
+            printAuditReportTemplate();
+            return 0;
+        }
+
+        if (command == "update" || command == "winget") {
+            printUpdateInfo();
+            return 0;
+        }
+
+        if (command == "init") {
+            runInit(argc >= 3 ? std::filesystem::path(argv[2]) : std::filesystem::current_path());
             return 0;
         }
 
         if (command == "test") {
             runStandardizedTests();
+            return failed == 0 ? 0 : 1;
+        }
+
+        if (command == "bundle") {
+            std::vector<std::string> sourceArgs;
+            std::filesystem::path outputPath;
+            for (int i = 2; i < argc; ++i) {
+                const std::string arg = argv[i];
+                if (arg == "-o" || arg == "--output-file") {
+                    if (i + 1 >= argc) throw std::runtime_error("Missing value for " + arg);
+                    outputPath = argv[++i];
+                    continue;
+                }
+                sourceArgs.push_back(arg);
+            }
+            if (sourceArgs.empty()) throw std::runtime_error("Missing source file for bundle");
+            const std::string bundled = resolveSourceArguments(sourceArgs);
+            if (!outputPath.empty()) {
+                std::ofstream out(outputPath, std::ios::binary | std::ios::trunc);
+                if (!out) throw std::runtime_error("Could not write bundle: " + outputPath.string());
+                out << bundled;
+            }
+            else {
+                std::cout << bundled;
+            }
             return 0;
         }
 
@@ -366,29 +568,52 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
+        if (command == "lint" || command == "validate") command = "check";
+
         if (command != "run" && command != "check") {
             printUsage();
-            return 1;
+            return 64;
         }
 
-        if (argc < 3) throw std::runtime_error("Missing script source or file argument");
-
-        std::string source = resolveSourceArgument(argv[2]);
-
+        std::vector<std::string> sourceArgs;
         std::vector<std::string> optionArgs;
-        for (int i = 3; i < argc; ++i) optionArgs.emplace_back(argv[i]);
+        bool optionMode = false;
+        for (int i = 2; i < argc; ++i) {
+            const std::string arg = argv[i];
+            if (!optionMode && arg.rfind("--", 0) == 0) optionMode = true;
+            if (optionMode) optionArgs.push_back(arg);
+            else sourceArgs.push_back(arg);
+        }
+
+        if (sourceArgs.empty()) throw std::runtime_error("Missing script source or file argument");
 
         WapiRuntimeOptions options = parseOptions(optionArgs, command == "check");
-        runScript(source, options);
+        if (options.verbose && options.timeoutMs > 0 && !options.quiet) {
+            std::cout << "[WAPI_INFO] timeout parsed as " << options.timeoutMs << "ms; native interruption is not enabled yet\n";
+        }
+        if (options.trace && !options.quiet) {
+            std::cout << "[WAPI_TRACE] command=" << command << " sources=" << sourceArgs.size() << " mode=" << (options.checkOnly ? "check" : "run") << "\n";
+        }
 
-        if (options.checkOnly) {
+        const auto started = std::chrono::steady_clock::now();
+        runScript(resolveSourceArguments(sourceArgs), options);
+
+        if (options.checkOnly && !options.quiet) {
             std::cout << "[WAPI_CHECK] Preflight completed without execution side effects\n";
+        }
+        if (options.profile && !options.quiet) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+            std::cout << "[WAPI_PROFILE] elapsedMs=" << elapsed << "\n";
         }
 
         return 0;
     }
     catch (const std::exception& e) {
-        std::cerr << "Wapi error: " << e.what() << "\n";
+        const std::string message = e.what();
+        std::cerr << "Wapi error: " << message << "\n";
+        if (message.rfind("E_LEX", 0) == 0 || message.rfind("E_PARSE", 0) == 0) return 65;
+        if (message.rfind("E_TYPE", 0) == 0 || message.rfind("E_ARG", 0) == 0) return 66;
+        if (message.rfind("E_PERMISSION", 0) == 0) return 77;
         return 1;
     }
 }

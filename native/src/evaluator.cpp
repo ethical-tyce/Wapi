@@ -21,12 +21,19 @@
 namespace {
 
 bool isNumericValue(const WapiValue& value) {
-    return std::holds_alternative<int>(value) || std::holds_alternative<long long>(value);
+    return std::holds_alternative<int>(value) || std::holds_alternative<long long>(value) || std::holds_alternative<double>(value);
 }
 
 long long numericValue(const WapiValue& value) {
     if (auto p = std::get_if<int>(&value)) return *p;
-    return std::get<long long>(value);
+    if (auto p = std::get_if<long long>(&value)) return *p;
+    return static_cast<long long>(std::get<double>(value));
+}
+
+double numericDoubleValue(const WapiValue& value) {
+    if (auto p = std::get_if<int>(&value)) return static_cast<double>(*p);
+    if (auto p = std::get_if<long long>(&value)) return static_cast<double>(*p);
+    return std::get<double>(value);
 }
 
 std::string jsonEscape(const std::string& value) {
@@ -46,7 +53,7 @@ std::string jsonEscape(const std::string& value) {
 
 bool valuesEqual(const WapiValue& left, const WapiValue& right) {
     if (isNumericValue(left) && isNumericValue(right)) {
-        return numericValue(left) == numericValue(right);
+        return numericDoubleValue(left) == numericDoubleValue(right);
     }
     if (auto l = std::get_if<std::string>(&left)) {
         if (auto r = std::get_if<std::string>(&right)) return *l == *r;
@@ -69,6 +76,24 @@ std::string toLowerAscii(std::string value) {
         return static_cast<char>(std::tolower(ch));
     });
     return value;
+}
+
+std::string trimAscii(std::string value) {
+    const auto notSpace = [](unsigned char ch) { return !std::isspace(ch); };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
+    value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
+    return value;
+}
+
+std::string valueTypeName(const WapiValue& value) {
+    if (std::holds_alternative<std::monostate>(value)) return "null";
+    if (std::holds_alternative<int>(value)) return "int";
+    if (std::holds_alternative<long long>(value)) return "long";
+    if (std::holds_alternative<double>(value)) return "double";
+    if (std::holds_alternative<std::string>(value)) return "string";
+    if (std::holds_alternative<bool>(value)) return "bool";
+    if (std::holds_alternative<WapiArrayPtr>(value)) return "array";
+    return "unknown";
 }
 
 std::string wideToUtf8(const std::wstring& value) {
@@ -109,8 +134,10 @@ Evaluator::~Evaluator() {
 }
 
 std::string Evaluator::valueToString(const WapiValue& value) const {
+    if (std::holds_alternative<std::monostate>(value)) return "null";
     if (auto p = std::get_if<int>(&value)) return std::to_string(*p);
     if (auto p = std::get_if<long long>(&value)) return std::to_string(*p);
+    if (auto p = std::get_if<double>(&value)) { std::ostringstream oss; oss << *p; return oss.str(); }
     if (auto p = std::get_if<std::string>(&value)) return *p;
     if (auto p = std::get_if<bool>(&value)) return *p ? "true" : "false";
     if (auto p = std::get_if<WapiArrayPtr>(&value)) {
@@ -132,8 +159,10 @@ bool Evaluator::typeMatches(const std::string& typeName, const WapiValue& value)
     if (typeName == "any") return true;
     if (typeName == "int") return std::holds_alternative<int>(value);
     if (typeName == "long") return isNumericValue(value);
+    if (typeName == "float" || typeName == "double") return isNumericValue(value);
     if (typeName == "string") return std::holds_alternative<std::string>(value);
     if (typeName == "bool") return std::holds_alternative<bool>(value);
+    if (std::holds_alternative<std::monostate>(value)) return true;
     if (typeName.size() > 2 && typeName.substr(typeName.size() - 2) == "[]") return std::holds_alternative<WapiArrayPtr>(value);
     return true;
 }
@@ -146,8 +175,10 @@ WapiArrayPtr Evaluator::asArrayValue(const WapiValue& value, const std::string& 
 }
 
 bool Evaluator::isTruthy(const WapiValue& value) const {
+    if (std::holds_alternative<std::monostate>(value)) return false;
     if (auto p = std::get_if<int>(&value)) return *p != 0;
     if (auto p = std::get_if<long long>(&value)) return *p != 0;
+    if (auto p = std::get_if<double>(&value)) return *p != 0.0;
     if (auto p = std::get_if<std::string>(&value)) return !p->empty();
     if (auto p = std::get_if<bool>(&value)) return *p;
     if (auto p = std::get_if<WapiArrayPtr>(&value)) return *p && !(*p)->values.empty();
@@ -157,6 +188,7 @@ bool Evaluator::isTruthy(const WapiValue& value) const {
 long long Evaluator::asNumberValue(const WapiValue& value, const std::string& context) const {
     if (auto p = std::get_if<int>(&value)) return *p;
     if (auto p = std::get_if<long long>(&value)) return *p;
+    if (auto p = std::get_if<double>(&value)) return static_cast<long long>(*p);
     throw std::runtime_error("E_TYPE:" + context + " expected number");
 }
 void Evaluator::run(std::shared_ptr<Program> program) {
@@ -191,6 +223,8 @@ void Evaluator::run(std::shared_ptr<Program> program) {
 WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
     if (auto n = std::dynamic_pointer_cast<IntLiteral>(node)) return n->value;
     if (auto n = std::dynamic_pointer_cast<LongLongLiteral>(node)) return n->value;
+    if (auto n = std::dynamic_pointer_cast<DoubleLiteral>(node)) return n->value;
+    if (std::dynamic_pointer_cast<NullLiteral>(node)) return std::monostate{};
     if (auto n = std::dynamic_pointer_cast<StringLiteral>(node)) {
         std::string out = n->value;
         size_t start = 0;
@@ -226,12 +260,22 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
         WapiValue val = evalNode(n->value);
         if (!typeMatches(n->type, val)) throw std::runtime_error("E_TYPE:" + n->name + " expected " + n->type);
         variables[n->name] = val;
+        if (n->isConst) constants.insert(n->name);
         return val;
     }
 
     if (auto n = std::dynamic_pointer_cast<Assignment>(node)) {
+        if (constants.count(n->name)) throw std::runtime_error("E_CONST_ASSIGN:" + n->name);
         if (!variables.count(n->name)) throw std::runtime_error("E_UNDEFINED_VAR: " + n->name);
         WapiValue val = evalNode(n->value);
+        if (n->op != "=") {
+            WapiValue current = variables[n->name];
+            BinaryExpression binary;
+            binary.left = std::make_shared<Identifier>(n->name);
+            binary.right = n->value;
+            binary.op = n->op.substr(0, 1);
+            val = evalBinaryExpression(binary);
+        }
         variables[n->name] = val;
         return val;
     }
@@ -259,11 +303,11 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
     }
 
     if (auto n = std::dynamic_pointer_cast<WhileStatement>(node)) {
-        constexpr int maxIterations = 100000;
+        const int maxIterations = options.maxSteps;
         WapiValue last = 0;
         int iterations = 0;
         while (isTruthy(evalNode(n->condition))) {
-            if (++iterations > maxIterations) throw std::runtime_error("E_LOOP_LIMIT: while exceeded 100000 iterations");
+            if (++iterations > maxIterations) throw std::runtime_error("E_LOOP_LIMIT: while exceeded " + std::to_string(maxIterations) + " iterations");
             try {
                 last = evalNode(n->body);
             }
@@ -280,10 +324,12 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
     if (auto n = std::dynamic_pointer_cast<ForRangeStatement>(node)) {
         const long long start = asNumberValue(evalNode(n->start), "range start");
         const long long end = asNumberValue(evalNode(n->end), "range end");
+        const long long step = n->step ? asNumberValue(evalNode(n->step), "range step") : 1;
+        if (step == 0) throw std::runtime_error("E_RANGE_STEP_ZERO");
         WapiValue last = 0;
         int iterations = 0;
-        for (long long i = start; i < end; ++i) {
-            if (++iterations > 100000) throw std::runtime_error("E_LOOP_LIMIT: for exceeded 100000 iterations");
+        for (long long i = start; step > 0 ? i < end : i > end; i += step) {
+            if (++iterations > options.maxSteps) throw std::runtime_error("E_LOOP_LIMIT: for exceeded " + std::to_string(options.maxSteps) + " iterations");
             variables[n->variable] = (i >= (std::numeric_limits<int>::min)() && i <= (std::numeric_limits<int>::max)()) ? WapiValue(static_cast<int>(i)) : WapiValue(i);
             try {
                 last = evalNode(n->body);
@@ -322,6 +368,7 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
 
     if (std::dynamic_pointer_cast<IncludeStatement>(node)) return 0;
     if (auto n = std::dynamic_pointer_cast<IndexExpression>(node)) return evalIndexExpression(*n);
+    if (auto n = std::dynamic_pointer_cast<TernaryExpression>(node)) return isTruthy(evalNode(n->condition)) ? evalNode(n->whenTrue) : evalNode(n->whenFalse);
     if (auto n = std::dynamic_pointer_cast<UnaryExpression>(node)) return evalUnaryExpression(*n);
     if (auto n = std::dynamic_pointer_cast<BinaryExpression>(node)) return evalBinaryExpression(*n);
     if (auto n = std::dynamic_pointer_cast<FunctionCall>(node)) return evalFunctionCall(n);
@@ -333,6 +380,7 @@ WapiValue Evaluator::evalUnaryExpression(const UnaryExpression& expr) {
     WapiValue value = evalNode(expr.value);
 
     if (expr.op == "-") {
+        if (auto p = std::get_if<double>(&value)) return -*p;
         const long long number = -asNumberValue(value, "unary '-'");
         if (std::holds_alternative<int>(value) &&
             number >= (std::numeric_limits<int>::min)() &&
@@ -363,6 +411,24 @@ WapiValue Evaluator::evalBinaryExpression(const BinaryExpression& expr) {
 
     if (expr.op == "+" && (std::holds_alternative<std::string>(left) || std::holds_alternative<std::string>(right))) {
         return valueToString(left) + valueToString(right);
+    }
+
+    const bool useDouble = std::holds_alternative<double>(left) || std::holds_alternative<double>(right);
+    if (useDouble && expr.op != "%" && expr.op != "&" && expr.op != "|" && expr.op != "^" && expr.op != "<<" && expr.op != ">>") {
+        const double lhs = numericDoubleValue(left);
+        const double rhs = numericDoubleValue(right);
+        if (expr.op == "<") return lhs < rhs;
+        if (expr.op == "<=") return lhs <= rhs;
+        if (expr.op == ">") return lhs > rhs;
+        if (expr.op == ">=") return lhs >= rhs;
+        if (expr.op == "+") return lhs + rhs;
+        if (expr.op == "-") return lhs - rhs;
+        if (expr.op == "*") return lhs * rhs;
+        if (expr.op == "/") {
+            if (rhs == 0.0) throw std::runtime_error("E_DIVIDE_BY_ZERO");
+            return lhs / rhs;
+        }
+        throw std::runtime_error("E_UNKNOWN_OPERATOR:" + expr.op);
     }
 
     const long long lhs = asNumberValue(left, "operator '" + expr.op + "'");
@@ -443,6 +509,7 @@ void Evaluator::emitJsonEvent(const std::string& kind, const std::string& payloa
 }
 
 void Evaluator::emitAudit(const std::string& functionName, const std::string& capability, const std::string& result, const std::string& detail) const {
+    if (options.quiet) return;
     std::cout
         << "[WAPI_AUDIT]"
         << " ts=" << nowIso8601()
@@ -487,7 +554,7 @@ void Evaluator::enforcePolicy(const std::string& functionName, const std::string
     }
 
     emitAudit(functionName, capability, "warn", "missing capability allowed for v0.1 compatibility");
-    std::cout << "[WAPI_WARNING][E_PERMISSION_SOFT] " << functionName
+    if (!options.quiet) std::cout << "[WAPI_WARNING][E_PERMISSION_SOFT] " << functionName
               << " missing capability '" << capability
               << "' (allowed in v0.1 compatibility mode)\n";
 }
@@ -597,7 +664,70 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
     auto userFunction = userFunctions.find(call->name);
     if (userFunction != userFunctions.end()) return evalUserFunction(userFunction->second, call);
 
-    if (call->name == "len") {
+    if (call->name == "typeof") {
+        checkArgCount(call, 1);
+        return valueTypeName(evalNode(call->args[0]));
+    }
+    if (call->name == "assert") {
+        if (call->args.empty() || call->args.size() > 2) throw std::runtime_error("E_ARG_COUNT:assert expected=1..2 got=" + std::to_string(call->args.size()));
+        if (!isTruthy(evalNode(call->args[0]))) {
+            const std::string message = call->args.size() == 2 ? asString(call->args[1], call->name, 1) : "assertion failed";
+            throw std::runtime_error("E_ASSERT:" + message);
+        }
+        return true;
+    }
+    if (call->name == "toHex") {
+        checkArgCount(call, 1);
+        std::ostringstream oss;
+        oss << std::hex << asNumberValue(evalNode(call->args[0]), "toHex");
+        return oss.str();
+    }
+    if (call->name == "fromHex") {
+        checkArgCount(call, 1);
+        const std::string value = asString(call->args[0], call->name, 0);
+        return static_cast<long long>(std::stoll(value, nullptr, 16));
+    }
+    if (call->name == "split") {
+        checkArgCount(call, 2);
+        const std::string value = asString(call->args[0], call->name, 0);
+        const std::string delimiter = asString(call->args[1], call->name, 1);
+        auto array = std::make_shared<WapiArray>();
+        if (delimiter.empty()) {
+            for (char ch : value) array->values.push_back(std::string(1, ch));
+            return array;
+        }
+        size_t start = 0;
+        size_t at = 0;
+        while ((at = value.find(delimiter, start)) != std::string::npos) {
+            array->values.push_back(value.substr(start, at - start));
+            start = at + delimiter.size();
+        }
+        array->values.push_back(value.substr(start));
+        return array;
+    }
+    if (call->name == "trim") {
+        checkArgCount(call, 1);
+        return trimAscii(asString(call->args[0], call->name, 0));
+    }
+    if (call->name == "padLeft" || call->name == "padRight") {
+        if (call->args.size() < 2 || call->args.size() > 3) throw std::runtime_error("E_ARG_COUNT:" + call->name + " expected=2..3 got=" + std::to_string(call->args.size()));
+        std::string value = asString(call->args[0], call->name, 0);
+        const int width = asInt(call->args[1], call->name, 1);
+        const std::string fillText = call->args.size() == 3 ? asString(call->args[2], call->name, 2) : " ";
+        const char fill = fillText.empty() ? ' ' : fillText[0];
+        if (width <= static_cast<int>(value.size())) return value;
+        const std::string padding(static_cast<size_t>(width) - value.size(), fill);
+        return call->name == "padLeft" ? padding + value : value + padding;
+    }
+    if (call->name == "sort") {
+        checkArgCount(call, 1);
+        WapiValue value = evalNode(call->args[0]);
+        auto array = asArrayValue(value, "sort");
+        std::sort(array->values.begin(), array->values.end(), [this](const WapiValue& a, const WapiValue& b) {
+            return valueToString(a) < valueToString(b);
+        });
+        return array;
+    }    if (call->name == "len") {
         checkArgCount(call, 1);
         WapiValue value = evalNode(call->args[0]);
         if (auto p = std::get_if<std::string>(&value)) return static_cast<int>(p->size());
@@ -991,20 +1121,20 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
 
 
 /*
-██╗███╗   ███╗██████╗ ██╗     ███████╗███╗   ███╗███████╗███╗   ██╗████████╗ █████╗ ████████╗██╗ ██████╗ ███╗   ██╗
-██║████╗ ████║██╔══██╗██║     ██╔════╝████╗ ████║██╔════╝████╗  ██║╚══██╔══╝██╔══██╗╚══██╔══╝██║██╔═══██╗████╗  ██║
-██║██╔████╔██║██████╔╝██║     █████╗  ██╔████╔██║█████╗  ██╔██╗ ██║   ██║   ███████║   ██║   ██║██║   ██║██╔██╗ ██║
-██║██║╚██╔╝██║██╔═══╝ ██║     ██╔══╝  ██║╚██╔╝██║██╔══╝  ██║╚██╗██║   ██║   ██╔══██║   ██║   ██║██║   ██║██║╚██╗██║
-██║██║ ╚═╝ ██║██║     ███████╗███████╗██║ ╚═╝ ██║███████╗██║ ╚████║   ██║   ██║  ██║   ██║   ██║╚██████╔╝██║ ╚████║
-╚═╝╚═╝     ╚═╝╚═╝     ╚══════╝╚══════╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
+â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•—     â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—
+â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘â•šâ•â•â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â•šâ•â•â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ–ˆâ–ˆâ•”â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•”â–ˆâ–ˆâ–ˆâ–ˆâ•”â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â• â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•”â•â•â•  â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•  â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘ â•šâ•â• â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘ â•šâ•â• â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘
+â•šâ•â•â•šâ•â•     â•šâ•â•â•šâ•â•     â•šâ•â•â•â•â•â•â•â•šâ•â•â•â•â•â•â•â•šâ•â•     â•šâ•â•â•šâ•â•â•â•â•â•â•â•šâ•â•  â•šâ•â•â•â•   â•šâ•â•   â•šâ•â•  â•šâ•â•   â•šâ•â•   â•šâ•â• â•šâ•â•â•â•â•â• â•šâ•â•  â•šâ•â•â•â•
 
 
-██████╗ ██████╗  ██████╗  ██████╗███████╗███████╗███████╗
-██╔══██╗██╔══██╗██╔═══██╗██╔════╝██╔════╝██╔════╝██╔════╝
-██████╔╝██████╔╝██║   ██║██║     █████╗  ███████╗███████╗
-██╔═══╝ ██╔══██╗██║   ██║██║     ██╔══╝  ╚════██║╚════██║
-██║     ██║  ██║╚██████╔╝╚██████╗███████╗███████║███████║
-╚═╝     ╚═╝  ╚═╝ ╚═════╝  ╚═════╝╚══════╝╚══════╝╚══════╝
+â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—
+â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ•”â•â•â•â•â•
+â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—
+â–ˆâ–ˆâ•”â•â•â•â• â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•”â•â•â•  â•šâ•â•â•â•â–ˆâ–ˆâ•‘â•šâ•â•â•â•â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘
+â•šâ•â•     â•šâ•â•  â•šâ•â• â•šâ•â•â•â•â•â•  â•šâ•â•â•â•â•â•â•šâ•â•â•â•â•â•â•â•šâ•â•â•â•â•â•â•â•šâ•â•â•â•â•â•â•
 
 */
 
@@ -1147,12 +1277,12 @@ WapiValue Evaluator::wapi_closeProcess(long long handle) {
 }
 
 /*
-███╗   ███╗███████╗███╗   ███╗ ██████╗ ██████╗ ██╗   ██╗
-████╗ ████║██╔════╝████╗ ████║██╔═══██╗██╔══██╗╚██╗ ██╔╝
-██╔████╔██║█████╗  ██╔████╔██║██║   ██║██████╔╝ ╚████╔╝
-██║╚██╔╝██║██╔══╝  ██║╚██╔╝██║██║   ██║██╔══██╗  ╚██╔╝
-██║ ╚═╝ ██║███████╗██║ ╚═╝ ██║╚██████╔╝██║  ██║   ██║
-╚═╝     ╚═╝╚══════╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝
+â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—
+â–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â•šâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•”â•
+â–ˆâ–ˆâ•”â–ˆâ–ˆâ–ˆâ–ˆâ•”â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•”â–ˆâ–ˆâ–ˆâ–ˆâ•”â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â• â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•
+â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•  â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—  â•šâ–ˆâ–ˆâ•”â•
+â–ˆâ–ˆâ•‘ â•šâ•â• â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘ â•šâ•â• â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘
+â•šâ•â•     â•šâ•â•â•šâ•â•â•â•â•â•â•â•šâ•â•     â•šâ•â• â•šâ•â•â•â•â•â• â•šâ•â•  â•šâ•â•   â•šâ•â•
 */
 
 WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
@@ -1233,12 +1363,12 @@ WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
 }
 
 /*
-███╗   ███╗ ██████╗ ██████╗ ██╗   ██╗██╗     ███████╗███████╗
-████╗ ████║██╔═══██╗██╔══██╗██║   ██║██║     ██╔════╝██╔════╝
-██╔████╔██║██║   ██║██║  ██║██║   ██║██║     █████╗  ███████╗
-██║╚██╔╝██║██║   ██║██║  ██║██║   ██║██║     ██╔══╝  ╚════██║
-██║ ╚═╝ ██║╚██████╔╝██████╔╝╚██████╔╝███████╗███████╗███████║
-╚═╝     ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚══════╝╚══════╝╚══════╝
+â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—â–ˆâ–ˆâ•—     â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—
+â–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ•”â•â•â•â•â•
+â–ˆâ–ˆâ•”â–ˆâ–ˆâ–ˆâ–ˆâ•”â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—
+â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•”â•â•â•  â•šâ•â•â•â•â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•‘ â•šâ•â• â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘
+â•šâ•â•     â•šâ•â• â•šâ•â•â•â•â•â• â•šâ•â•â•â•â•â•  â•šâ•â•â•â•â•â• â•šâ•â•â•â•â•â•â•â•šâ•â•â•â•â•â•â•â•šâ•â•â•â•â•â•â•
 */
 WapiValue Evaluator::wapi_listModules(int pid) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
@@ -1487,12 +1617,12 @@ WapiValue Evaluator::wapi_setThreadContext(long long threadHandle, long long con
 
 
 /*
-██╗  ██╗ █████╗ ███╗   ██╗██████╗ ██╗     ███████╗    ███╗   ███╗ █████╗ ███╗   ██╗ █████╗  ██████╗ ███████╗███╗   ███╗███████╗███╗   ██╗████████╗
-██║  ██║██╔══██╗████╗  ██║██╔══██╗██║     ██╔════╝    ████╗ ████║██╔══██╗████╗  ██║██╔══██╗██╔════╝ ██╔════╝████╗ ████║██╔════╝████╗  ██║╚══██╔══╝
-███████║███████║██╔██╗ ██║██║  ██║██║     █████╗      ██╔████╔██║███████║██╔██╗ ██║███████║██║  ███╗█████╗  ██╔████╔██║█████╗  ██╔██╗ ██║   ██║
-██╔══██║██╔══██║██║╚██╗██║██║  ██║██║     ██╔══╝      ██║╚██╔╝██║██╔══██║██║╚██╗██║██╔══██║██║   ██║██╔══╝  ██║╚██╔╝██║██╔══╝  ██║╚██╗██║   ██║
-██║  ██║██║  ██║██║ ╚████║██████╔╝███████╗███████╗    ██║ ╚═╝ ██║██║  ██║██║ ╚████║██║  ██║╚██████╔╝███████╗██║ ╚═╝ ██║███████╗██║ ╚████║   ██║
-╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚══════╝╚══════╝    ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝   ╚═╝
+â–ˆâ–ˆâ•—  â–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•—     â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—    â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—
+â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•”â•â•â•â•â•    â–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•”â•â•â•â•â• â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘â•šâ•â•â–ˆâ–ˆâ•”â•â•â•
+â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—      â–ˆâ–ˆâ•”â–ˆâ–ˆâ–ˆâ–ˆâ•”â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•”â–ˆâ–ˆâ–ˆâ–ˆâ•”â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•”â•â•â•      â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•  â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•  â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—    â–ˆâ–ˆâ•‘ â•šâ•â• â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘ â•šâ•â• â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘
+â•šâ•â•  â•šâ•â•â•šâ•â•  â•šâ•â•â•šâ•â•  â•šâ•â•â•â•â•šâ•â•â•â•â•â• â•šâ•â•â•â•â•â•â•â•šâ•â•â•â•â•â•â•    â•šâ•â•     â•šâ•â•â•šâ•â•  â•šâ•â•â•šâ•â•  â•šâ•â•â•â•â•šâ•â•  â•šâ•â• â•šâ•â•â•â•â•â• â•šâ•â•â•â•â•â•â•â•šâ•â•     â•šâ•â•â•šâ•â•â•â•â•â•â•â•šâ•â•  â•šâ•â•â•â•   â•šâ•â•
 */
 
 WapiValue Evaluator::wapi_closeHandle(long long handle) {
@@ -1509,12 +1639,12 @@ WapiValue Evaluator::wapi_closeHandle(long long handle) {
 }
 
 /*
-██╗    ██╗██╗███╗   ██╗██████╗  ██████╗ ██╗    ██╗
-██║    ██║██║████╗  ██║██╔══██╗██╔═══██╗██║    ██║
-██║ █╗ ██║██║██╔██╗ ██║██║  ██║██║   ██║██║ █╗ ██║
-██║███╗██║██║██║╚██╗██║██║  ██║██║   ██║██║███╗██║
-╚███╔███╔╝██║██║ ╚████║██████╔╝╚██████╔╝╚███╔███╔╝
- ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝╚═════╝  ╚═════╝  ╚══╝╚══╝
+â–ˆâ–ˆâ•—    â–ˆâ–ˆâ•—â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•—    â–ˆâ–ˆâ•—
+â–ˆâ–ˆâ•‘    â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘    â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•‘ â–ˆâ•— â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘ â–ˆâ•— â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘
+â•šâ–ˆâ–ˆâ–ˆâ•”â–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â•šâ–ˆâ–ˆâ–ˆâ•”â–ˆâ–ˆâ–ˆâ•”â•
+ â•šâ•â•â•â•šâ•â•â• â•šâ•â•â•šâ•â•  â•šâ•â•â•â•â•šâ•â•â•â•â•â•  â•šâ•â•â•â•â•â•  â•šâ•â•â•â•šâ•â•â•
 */
 
 WapiValue Evaluator::wapi_findWindow(const std::string& name) {
@@ -1701,12 +1831,12 @@ WapiValue Evaluator::wapi_injectShellcode(int pid, const std::string& hexBytes) 
 
 
 /*
-██████╗ ██╗     ██╗         ██╗███╗   ██╗     ██╗███████╗ ██████╗████████╗██╗ ██████╗ ███╗   ██╗
-██╔══██╗██║     ██║         ██║████╗  ██║     ██║██╔════╝██╔════╝╚══██╔══╝██║██╔═══██╗████╗  ██║
-██║  ██║██║     ██║         ██║██╔██╗ ██║     ██║█████╗  ██║        ██║   ██║██║   ██║██╔██╗ ██║
-██║  ██║██║     ██║         ██║██║╚██╗██║██   ██║██╔══╝  ██║        ██║   ██║██║   ██║██║╚██╗██║
-██████╔╝███████╗███████╗    ██║██║ ╚████║╚█████╔╝███████╗╚██████╗   ██║   ██║╚██████╔╝██║ ╚████║
-╚═════╝ ╚══════╝╚══════╝    ╚═╝╚═╝  ╚═══╝ ╚════╝ ╚══════╝ ╚═════╝   ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
+â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•—     â–ˆâ–ˆâ•—         â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—     â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—
+â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•‘         â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ•”â•â•â•â•â•â•šâ•â•â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•‘         â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘        â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘     â–ˆâ–ˆâ•‘         â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘â–ˆâ–ˆ   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•  â–ˆâ–ˆâ•‘        â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘
+â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—    â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘
+â•šâ•â•â•â•â•â• â•šâ•â•â•â•â•â•â•â•šâ•â•â•â•â•â•â•    â•šâ•â•â•šâ•â•  â•šâ•â•â•â• â•šâ•â•â•â•â• â•šâ•â•â•â•â•â•â• â•šâ•â•â•â•â•â•   â•šâ•â•   â•šâ•â• â•šâ•â•â•â•â•â• â•šâ•â•  â•šâ•â•â•â•
 */
 
 WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {

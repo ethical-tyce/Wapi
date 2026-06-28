@@ -18,6 +18,13 @@ struct LongLongLiteral : ASTNode {
     LongLongLiteral(long long v) : value(v) {}
 };
 
+struct DoubleLiteral : ASTNode {
+    double value;
+    DoubleLiteral(double v) : value(v) {}
+};
+
+struct NullLiteral : ASTNode {};
+
 struct StringLiteral : ASTNode {
     std::string value;
     StringLiteral(const std::string& v) : value(v) {}
@@ -44,6 +51,12 @@ struct BinaryExpression : ASTNode {
     std::shared_ptr<ASTNode> right;
 };
 
+struct TernaryExpression : ASTNode {
+    std::shared_ptr<ASTNode> condition;
+    std::shared_ptr<ASTNode> whenTrue;
+    std::shared_ptr<ASTNode> whenFalse;
+};
+
 struct FunctionCall : ASTNode {
     std::string name;
     std::vector<std::shared_ptr<ASTNode>> args;
@@ -62,10 +75,12 @@ struct VarDeclaration : ASTNode {
     std::string type;
     std::string name;
     std::shared_ptr<ASTNode> value;
+    bool isConst = false;
 };
 
 struct Assignment : ASTNode {
     std::string name;
+    std::string op = "=";
     std::shared_ptr<ASTNode> value;
 };
 
@@ -94,6 +109,7 @@ struct ForRangeStatement : ASTNode {
     std::string variable;
     std::shared_ptr<ASTNode> start;
     std::shared_ptr<ASTNode> end;
+    std::shared_ptr<ASTNode> step;
     std::shared_ptr<BlockStatement> body;
 };
 
@@ -155,6 +171,7 @@ private:
     std::shared_ptr<ASTNode> parseIncludeStatement();
     std::shared_ptr<ASTNode> parseFunctionCall(const std::string& name);
     std::shared_ptr<ASTNode> parseExpression();
+    std::shared_ptr<ASTNode> parseTernary();
     std::shared_ptr<ASTNode> parseLogicalOr();
     std::shared_ptr<ASTNode> parseLogicalAnd();
     std::shared_ptr<ASTNode> parseBitwiseOr();

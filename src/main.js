@@ -60,6 +60,7 @@ function iconSvg(node, className = "ui-icon") {
 const visibleExtensions = new Set([".wapi", ".txt", ".json", ".cpp", ".c", ".h", ".hpp"]);
 const maxPanelLines = 300;
 const welcomeTabId = "__welcome__";
+const settingsTabId = "__settings__";
 const welcomeSource = "";
 
 function escapeRegExp(value) {
@@ -163,7 +164,16 @@ const wapiLanguageFunctions = [
   { name: "min", argCount: 2, capability: "language.math", requiresInjectionFlag: false, params: [{ name: "a", type: "int|long" }, { name: "b", type: "int|long" }] },
   { name: "max", argCount: 2, capability: "language.math", requiresInjectionFlag: false, params: [{ name: "a", type: "int|long" }, { name: "b", type: "int|long" }] },
   { name: "push", argCount: 2, capability: "language.array", requiresInjectionFlag: false, params: [{ name: "array", type: "array" }, { name: "value", type: "value" }] },
-  { name: "pop", argCount: 1, capability: "language.array", requiresInjectionFlag: false, params: [{ name: "array", type: "array" }] }
+  { name: "pop", argCount: 1, capability: "language.array", requiresInjectionFlag: false, params: [{ name: "array", type: "array" }] },
+  { name: "typeof", argCount: 1, capability: "language.core", requiresInjectionFlag: false, params: [{ name: "value", type: "value" }] },
+  { name: "assert", argCount: 2, capability: "language.core", requiresInjectionFlag: false, params: [{ name: "condition", type: "bool" }, { name: "message", type: "string" }] },
+  { name: "toHex", argCount: 1, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "number", type: "int|long" }] },
+  { name: "fromHex", argCount: 1, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "text", type: "string" }] },
+  { name: "split", argCount: 2, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "text", type: "string" }, { name: "delimiter", type: "string" }] },
+  { name: "trim", argCount: 1, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "text", type: "string" }] },
+  { name: "padLeft", argCount: 3, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "text", type: "string" }, { name: "width", type: "int" }, { name: "fill", type: "string" }] },
+  { name: "padRight", argCount: 3, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "text", type: "string" }, { name: "width", type: "int" }, { name: "fill", type: "string" }] },
+  { name: "sort", argCount: 1, capability: "language.array", requiresInjectionFlag: false, params: [{ name: "array", type: "array" }] }
 ];
 const wapiRuntimeFunctions = [...wapiLanguageFunctions, ...parseEvaluatorFunctionRegistry(evaluatorSource)]
   .sort((a, b) => a.name.localeCompare(b.name));
@@ -290,10 +300,19 @@ const projectTemplates = [
   }
 ];
 
+const editorPreferenceDefaults = {
+  theme: "dark",
+  fontSize: 13,
+  wordWrap: "off",
+  minimap: true,
+  autoSave: false,
+  runOnSave: false
+};
 const ideState = {
   files: [],
   activeFileId: welcomeTabId,
   welcomeTabOpen: true,
+  settingsTabOpen: false,
   openFileIds: [],
   collapsedFolders: new Set(),
   projectRoot: null,
@@ -302,6 +321,8 @@ const ideState = {
   recentProjects: [],
   activePanel: "explorer",
   activeTool: "output",
+  outputFilter: "all",
+  editorPreferences: { ...editorPreferenceDefaults },
   menuOpen: false,
   projectDialogOpen: false,
   selectedTemplate: "empty",
@@ -324,6 +345,7 @@ const ideState = {
 
 const terminalRuntimes = new Map();
 let terminalSequence = 0;
+let autoSaveTimer = null;
 
 const editorState = {
   editor: null,
@@ -385,12 +407,16 @@ function visibleProjectFiles(files = []) {
 }
 
 function activeFile() {
-  if (ideState.activeFileId === welcomeTabId) return null;
+  if (ideState.activeFileId === welcomeTabId || ideState.activeFileId === settingsTabId) return null;
   return ideState.files.find((file) => file.id === ideState.activeFileId) ?? null;
 }
 
 function isWelcomeActive() {
   return ideState.welcomeTabOpen && ideState.activeFileId === welcomeTabId;
+}
+
+function isSettingsActive() {
+  return ideState.settingsTabOpen && ideState.activeFileId === settingsTabId;
 }
 
 function isDirty(file) {
@@ -519,6 +545,7 @@ function recordRuntimeEvent(message, status = "info") {
   });
   ideState.runtimeInspector.events = ideState.runtimeInspector.events.slice(0, 8);
   renderRuntimeInspector();
+  syncEditorPreferenceControls();
 }
 
 function recordRuntimeResult(command, result, file) {
@@ -699,7 +726,16 @@ function closeDocumentTab(fileId) {
   if (fileId === welcomeTabId) {
     ideState.welcomeTabOpen = false;
     if (ideState.activeFileId === welcomeTabId) {
-      ideState.activeFileId = ideState.openFileIds.at(-1) ?? null;
+      ideState.activeFileId = ideState.openFileIds.at(-1) ?? (ideState.settingsTabOpen ? settingsTabId : null);
+    }
+    renderAll();
+    setEditorModel(activeFile());
+    return;
+  }
+  if (fileId === settingsTabId) {
+    ideState.settingsTabOpen = false;
+    if (ideState.activeFileId === settingsTabId) {
+      ideState.activeFileId = ideState.openFileIds.at(-1) ?? (ideState.welcomeTabOpen ? welcomeTabId : null);
     }
     renderAll();
     setEditorModel(activeFile());
@@ -865,7 +901,7 @@ function installMonacoLanguage() {
         [/\/\/.*$/, "comment"],
         [/"([^"\\]|\\.)*$/, "string.invalid"],
         [/"/, "string", "@string"],
-        [/\b(?:print|if|else|while|for|in|func|return|break|continue|try|catch|include|true|false|int|string|bool|long)\b/, "keyword"],
+        [/\b(?:print|if|else|while|for|in|func|return|break|continue|try|catch|include|true|false|null|const|int|string|bool|long|float|double)\b/, "keyword"],
         [/[=+\-*\/%<>!&|^~]+/, "operator"],
         [wapiFunctionNameRegex, "type.identifier"],
         [/\b0x[0-9a-fA-F]+\b/, "number.hex"],
@@ -881,7 +917,7 @@ function installMonacoLanguage() {
     }
   });
   monaco.languages.setLanguageConfiguration("wapi", {
-    comments: { lineComment: "//" },
+    comments: { lineComment: "//", blockComment: ["/*", "*/"] },
     brackets: [["{", "}"], ["[", "]"], ["(", ")"]],
     autoClosingPairs: [
       { open: "{", close: "}" },
@@ -1005,6 +1041,72 @@ function installMonacoLanguage() {
   });
 }
 
+function applyEditorPreferences() {
+  const prefs = ideState.editorPreferences;
+  monaco.editor.setTheme(prefs.theme === "light" ? "vs" : "wapi-dark");
+  if (editorState.editor) {
+    editorState.editor.updateOptions({
+      fontSize: prefs.fontSize,
+      wordWrap: prefs.wordWrap,
+      minimap: {
+        enabled: prefs.minimap,
+        side: "right",
+        size: "proportional",
+        showSlider: "mouseover",
+        renderCharacters: false,
+        maxColumn: 92
+      }
+    });
+  }
+  syncEditorPreferenceControls();
+}
+
+function syncEditorPreferenceControls() {
+  const prefs = ideState.editorPreferences;
+  const theme = document.getElementById("editorTheme");
+  const fontSize = document.getElementById("editorFontSize");
+  const wrap = document.getElementById("editorWordWrap");
+  const minimap = document.getElementById("editorMinimap");
+  const autoSave = document.getElementById("editorAutoSave");
+  const runOnSave = document.getElementById("editorRunOnSave");
+  if (theme) theme.value = prefs.theme;
+  if (fontSize) fontSize.value = String(prefs.fontSize);
+  if (wrap) wrap.checked = prefs.wordWrap === "on";
+  if (minimap) minimap.checked = prefs.minimap;
+  if (autoSave) autoSave.checked = prefs.autoSave;
+  if (runOnSave) runOnSave.checked = prefs.runOnSave;
+}
+
+function updateEditorPreferencesFromControls() {
+  ideState.editorPreferences = {
+    theme: document.getElementById("editorTheme")?.value || "dark",
+    fontSize: Number(document.getElementById("editorFontSize")?.value || 13),
+    wordWrap: document.getElementById("editorWordWrap")?.checked ? "on" : "off",
+    minimap: Boolean(document.getElementById("editorMinimap")?.checked),
+    autoSave: Boolean(document.getElementById("editorAutoSave")?.checked),
+    runOnSave: Boolean(document.getElementById("editorRunOnSave")?.checked)
+  };
+  applyEditorPreferences();
+  setStatus("Editor settings updated");
+}
+
+async function maybeAutoSaveActiveFile() {
+  const file = activeFile();
+  if (!file || !ideState.editorPreferences.autoSave || !file.filePath || !isDirty(file)) return;
+  await saveFile(file, false);
+  if (ideState.editorPreferences.runOnSave && languageForFile(file) === "wapi") await runWapiCommand("check", { silent: true });
+}
+
+function scheduleAutoSave() {
+  window.clearTimeout(autoSaveTimer);
+  autoSaveTimer = window.setTimeout(() => { maybeAutoSaveActiveFile(); }, 700);
+}
+
+function runEditorAction(actionId) {
+  if (!editorState.editor) return;
+  editorState.editor.trigger("ide", actionId, null);
+  editorState.editor.focus();
+}
 function setEditorModel(file, forceRefresh = false) {
   if (!editorState.editor) return;
   const source = file?.source ?? welcomeSource;
@@ -1030,6 +1132,7 @@ function setEditorModel(file, forceRefresh = false) {
     updateStatusLine();
     renderDocumentTabs();
     scheduleDiagnostics();
+    scheduleAutoSave();
   });
   updateStatusLine();
   updateCursorStatus();
@@ -1065,6 +1168,7 @@ function createMonacoEditor() {
     padding: { top: 14, bottom: 18 }
   });
   editorState.cursorDisposable?.dispose();
+  applyEditorPreferences();
   editorState.cursorDisposable = editorState.editor.onDidChangeCursorPosition(updateCursorStatus);
   setEditorModel(activeFile());
 }
@@ -1077,13 +1181,15 @@ function updateStatusLine() {
   const statusLanguage = document.getElementById("statusLanguage");
   const editorStatus = document.getElementById("editorStatus");
   if (statusFile) {
-    statusFile.textContent = file ? `${file.relativePath}${isDirty(file) ? " *" : ""}` : "Welcome";
-    statusFile.title = file?.relativePath ?? "Welcome";
+    statusFile.textContent = file ? `${file.relativePath}${isDirty(file) ? " *" : ""}` : isSettingsActive() ? "Settings" : "Welcome";
+    statusFile.title = file?.relativePath ?? (isSettingsActive() ? "Settings" : "Welcome");
   }
   if (statusLanguage) statusLanguage.textContent = displayLanguage;
+  const statusEditorPrefs = document.getElementById("statusEditorPrefs");
+  if (statusEditorPrefs) statusEditorPrefs.textContent = `${ideState.editorPreferences.fontSize}px ${ideState.editorPreferences.wordWrap === "on" ? "Wrap" : "No wrap"}`;
   const projectTitle = document.getElementById("windowProjectTitle");
   if (projectTitle) projectTitle.textContent = projectDisplayName();
-  if (editorStatus) editorStatus.textContent = file ? `${displayLanguage}${isDirty(file) ? " - unsaved" : ""}` : "Start";
+  if (editorStatus) editorStatus.textContent = file ? `${displayLanguage}${isDirty(file) ? " - unsaved" : ""}` : isSettingsActive() ? "Settings" : "Start";
 }
 
 function renderDocumentTabs() {
@@ -1103,6 +1209,20 @@ function renderDocumentTabs() {
       <span class="tab-close" data-close-tab="${welcomeTabId}" aria-label="Close tab">${iconSvg(X)}</span>
     `;
     tabs.appendChild(welcomeTab);
+  }
+  if (ideState.settingsTabOpen) {
+    const settingsTab = document.createElement("button");
+    settingsTab.className = `document-tab document-tab-settings${isSettingsActive() ? " is-active" : ""}`;
+    settingsTab.type = "button";
+    settingsTab.dataset.tabFile = settingsTabId;
+    settingsTab.title = "Settings";
+    settingsTab.innerHTML = `
+      ${iconSvg(Settings, "ui-icon tab-file-icon")}
+      <span class="document-tab-name">Settings</span>
+      <span class="dirty-dot" aria-hidden="true"></span>
+      <span class="tab-close" data-close-tab="${settingsTabId}" aria-label="Close tab">${iconSvg(X)}</span>
+    `;
+    tabs.appendChild(settingsTab);
   }
   for (const fileId of ideState.openFileIds) {
     const file = ideState.files.find((item) => item.id === fileId);
@@ -1179,9 +1299,12 @@ function renderSidePanel() {
     processes: "PROCESSES",
     history: "HISTORY",
     watch: "WATCH",
+    docs: "DOCS",
+    capabilities: "CAPABILITIES",
+    shortcuts: "SHORTCUTS",
     templates: "TEMPLATES",
     outline: "OUTLINE",
-    settings: "PROJECT"
+    settings: "SETTINGS"
   };
   if (title) title.textContent = panelLabels[ideState.activePanel] ?? "SOLUTION EXPLORER";
   if (searchInput && searchInput.value !== ideState.searchQuery) searchInput.value = ideState.searchQuery;
@@ -1191,7 +1314,8 @@ function renderSidePanel() {
   document.getElementById("sideActionMenu")?.classList.toggle("is-open", ideState.menuOpen);
 
   document.querySelectorAll(".activity-button[data-panel]").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.panel === ideState.activePanel);
+    const panel = button.dataset.panel;
+    button.classList.toggle("is-active", panel === ideState.activePanel || (panel === "settings" && isSettingsActive()));
   });
 
   content.replaceChildren();
@@ -1336,6 +1460,69 @@ function renderSidePanel() {
     }
     return;
   }
+  if (ideState.activePanel === "docs") {
+    if (meta) meta.textContent = `${wapiRuntimeFunctions.length} callable entries`;
+    const docs = [
+      ["Language", "const, null, double/float, ternary expressions, block comments, interpolation, arrays, range(start,end,step)."],
+      ["Strings", "trim, split, padLeft, padRight, toHex, fromHex, contains, replace, toLower."],
+      ["Checks", "Use Check for preflight. Problems are mapped back into Monaco markers when the runtime reports line/column data."],
+      ["Runtime", "Capabilities stay explicit. Safe mode blocks dangerous process, memory, injection, debug, and token operations."]
+    ];
+    for (const [title, note] of docs) {
+      const row = document.createElement("div");
+      row.className = "function-row info-row";
+      row.innerHTML = "<strong></strong><span></span>";
+      row.querySelector("strong").textContent = title;
+      row.querySelector("span").textContent = note;
+      content.appendChild(row);
+    }
+    return;
+  }
+
+  if (ideState.activePanel === "capabilities") {
+    if (meta) meta.textContent = `${ideState.projectConfig.capabilities.length} enabled`;
+    const section = document.createElement("section");
+    section.className = "side-section";
+    const heading = document.createElement("div");
+    heading.className = "side-section-title";
+    heading.textContent = "Runtime capability grants";
+    section.appendChild(heading);
+    for (const capability of runtimeCapabilities) {
+      const button = document.createElement("button");
+      button.className = `function-row capability-row${ideState.projectConfig.capabilities.includes(capability) ? " is-active" : ""}`;
+      button.type = "button";
+      button.dataset.toggleCapability = capability;
+      button.innerHTML = "<strong></strong><span></span>";
+      button.querySelector("strong").textContent = capability;
+      button.querySelector("span").textContent = ideState.projectConfig.capabilities.includes(capability) ? "Enabled" : "Disabled";
+      section.appendChild(button);
+    }
+    content.appendChild(section);
+    return;
+  }
+
+  if (ideState.activePanel === "shortcuts") {
+    if (meta) meta.textContent = "Editor commands";
+    const shortcuts = [
+      ["Ctrl+S", "Save active file"],
+      ["Ctrl+Shift+S", "Save all files"],
+      ["Ctrl+F", "Search project"],
+      ["Ctrl+H", "Replace in editor"],
+      ["F2", "Rename symbol"],
+      ["Ctrl+/", "Toggle line comment"],
+      ["Alt+Shift+F", "Format document"],
+      ["F8", "Peek next problem"]
+    ];
+    for (const [keys, note] of shortcuts) {
+      const row = document.createElement("div");
+      row.className = "function-row info-row";
+      row.innerHTML = "<strong></strong><span></span>";
+      row.querySelector("strong").textContent = keys;
+      row.querySelector("span").textContent = note;
+      content.appendChild(row);
+    }
+    return;
+  }
   if (ideState.activePanel === "templates") {
     if (meta) meta.textContent = "Script snippets";
     const snippets = [
@@ -1443,6 +1630,42 @@ function renderProjectSettings(parent) {
   }
 }
 
+function filteredLogLines(lines) {
+  if (ideState.outputFilter === "all") return lines;
+  if (ideState.outputFilter === "errors") return lines.filter((line) => ["error", "warning"].includes(line.kind) || /\b(error|failed|E_[A-Z_]+)/i.test(line.text));
+  if (ideState.outputFilter === "audit") return lines.filter((line) => line.kind === "audit" || line.text.includes("[WAPI_AUDIT]"));
+  if (ideState.outputFilter === "commands") return lines.filter((line) => line.kind === "command" || line.text.startsWith(">"));
+  return lines;
+}
+
+function activeToolLines() {
+  if (ideState.activeTool === "audit") return filteredLogLines(ideState.auditLines);
+  if (ideState.activeTool === "output") return filteredLogLines(ideState.outputLines);
+  return [];
+}
+
+function renderLogToolbar(parent) {
+  const controls = document.createElement("div");
+  controls.className = "tool-log-controls";
+  controls.innerHTML = `
+    <select id="outputFilter" aria-label="Output filter">
+      <option value="all">All</option>
+      <option value="errors">Errors</option>
+      <option value="audit">Audit</option>
+      <option value="commands">Commands</option>
+    </select>
+    <button class="tool-export" type="button" data-export-log>Export</button>
+  `;
+  parent.appendChild(controls);
+  controls.querySelector("#outputFilter").value = ideState.outputFilter;
+}
+
+async function exportActiveToolLog() {
+  const lines = activeToolLines();
+  const source = lines.map((line) => `[${line.at}] ${line.kind.toUpperCase()} ${line.text}`).join("\n") + "\n";
+  await bridge.saveFile({ filePath: null, source });
+  setStatus("Log exported");
+}
 function renderToolWindow() {
   const tabs = document.getElementById("toolTabs");
   const body = document.getElementById("toolBody");
@@ -1477,7 +1700,8 @@ function renderToolWindow() {
   }
 
   if (ideState.activeTool === "audit") {
-    renderLogLines(body, ideState.auditLines, "No audit lines yet");
+    renderLogToolbar(body);
+    renderLogLines(body, filteredLogLines(ideState.auditLines), "No audit lines yet");
     return;
   }
 
@@ -1518,7 +1742,8 @@ function renderToolWindow() {
     return;
   }
 
-  renderLogLines(body, ideState.outputLines, "No output yet");
+  renderLogToolbar(body);
+  renderLogLines(body, filteredLogLines(ideState.outputLines), "No output yet");
 }
 
 function renderToolEmpty(parent, message) {
@@ -1547,17 +1772,119 @@ function renderLogLines(parent, lines, emptyMessage) {
   parent.scrollTop = parent.scrollHeight;
 }
 
+function renderSettingsSurface() {
+  const surface = document.getElementById("settingsSurface");
+  if (!surface) return;
+  surface.innerHTML = `
+    <div class="settings-tab-shell">
+      <div class="settings-tab-header">
+        <strong>Settings</strong>
+        <span>${projectDisplayName()}</span>
+      </div>
+      <div class="settings-tab-grid">
+        <section class="settings-tab-section">
+          <h2>Runtime</h2>
+          <label class="settings-field">
+            <span>Mode</span>
+            <select id="settingsTabMode">
+              <option value="safe">Safe</option>
+              <option value="dev">Dev</option>
+              <option value="unsafe">Unsafe</option>
+            </select>
+          </label>
+          <label class="settings-toggle"><input id="settingsTabStrict" type="checkbox"><span>Strict permissions</span></label>
+          <label class="settings-toggle"><input id="settingsTabInjection" type="checkbox"><span>Allow injection</span></label>
+          <label class="settings-toggle"><input id="settingsTabJson" type="checkbox"><span>JSON output</span></label>
+          <label class="settings-field">
+            <span>Capabilities</span>
+            <textarea id="settingsTabCapabilities" spellcheck="false"></textarea>
+          </label>
+        </section>
+        <section class="settings-tab-section">
+          <h2>Editor</h2>
+          <label class="settings-field">
+            <span>Theme</span>
+            <select id="settingsTabTheme"><option value="dark">Dark</option><option value="light">Light</option></select>
+          </label>
+          <label class="settings-field">
+            <span>Font size</span>
+            <select id="settingsTabFontSize"><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="16">16</option></select>
+          </label>
+          <label class="settings-toggle"><input id="settingsTabWordWrap" type="checkbox"><span>Word wrap</span></label>
+          <label class="settings-toggle"><input id="settingsTabMinimap" type="checkbox"><span>Minimap</span></label>
+          <label class="settings-toggle"><input id="settingsTabAutoSave" type="checkbox"><span>Auto save</span></label>
+          <label class="settings-toggle"><input id="settingsTabRunOnSave" type="checkbox"><span>Check on save</span></label>
+        </section>
+        <section class="settings-tab-section settings-tab-section-wide">
+          <h2>Capabilities</h2>
+          <div class="settings-capability-grid">
+            ${runtimeCapabilities.map((capability) => `
+              <button class="capability-chip${ideState.projectConfig.capabilities.includes(capability) ? " is-active" : ""}" type="button" data-settings-tab-capability="${capability}">${capability}</button>
+            `).join("")}
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+  syncSettingsTabControls();
+}
+
+function syncSettingsTabControls() {
+  const config = ideState.projectConfig;
+  const prefs = ideState.editorPreferences;
+  const setValue = (id, value) => { const node = document.getElementById(id); if (node) node.value = value; };
+  const setChecked = (id, value) => { const node = document.getElementById(id); if (node) node.checked = Boolean(value); };
+  setValue("settingsTabMode", config.defaultMode);
+  setChecked("settingsTabStrict", config.strictPermissions);
+  setChecked("settingsTabInjection", config.allowInjection);
+  setChecked("settingsTabJson", config.jsonOutput !== false);
+  setValue("settingsTabCapabilities", config.capabilities.join(", "));
+  setValue("settingsTabTheme", prefs.theme);
+  setValue("settingsTabFontSize", String(prefs.fontSize));
+  setChecked("settingsTabWordWrap", prefs.wordWrap === "on");
+  setChecked("settingsTabMinimap", prefs.minimap);
+  setChecked("settingsTabAutoSave", prefs.autoSave);
+  setChecked("settingsTabRunOnSave", prefs.runOnSave);
+}
+
+function updateSettingsFromTab() {
+  const capsValue = document.getElementById("settingsTabCapabilities")?.value ?? ideState.projectConfig.capabilities.join(", ");
+  ideState.projectConfig = normalizeProjectConfig({
+    ...ideState.projectConfig,
+    defaultMode: document.getElementById("settingsTabMode")?.value ?? ideState.projectConfig.defaultMode,
+    strictPermissions: Boolean(document.getElementById("settingsTabStrict")?.checked),
+    allowInjection: Boolean(document.getElementById("settingsTabInjection")?.checked),
+    jsonOutput: Boolean(document.getElementById("settingsTabJson")?.checked),
+    capabilities: capsValue.split(",").map((cap) => cap.trim()).filter(Boolean)
+  }, projectDisplayName());
+  ideState.editorPreferences = {
+    theme: document.getElementById("settingsTabTheme")?.value || ideState.editorPreferences.theme,
+    fontSize: Number(document.getElementById("settingsTabFontSize")?.value || ideState.editorPreferences.fontSize),
+    wordWrap: document.getElementById("settingsTabWordWrap")?.checked ? "on" : "off",
+    minimap: Boolean(document.getElementById("settingsTabMinimap")?.checked),
+    autoSave: Boolean(document.getElementById("settingsTabAutoSave")?.checked),
+    runOnSave: Boolean(document.getElementById("settingsTabRunOnSave")?.checked)
+  };
+  applyEditorPreferences();
+  renderToolbarState();
+  persistProjectConfig();
+  setStatus("Settings updated");
+}
 function renderStartSurface() {
   const surface = document.getElementById("startSurface");
+  const settingsSurface = document.getElementById("settingsSurface");
   const monacoHost = document.getElementById("monacoEditor");
   const workbench = document.querySelector(".editor-workbench");
   const emptyHost = document.getElementById("emptyEditorState");
   const showStart = isWelcomeActive();
-  const showEmpty = !showStart && !activeFile();
+  const showSettings = isSettingsActive();
+  const showEmpty = !showStart && !showSettings && !activeFile();
   surface?.classList.toggle("is-visible", showStart);
-  monacoHost?.classList.toggle("is-start-hidden", showStart || showEmpty);
-  workbench?.classList.toggle("is-start-mode", showStart);
+  settingsSurface?.classList.toggle("is-visible", showSettings);
+  monacoHost?.classList.toggle("is-start-hidden", showStart || showSettings || showEmpty);
+  workbench?.classList.toggle("is-start-mode", showStart || showSettings);
   emptyHost?.classList.toggle("is-visible", showEmpty);
+  if (showSettings) renderSettingsSurface();
 
   const recent = document.getElementById("recentProjects");
   if (!recent) return;
@@ -1600,6 +1927,7 @@ function renderToolbarState() {
   if (statusInjection) statusInjection.textContent = ideState.projectConfig.allowInjection ? "Allow" : "Block";
   if (statusCaps) statusCaps.textContent = String(ideState.projectConfig.capabilities.length);
   renderRuntimeInspector();
+  syncEditorPreferenceControls();
 }
 
 function renderAll() {
@@ -1612,7 +1940,19 @@ function renderAll() {
   updateStatusLine();
 }
 
+function openSettingsTab() {
+  ideState.settingsTabOpen = true;
+  ideState.activeFileId = settingsTabId;
+  ideState.menuOpen = false;
+  renderAll();
+  setEditorModel(null);
+}
+
 function setActivePanel(panel) {
+  if (panel === "settings") {
+    openSettingsTab();
+    return;
+  }
   ideState.activePanel = panel;
   ideState.menuOpen = false;
   renderSidePanel();
@@ -1729,6 +2069,61 @@ async function saveFile(file, forceSaveAs = false) {
 
 async function saveActiveFile(forceSaveAs = false) {
   await saveFile(activeFile(), forceSaveAs);
+}
+
+async function createFileInExplorer() {
+  const relativePath = normalizePath(window.prompt("New file path", "main.wapi") || "").replace(/^\/+/, "");
+  if (!relativePath) return;
+  if (ideState.files.some((file) => normalizePath(file.relativePath).toLowerCase() === relativePath.toLowerCase())) {
+    setStatus("File already exists");
+    return;
+  }
+  const filePath = ideState.projectRoot ? `${normalizePath(ideState.projectRoot)}/${relativePath}` : "";
+  const file = normalizeProjectFile({ name: fileName(relativePath), relativePath, filePath, source: "", originalSource: "", dirty: !filePath });
+  ideState.files = mergeProjectFiles(ideState.files, [file]);
+  openFileInEditor(file.id, false);
+  if (filePath) await saveFile(file, false);
+  renderAll();
+  setEditorModel(file);
+  setStatus("File created");
+}
+
+async function renameActiveFile() {
+  const file = activeFile();
+  if (!file) return;
+  const relativePath = normalizePath(window.prompt("Rename file", file.relativePath) || "").replace(/^\/+/, "");
+  if (!relativePath || relativePath === file.relativePath) return;
+  file.relativePath = relativePath;
+  file.name = fileName(relativePath);
+  file.id = file.filePath || relativePath;
+  if (ideState.projectRoot) {
+    file.filePath = `${normalizePath(ideState.projectRoot)}/${relativePath}`;
+    await saveFile(file, false);
+  }
+  ideState.activeFileId = file.id;
+  if (!ideState.openFileIds.includes(file.id)) ideState.openFileIds.push(file.id);
+  renderAll();
+  setEditorModel(file, true);
+  setStatus("File renamed");
+}
+
+function removeActiveFileFromWorkspace() {
+  const file = activeFile();
+  if (!file || !window.confirm(`Remove ${file.relativePath} from this workspace?`)) return;
+  ideState.files = ideState.files.filter((item) => item.id !== file.id);
+  ideState.openFileIds = ideState.openFileIds.filter((id) => id !== file.id);
+  ideState.activeFileId = ideState.openFileIds.at(-1) ?? (ideState.welcomeTabOpen ? welcomeTabId : null);
+  renderAll();
+  setEditorModel(activeFile());
+  syncDirtyState();
+  setStatus("File removed from workspace");
+}
+
+async function copyActivePath() {
+  const file = activeFile();
+  if (!file) return;
+  await navigator.clipboard?.writeText(file.filePath || file.relativePath);
+  setStatus("Path copied");
 }
 
 async function saveAllFiles() {
@@ -2114,6 +2509,15 @@ function renderWindowBar() {
           <button class="activity-button" type="button" title="Variable watch" data-panel="watch">
             ${iconSvg(SquareCheck)}<span>Watch</span>
           </button>
+          <button class="activity-button" type="button" title="Documentation" data-panel="docs">
+            ${iconSvg(FileText)}<span>Docs</span>
+          </button>
+          <button class="activity-button" type="button" title="Capabilities" data-panel="capabilities">
+            ${iconSvg(ShieldCheck)}<span>Caps</span>
+          </button>
+          <button class="activity-button" type="button" title="Shortcuts" data-panel="shortcuts">
+            ${iconSvg(Terminal)}<span>Keys</span>
+          </button>
           <button class="activity-button" type="button" title="Outline" data-panel="outline">
             ${iconSvg(ListTree)}<span>Outline</span>
           </button>
@@ -2138,6 +2542,10 @@ function renderWindowBar() {
               <button class="menu-item" type="button" data-menu-action="create-project">Create new project</button>
               <button class="menu-item" type="button" data-menu-action="upload-project">Load project</button>
               <button class="menu-item" type="button" data-menu-action="add-files">Add files</button>
+              <button class="menu-item" type="button" data-menu-action="new-file">New file</button>
+              <button class="menu-item" type="button" data-menu-action="rename-file">Rename active file</button>
+              <button class="menu-item" type="button" data-menu-action="copy-path">Copy active path</button>
+              <button class="menu-item" type="button" data-menu-action="remove-file">Remove active file</button>
               <button class="menu-item" type="button" data-menu-action="save-all">Save all</button>
               <button class="menu-item" type="button" data-menu-action="clear-search">Clear search</button>
             </div>
@@ -2153,31 +2561,15 @@ function renderWindowBar() {
 
         <section class="editor-surface" aria-label="Editor">
           <div class="menu-strip" role="toolbar" aria-label="Execution toolbar">
-            <div class="runtime-controls" aria-label="Runtime controls">
-              <label class="runtime-field runtime-mode runtime-compact" title="Runtime mode">
-                <span class="runtime-control-icon">${iconSvg(Activity)}</span>
-                <select id="runtimeMode" aria-label="Runtime mode">
-                  <option value="safe">Safe</option>
-                  <option value="dev">Dev</option>
-                  <option value="unsafe">Unsafe</option>
-                </select>
-              </label>
-              <label class="runtime-field runtime-switch runtime-compact" title="Strict enforcement">
-                <span class="runtime-control-icon strict-control-icon">${iconSvg(ShieldCheck)}</span>
-                <span class="switch-control"><input id="runtimeStrict" type="checkbox" aria-label="Strict enforcement"></span>
-              </label>
-              <label class="runtime-field runtime-switch runtime-compact" title="Injection policy">
-                <span class="runtime-control-icon injection-control-icon">${iconSvg(Syringe)}</span>
-                <span class="switch-control"><input id="runtimeInjection" type="checkbox" aria-label="Allow injection"></span>
-              </label>
-              <label class="runtime-field runtime-caps runtime-compact" title="Capabilities">
-                <span class="runtime-control-icon modules-control-icon">${iconSvg(Database)}</span>
-                <span class="capability-input"><input id="runtimeCapabilities" type="text" spellcheck="false" aria-label="Capabilities" placeholder="proc.list"></span>
-              </label>
-            </div>
+            <div class="toolbar-actions toolbar-actions-compact">
+              <button id="toolbarFind" class="icon-button" type="button" title="Find">${iconSvg(Search)}</button>
+              <button id="toolbarReplace" class="icon-button" type="button" title="Replace">${iconSvg(FileText)}</button>
+              <button id="toolbarRename" class="icon-button" type="button" title="Rename symbol">${iconSvg(FileCode)}</button>
+              <button id="toolbarComment" class="icon-button" type="button" title="Toggle comment">${iconSvg(ListTree)}</button>
+              <button id="toolbarFold" class="icon-button" type="button" title="Fold all">${iconSvg(ChevronRight)}</button>
+              <button id="toolbarFormat" class="icon-button" type="button" title="Format document">${iconSvg(Save)}</button>
 
-            <div class="toolbar-actions">
-
+              <button id="toolbarSettings" class="icon-button" type="button" title="Settings">${iconSvg(Settings)}</button>
               <button id="toolbarCheck" class="toolbar-button toolbar-button-check" type="button" title="Check project">
                 ${iconSvg(ShieldCheck)}<span>Check</span>
               </button>
@@ -2237,6 +2629,7 @@ function renderWindowBar() {
                 </div>
               </div>
             </section>
+            <section id="settingsSurface" class="settings-surface" aria-label="Settings"></section>
             <div id="emptyEditorState" class="empty-editor-state" aria-hidden="true">
               <img src="${wapiIconUrl}" alt="">
             </div>
@@ -2269,6 +2662,7 @@ function renderWindowBar() {
         </div>
         <div class="status-right">
           <span id="statusCursor">Ln 1, Col 1</span>
+          <span id="statusEditorPrefs">13px No wrap</span>
           <span>Spaces: 4</span>
           <span>UTF-8</span>
           <span id="statusLanguage">Wapi</span>
@@ -2391,11 +2785,15 @@ function bindEvents() {
   });
   document.getElementById("toolbarCheck")?.addEventListener("click", () => runWapiCommand("check"));
   document.getElementById("toolbarRun")?.addEventListener("click", () => runWapiCommand("run"));
+  document.getElementById("toolbarSettings")?.addEventListener("click", openSettingsTab);
+  document.getElementById("toolbarFind")?.addEventListener("click", () => runEditorAction("actions.find"));
+  document.getElementById("toolbarReplace")?.addEventListener("click", () => runEditorAction("editor.action.startFindReplaceAction"));
+  document.getElementById("toolbarRename")?.addEventListener("click", () => runEditorAction("editor.action.rename"));
+  document.getElementById("toolbarComment")?.addEventListener("click", () => runEditorAction("editor.action.commentLine"));
+  document.getElementById("toolbarFold")?.addEventListener("click", () => runEditorAction("editor.foldAll"));
+  document.getElementById("toolbarFormat")?.addEventListener("click", () => runEditorAction("editor.action.formatDocument"));
   document.getElementById("statusTerminal")?.addEventListener("click", () => setActiveTool("terminal"));
 
-  ["runtimeMode", "runtimeStrict", "runtimeInjection", "runtimeCapabilities"].forEach((id) => {
-    document.getElementById(id)?.addEventListener(id === "runtimeCapabilities" ? "change" : "input", () => updateRuntimeFromControls("toolbar"));
-  });
 
   document.querySelectorAll(".activity-button[data-panel]").forEach((button) => {
     button.addEventListener("click", () => setActivePanel(button.dataset.panel));
@@ -2406,6 +2804,25 @@ function bindEvents() {
     renderSidePanel();
   });
 
+  document.getElementById("settingsSurface")?.addEventListener("input", (event) => {
+    if (event.target.closest("input, select, textarea")) updateSettingsFromTab();
+  });
+  document.getElementById("settingsSurface")?.addEventListener("change", (event) => {
+    if (event.target.closest("input, select, textarea")) updateSettingsFromTab();
+  });
+  document.getElementById("settingsSurface")?.addEventListener("click", (event) => {
+    const chip = event.target.closest("[data-settings-tab-capability]");
+    if (!chip) return;
+    const caps = new Set(ideState.projectConfig.capabilities);
+    const cap = chip.dataset.settingsTabCapability;
+    if (caps.has(cap)) caps.delete(cap);
+    else caps.add(cap);
+    ideState.projectConfig.capabilities = [...caps].sort();
+    renderSettingsSurface();
+    renderToolbarState();
+    persistProjectConfig();
+    setStatus("Capability updated");
+  });
   document.getElementById("sideContent")?.addEventListener("click", (event) => {
     const folder = event.target.closest("[data-folder-path]");
     if (folder) {
@@ -2483,6 +2900,10 @@ function bindEvents() {
     if (action === "create-project") await openCreateProjectDialog();
     if (action === "upload-project") await uploadProjectIntoExplorer();
     if (action === "add-files") await addFilesToExplorer();
+    if (action === "new-file") await createFileInExplorer();
+    if (action === "rename-file") await renameActiveFile();
+    if (action === "copy-path") await copyActivePath();
+    if (action === "remove-file") removeActiveFileFromWorkspace();
     if (action === "save-all") await saveAllFiles();
     if (action === "clear-search") {
       ideState.searchQuery = "";
@@ -2504,6 +2925,10 @@ function bindEvents() {
         ideState.activeFileId = welcomeTabId;
         renderAll();
         setEditorModel(null);
+      } else if (tab.dataset.tabFile === settingsTabId) {
+        ideState.activeFileId = settingsTabId;
+        renderAll();
+        setEditorModel(null);
       } else {
         openFileInEditor(tab.dataset.tabFile);
       }
@@ -2513,6 +2938,13 @@ function bindEvents() {
   document.getElementById("toolTabs")?.addEventListener("click", (event) => {
     const tab = event.target.closest("[data-tool]");
     if (tab) setActiveTool(tab.dataset.tool);
+  });
+
+  document.getElementById("toolBody")?.addEventListener("change", (event) => {
+    if (event.target.id === "outputFilter") {
+      ideState.outputFilter = event.target.value;
+      renderToolWindow();
+    }
   });
 
   document.getElementById("toolBody")?.addEventListener("click", (event) => {
@@ -2536,6 +2968,11 @@ function bindEvents() {
     if (event.target.closest("#terminalNew")) {
       const shell = document.getElementById("terminalShellChoice")?.value || "powershell";
       createTerminalSession(shell);
+      return;
+    }
+    if (event.target.closest("[data-export-log]")) {
+      exportActiveToolLog();
+      return;
     }
   });
 
@@ -2569,6 +3006,16 @@ function bindEvents() {
       renderRuntimeInspector();
       return;
     }
+    if (event.key === "F2") {
+      event.preventDefault();
+      runEditorAction("editor.action.rename");
+      return;
+    }
+    if (event.key === "F8") {
+      event.preventDefault();
+      runEditorAction("editor.action.marker.next");
+      return;
+    }
     if (!modifier) return;
     const key = event.key.toLowerCase();
     if (key === "s" && event.shiftKey) {
@@ -2577,10 +3024,19 @@ function bindEvents() {
     } else if (key === "s") {
       event.preventDefault();
       await saveActiveFile(false);
+    } else if (key === "f" && event.shiftKey) {
+      event.preventDefault();
+      runEditorAction("editor.action.formatDocument");
     } else if (key === "f") {
       event.preventDefault();
       setActivePanel("search");
       document.getElementById("sideSearch")?.focus();
+    } else if (key === "h") {
+      event.preventDefault();
+      runEditorAction("editor.action.startFindReplaceAction");
+    } else if (key === "/") {
+      event.preventDefault();
+      runEditorAction("editor.action.commentLine");
     }
   });
 

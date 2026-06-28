@@ -3146,3 +3146,150 @@
       .runtime-toggle span,
       .runtime-controls input[type="text"] { display: none !important; }
     }
+
+.editor-pref-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.editor-pref-controls select,
+.mini-toggle {
+  height: 26px;
+  border: 1px solid rgba(230,235,246,.09);
+  border-radius: 5px;
+  background: rgba(11,12,15,.55);
+  color: var(--text-soft);
+}
+.editor-pref-controls select {
+  width: 64px;
+  padding: 0 6px;
+}
+.mini-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.mini-toggle input { margin: 0; accent-color: var(--accent); }
+.toolbar-actions .icon-button { width: 30px; height: 30px; }
+.capability-row.is-active strong { color: var(--accent); }
+.info-row { cursor: default; }
+.tool-log-controls {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.tool-log-controls select,
+.tool-export {
+  height: 26px;
+  border: 1px solid rgba(230,235,246,.1);
+  border-radius: 5px;
+  background: rgba(11,12,15,.6);
+  color: var(--text-soft);
+}
+.tool-log-controls select { padding: 0 8px; }
+.tool-export { padding: 0 10px; cursor: pointer; }
+@media (max-width: 1180px) {
+  .editor-pref-controls { display: none; }
+}
+.workspace,
+.side-panel,
+.editor-surface {
+  min-height: 0;
+  overflow: hidden;
+}
+.side-panel {
+  height: 100%;
+}
+.side-content {
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
+}
+.menu-strip {
+  justify-content: flex-end;
+}
+.toolbar-actions-compact {
+  width: 100%;
+  justify-content: flex-end;
+}
+.settings-surface {
+  position: absolute;
+  inset: 0;
+  display: none;
+  overflow: auto;
+  background: var(--bg);
+}
+.settings-surface.is-visible {
+  display: block;
+}
+.settings-tab-shell {
+  width: min(980px, calc(100% - 44px));
+  margin: 26px auto 42px;
+}
+.settings-tab-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.settings-tab-header strong {
+  color: #f0f3f8;
+  font-size: 22px;
+  font-weight: 760;
+}
+.settings-tab-header span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.settings-tab-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 16px;
+}
+.settings-tab-section {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.settings-tab-section h2 {
+  margin: 0 0 14px;
+  color: #eef2f7;
+  font-size: 13px;
+  font-weight: 760;
+}
+.settings-tab-section-wide {
+  grid-column: 1 / -1;
+}
+.settings-capability-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.settings-tab-section .settings-field + .settings-field,
+.settings-tab-section .settings-field + .settings-toggle,
+.settings-tab-section .settings-toggle + .settings-field,
+.settings-tab-section .settings-toggle + .settings-toggle {
+  margin-top: 10px;
+}
+.settings-tab-section .settings-field textarea {
+  min-height: 96px;
+}
+@media (max-width: 860px) {
+  .settings-tab-grid { grid-template-columns: 1fr; }
+  .settings-tab-shell { width: calc(100% - 24px); margin-top: 16px; }
+}
