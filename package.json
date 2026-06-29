@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Tauri desktop IDE for the Wapi language.",
+  "author": "ethical-tyce",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",

@@ -73,6 +73,8 @@ pub struct SaveResult {
 pub struct ExecuteOptions {
     pub mode: Option<String>,
     #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
     pub allow_injection: bool,
     #[serde(default)]
     pub strict_permissions: bool,

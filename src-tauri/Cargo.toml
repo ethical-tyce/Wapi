@@ -2,7 +2,7 @@
 name = "wapi-ide"
 version = "0.1.0"
 description = "Tauri desktop IDE for the Wapi language"
-authors = ["Wapi contributors"]
+authors = ["ethical-tyce"]
 edition = "2021"
 
 [lib]

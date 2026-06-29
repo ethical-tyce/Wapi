@@ -84,7 +84,31 @@ pub fn locate() -> Option<String> {
     resolve_wapi_executable_inner().map(|path| path.to_string_lossy().into_owned())
 }
 
-fn build_args(command: &str, source: &str, options: &ExecuteOptions) -> Vec<String> {
+fn command_default_timeout_ms(command: &str) -> u64 {
+    if command == "check" {
+        8_000
+    } else {
+        60_000
+    }
+}
+
+fn effective_timeout_ms(command: &str, options: &ExecuteOptions) -> u64 {
+    options
+        .timeout_ms
+        .filter(|timeout| *timeout > 0)
+        .unwrap_or_else(|| command_default_timeout_ms(command))
+}
+
+fn wrapper_timeout(timeout_ms: u64) -> Duration {
+    Duration::from_millis(timeout_ms.saturating_add(2_000))
+}
+
+fn build_args(
+    command: &str,
+    source: &str,
+    options: &ExecuteOptions,
+    timeout_ms: u64,
+) -> Vec<String> {
     let mode = match options.mode.as_deref() {
         Some("dev") => "dev",
         Some("unsafe") => "unsafe",
@@ -95,6 +119,8 @@ fn build_args(command: &str, source: &str, options: &ExecuteOptions) -> Vec<Stri
         source.to_string(),
         "--mode".into(),
         mode.into(),
+        "--timeout".into(),
+        timeout_ms.to_string(),
     ];
     if options.allow_injection {
         args.push("--allow-injection".into());
@@ -274,17 +300,14 @@ pub async fn execute(
             "Wapi.exe was not found. Build the C++ project or set WAPI_EXE to the executable path.",
         ),
         Some(executable) => {
-            let timeout = if command == "check" {
-                Duration::from_secs(8)
-            } else {
-                Duration::from_secs(60)
-            };
+            let timeout_ms = effective_timeout_ms(&command, &payload.options);
+            let timeout = wrapper_timeout(timeout_ms);
             let max_output = if command == "check" {
                 256 * 1024
             } else {
                 1024 * 1024
             };
-            let args = build_args(&command, &payload.source, &payload.options);
+            let args = build_args(&command, &payload.source, &payload.options, timeout_ms);
             tauri::async_runtime::spawn_blocking(move || {
                 run_process(&executable, args, timeout, max_output)
             })
@@ -301,6 +324,40 @@ pub async fn execute(
     Ok(result)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_args_forwards_timeout_to_native_cli() {
+        let options = ExecuteOptions {
+            mode: Some("dev".into()),
+            timeout_ms: Some(1_250),
+            ..Default::default()
+        };
+
+        let args = build_args(
+            "check",
+            "print(1)",
+            &options,
+            effective_timeout_ms("check", &options),
+        );
+
+        assert!(args.windows(2).any(|pair| pair == ["--timeout", "1250"]));
+    }
+
+    #[test]
+    fn effective_timeout_uses_command_defaults_without_payload_timeout() {
+        assert_eq!(
+            effective_timeout_ms("check", &ExecuteOptions::default()),
+            8_000
+        );
+        assert_eq!(
+            effective_timeout_ms("run", &ExecuteOptions::default()),
+            60_000
+        );
+    }
+}
 fn resolve_shell_cwd(requested: Option<String>) -> PathBuf {
     if let Some(path) = requested {
         let path = PathBuf::from(path);

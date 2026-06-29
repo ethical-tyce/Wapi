@@ -108,6 +108,7 @@ private:
     Token peek(size_t offset = 1);
     Token consume();
     Token expect(TokenType type);
+    Token expectNameSegment();
     bool match(TokenType type);
     bool check(TokenType type);
     void consumeStatementEnd();

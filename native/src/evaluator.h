@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <exception>
 #include <memory>
 #include <string>
@@ -33,6 +34,9 @@ struct WapiRuntimeOptions {
     bool noColor = false;
     bool trace = false;
     bool profile = false;
+    bool cliModeExplicit = false;
+    bool cliInjectionExplicit = false;
+    bool cliStrictExplicit = false;
     int timeoutMs = 0;
     int maxSteps = 100000;
     std::string outputFormat = "text";
@@ -55,6 +59,8 @@ public:
 
 private:
     WapiRuntimeOptions options;
+    bool timeoutEnabled = false;
+    std::chrono::steady_clock::time_point timeoutDeadline;
     std::unordered_map<std::string, WapiValue> variables;
     std::unordered_set<std::string> immutableBindings;
     std::unordered_map<std::string, std::shared_ptr<FunctionDeclaration>> userFunctions;
@@ -77,6 +83,7 @@ private:
     WapiValue evalBuiltInFunction(const std::shared_ptr<FunctionCall>& call);
 
     void checkArgCount(const std::shared_ptr<FunctionCall>& call, size_t expected);
+    void enforceTimeout() const;
     std::string modeToString() const;
     std::string nowIso8601() const;
     std::string valueToString(const WapiValue& value) const;

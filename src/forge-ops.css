@@ -1031,3 +1031,79 @@ img.window-wordmark{
 .tool-body>.tool-log-controls{
   display:none;
 }
+
+/* File-level directive controls in the Settings side panel. */
+.script-info-section{
+  gap:12px;
+}
+.script-info-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.script-info-head span,
+.settings-muted{
+  color:#858c85;
+  font-size:12px;
+}
+.script-info-grid{
+  display:grid;
+  grid-template-columns:minmax(58px,auto) 1fr;
+  gap:6px 10px;
+  align-items:center;
+  font-size:12px;
+}
+.script-info-grid span{
+  color:#858c85;
+}
+.script-info-grid strong{
+  color:#d7ddd7;
+  font-weight:600;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.mode-badge{
+  border:1px solid #263026;
+  border-radius:4px;
+  padding:3px 7px;
+  color:#cbd5cb;
+  background:#0b0f0b;
+  font-size:11px;
+  font-weight:700;
+  text-transform:uppercase;
+}
+.mode-safe{border-color:#14532d;color:#4ade80;background:#07130b}
+.mode-dev{border-color:#854d0e;color:#fbbf24;background:#160f04}
+.mode-unsafe{border-color:#7f1d1d;color:#f87171;background:#170707}
+.script-warning{
+  border:1px solid #4a3512;
+  border-radius:5px;
+  padding:8px;
+  color:#fbbf24;
+  background:#160f04;
+  font-size:12px;
+  line-height:1.35;
+}
+.script-capability-cloud{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+}
+.add-cap-directive{
+  height:28px;
+  width:max-content;
+  border:1px solid #1f6b3f;
+  border-radius:5px;
+  padding:0 10px;
+  color:#4ade80;
+  background:#07130b;
+  font:inherit;
+  font-size:12px;
+  cursor:pointer;
+}
+.add-cap-directive:disabled{
+  opacity:.45;
+  cursor:default;
+}

@@ -200,6 +200,116 @@ const wapiFunctionNameRegex = wapiRuntimeFunctions.length
   : /(?!)/;
 const runtimeCapabilities = [...new Set(wapiRuntimeFunctions.map((fn) => fn.capability))].sort();
 
+const directiveDefinitions = [
+  { name: "mode", snippet: "#mode ${1:safe}", detail: "Set script mode floor" },
+  { name: "cap", snippet: "#cap ${1:proc.list}", detail: "Declare a required capability" },
+  { name: "include", snippet: "#include \"${1:path.wapi}\"", detail: "Include another Wapi file" },
+  { name: "name", snippet: "#name \"${1:Script name}\"", detail: "Set script display name" },
+  { name: "version", snippet: "#version \"${1:1.0.0}\"", detail: "Set script version" },
+  { name: "author", snippet: "#author \"${1:ethical-tyce}\"", detail: "Set script author" },
+  { name: "description", snippet: "#description \"${1:Description}\"", detail: "Describe this script" },
+  { name: "strict", snippet: "#strict", detail: "Enable strict capability checks" },
+  { name: "allow-injection", snippet: "#allow-injection", detail: "Allow injection APIs outside unsafe mode" }
+];
+const directiveDocs = new Map(directiveDefinitions.map((directive) => [directive.name, directive.detail]));
+const modeLevel = { safe: 0, dev: 1, unsafe: 2 };
+
+function directiveValue(value = "") {
+  const trimmed = value.trim();
+  const quoted = trimmed.match(/^(["'])(.*)\1$/);
+  return quoted ? quoted[2] : trimmed;
+}
+
+function parseScriptDirectives(source = "") {
+  const directives = {
+    mode: "",
+    capabilities: [],
+    includes: [],
+    strict: false,
+    allowInjection: false,
+    name: "",
+    version: "",
+    author: "",
+    description: "",
+    warnings: []
+  };
+  const caps = new Set();
+  source.replace(/\r\n/g, "\n").split("\n").forEach((line, index) => {
+    const match = line.trim().match(/^#([a-zA-Z][\w-]*)(?:\s+(.*))?$/);
+    if (!match) return;
+    const key = match[1];
+    const value = directiveValue(match[2] ?? "");
+    if (!directiveDocs.has(key)) {
+      directives.warnings.push({ line: index + 1, message: `Unknown directive #${key}` });
+      return;
+    }
+    if (key === "mode") {
+      if (["safe", "dev", "unsafe"].includes(value)) directives.mode = value;
+      else directives.warnings.push({ line: index + 1, message: `Unknown #mode value '${value}'` });
+    } else if (key === "cap") {
+      value.split(/\s+/).map((cap) => cap.trim()).filter(Boolean).forEach((cap) => caps.add(cap));
+    } else if (key === "include") {
+      if (value) directives.includes.push(value);
+    } else if (key === "strict") directives.strict = true;
+    else if (key === "allow-injection") directives.allowInjection = true;
+    else directives[key] = value;
+  });
+  directives.capabilities = [...caps].sort();
+  return directives;
+}
+
+function activeScriptDirectives() {
+  const file = activeFile();
+  if (!file || languageForFile(file) !== "wapi") return parseScriptDirectives("");
+  return parseScriptDirectives(sourceForCommandFile(file));
+}
+
+function runtimeOptionsForSource(source = "") {
+  const directives = parseScriptDirectives(source);
+  const baseMode = ideState.projectConfig.defaultMode;
+  return {
+    mode: directives.mode || baseMode,
+    strictPermissions: ideState.projectConfig.strictPermissions || directives.strict,
+    allowInjection: ideState.projectConfig.allowInjection || directives.allowInjection,
+    capabilities: [...new Set([...ideState.projectConfig.capabilities, ...directives.capabilities])].sort(),
+    jsonOutput: ideState.projectConfig.jsonOutput !== false,
+    directives
+  };
+}
+
+function locateFunctionCall(source, functionName) {
+  if (!functionName) return null;
+  const pattern = new RegExp(`\\b${escapeRegExp(functionName)}\\s*\\(`);
+  const lines = source.replace(/\r\n/g, "\n").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const found = lines[index].match(pattern);
+    if (found) return { line: index + 1, column: found.index + 1, wholeFile: false };
+  }
+  return null;
+}
+
+function directiveInsertLine(source = "") {
+  const lines = source.replace(/\r\n/g, "\n").split("\n");
+  let line = 1;
+  while (line <= lines.length && /^\s*(?:#.*)?$/.test(lines[line - 1])) line += 1;
+  return line;
+}
+
+function insertCapabilityDirective(capability) {
+  if (!capability || !editorState.editor || !editorState.model) return;
+  const source = editorState.model.getValue();
+  const directives = parseScriptDirectives(source);
+  if (directives.capabilities.includes(capability)) return;
+  const line = directiveInsertLine(source);
+  editorState.editor.executeEdits("wapi-directive", [{
+    range: new monaco.Range(line, 1, line, 1),
+    text: `#cap ${capability}\n`
+  }]);
+  editorState.editor.focus();
+  setStatus(`#cap ${capability} added`);
+}
+
+
 function wapiFunctionSignature(fn) {
   const params = fn.params.map((param) => `${param.name}: ${param.type}`).join(", ");
   return `${fn.name}(${params})`;
@@ -228,7 +338,7 @@ function defaultProjectConfig(name = "WapiProject") {
     defaultMode: "safe",
     strictPermissions: true,
     allowInjection: false,
-    capabilities: ["proc.list", "proc.modules"],
+    capabilities: ["runtime.print"],
     jsonOutput: true
   };
 }
@@ -253,7 +363,7 @@ function templateConfig(name, templateId) {
   if (templateId === "process-inspector") {
     return {
       ...base,
-      capabilities: ["proc.list", "proc.modules"]
+      capabilities: ["proc.list", "proc.modules", "runtime.print"]
     };
   }
   if (templateId === "memory-sandbox") {
@@ -268,32 +378,42 @@ function templateConfig(name, templateId) {
         "mem.write",
         "mem.read",
         "mem.free",
-        "proc.handle.close"
+        "proc.handle.close",
+        "runtime.print"
       ]
     };
   }
-  return { ...base, capabilities: ["proc.list"] };
+  return { ...base, capabilities: ["runtime.print"] };
 }
 
 const projectTemplates = [
   {
     id: "empty",
     name: "Empty",
-    note: "A clean Wapi entry file with check-first defaults.",
+    note: "Directive-first starter script with strict safe-mode defaults.",
     source: (name) => [
-      `// ${name}`,
-      "// Check before running runtime actions.",
-      "proc.list()",
+      `#name "${name}"`,
+      "#mode safe",
+      "#strict",
+      "#cap runtime.print",
+      "",
+      `print("${name} ready")`,
       ""
     ].join("\n")
   },
   {
     id: "process-inspector",
     name: "Process Inspector",
-    note: "Process discovery plus module inspection APIs.",
+    note: "Safe process lookup with explicit proc/list/module capabilities.",
     source: (name) => [
-      `// ${name} - Process Inspector`,
-      "var pid = findProcessPID(\"notepad\")",
+      `#name "${name} - Process Inspector"`,
+      "#mode safe",
+      "#strict",
+      "#cap proc.list proc.modules runtime.print",
+      "",
+      "let target = \"notepad\"",
+      "var pid = proc.find(target)",
+      "print(\"{target} pid={pid}\")",
       "proc.modules(pid)",
       "var base = proc.module.base(pid, \"kernel32.dll\")",
       "print(\"kernel32 base={base}\")",
@@ -303,17 +423,22 @@ const projectTemplates = [
   {
     id: "memory-sandbox",
     name: "Memory Sandbox",
-    note: "Memory allocation/read/write flow using allocMemory.",
+    note: "Dev-mode memory flow with mode and capabilities declared in the file.",
     source: (name) => [
-      `// ${name} - Memory Sandbox`,
-      "var pid = findProcessPID(\"notepad\")",
-      "let handle = openProcess(pid)",
-      "let address = allocMemory(handle, 64)",
-      "writeMemory(handle, address, 1234)",
-      "var value = readMemory(handle, address)",
+      `#name "${name} - Memory Sandbox"`,
+      "#mode dev",
+      "#strict",
+      "#cap proc.list proc.open.all_access mem.alloc mem.write mem.read mem.free proc.handle.close runtime.print",
+      "",
+      "let target = \"notepad\"",
+      "var pid = proc.find(target)",
+      "let handle = proc.open(pid)",
+      "let address = mem.alloc(handle, 64)",
+      "mem.write(handle, address, 1234)",
+      "var value = mem.read(handle, address)",
       "print(\"read value={value}\")",
-      "freeMemory(handle, address)",
-      "closeHandle(handle)",
+      "mem.free(handle, address)",
+      "handle.close(handle)",
       ""
     ].join("\n")
   }
@@ -375,14 +500,8 @@ const editorState = {
   diagnosticsToken: 0
 };
 
-function runtimeOptions() {
-  return {
-    mode: ideState.projectConfig.defaultMode,
-    strictPermissions: ideState.projectConfig.strictPermissions,
-    allowInjection: ideState.projectConfig.allowInjection,
-    capabilities: ideState.projectConfig.capabilities,
-    jsonOutput: ideState.projectConfig.jsonOutput !== false
-  };
+function runtimeOptions(source = "") {
+  return runtimeOptionsForSource(source);
 }
 
 function languageForFile(file) {
@@ -855,16 +974,20 @@ async function runWapiCommand(command, { silent = false } = {}) {
   const token = ++editorState.diagnosticsToken;
   const source = sourceForCommandFile(file);
   file.source = source;
+  const runOptions = runtimeOptions(source);
   if (!silent) {
     ideState.activeTool = "output";
     if (command === "run") ideState.outputLines = [];
     appendLines(ideState.outputLines, [`> wapi.exe ${command} ${file.relativePath}`], "command");
-    appendLines(ideState.outputLines, [`Starting ${command} with mode=${runtimeOptions().mode}, strict=${runtimeOptions().strictPermissions ? "on" : "off"}`], "info");
+    appendLines(ideState.outputLines, [`Starting ${command} with mode=${runOptions.mode}, strict=${runOptions.strictPermissions ? "on" : "off"}`], "info");
+    if (runOptions.directives.mode && modeLevel[runOptions.directives.mode] > modeLevel[ideState.projectConfig.defaultMode]) {
+      appendLines(ideState.outputLines, [`Script #mode ${runOptions.directives.mode} is above project mode ${ideState.projectConfig.defaultMode}.`], "warning");
+    }
     renderToolWindow();
   }
 
-  if (!silent) recordRuntimeEvent(`${command === "check" ? "Check" : "Run"} started for ${file.relativePath}`, "pending");
-  const result = await bridge.execute({ command, source, options: runtimeOptions() });
+  if (!silent) recordRuntimeEvent(`${command === "check" ? "Check" : command === "lint" ? "Lint" : "Run"} started for ${file.relativePath}`, "pending");
+  const result = await bridge.execute({ command, source, options: runOptions });
   if (!silent) {
     recordRuntimeResult(command, result, file);
     recordExecutionHistory(command, result, file);
@@ -899,7 +1022,7 @@ function scheduleDiagnostics() {
   window.clearTimeout(editorState.diagnosticsTimer);
   const file = activeFile();
   if (!file || languageForFile(file) !== "wapi") return;
-  editorState.diagnosticsTimer = window.setTimeout(() => runWapiCommand("check", { silent: true }), 850);
+  editorState.diagnosticsTimer = window.setTimeout(() => runWapiCommand("lint", { silent: true }), 850);
 }
 
 function formatWapi(source) {
@@ -917,6 +1040,7 @@ function installMonacoLanguage() {
   monaco.languages.setMonarchTokensProvider("wapi", {
     tokenizer: {
       root: [
+        [/^\s*#(?:mode|cap|include|strict|allow-injection|name|version|author|description)\b/, { token: "keyword.directive", next: "@directiveLine" }],
         [/\/\/.*$/, "comment"],
         [/\/\*/, "comment", "@comment"],
         [/"([^"\\]|\\.)*$/, "string.invalid"],
@@ -940,6 +1064,12 @@ function installMonacoLanguage() {
         [/[^/*]+/, "comment"],
         [/\*\//, "comment", "@pop"],
         [/[/*]/, "comment"]
+      ],
+      directiveLine: [
+        [/"([^"\\]|\\.)*"/, "string"],
+        [/\b(?:safe|dev|unsafe)\b/, "keyword"],
+        [/[a-zA-Z_][\w.]*/, "type.identifier"],
+        [/$/, "", "@pop"]
       ]
     }
   });
@@ -954,6 +1084,7 @@ function installMonacoLanguage() {
     ]
   });
   monaco.languages.registerCompletionItemProvider("wapi", {
+    triggerCharacters: ["#", " ", "\""],
     provideCompletionItems(model, position) {
       const word = model.getWordUntilPosition(position);
       const range = {
@@ -969,6 +1100,27 @@ function installMonacoLanguage() {
         endLineNumber: position.lineNumber,
         endColumn: position.column
       });
+      const trimmedPrefix = linePrefix.trimStart();
+      if (/^#(?:[a-zA-Z-]*)?$/.test(trimmedPrefix)) {
+        return { suggestions: directiveDefinitions.map((directive) => ({
+          label: `#${directive.name}`,
+          kind: monaco.languages.CompletionItemKind.Keyword,
+          detail: directive.detail,
+          insertText: directive.snippet,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          range,
+          sortText: `0_${directive.name}`
+        })) };
+      }
+      if (/^#mode\s+\w*$/.test(trimmedPrefix)) {
+        return { suggestions: ["safe", "dev", "unsafe"].map((mode) => ({ label: mode, kind: monaco.languages.CompletionItemKind.Value, insertText: mode, range })) };
+      }
+      if (/^#cap\s+[\w.]*$/.test(trimmedPrefix)) {
+        return { suggestions: runtimeCapabilities.map((capability) => ({ label: capability, kind: monaco.languages.CompletionItemKind.EnumMember, insertText: capability, range })) };
+      }
+      if (/^#include\s+"[^"]*$/.test(trimmedPrefix)) {
+        return { suggestions: ideState.files.filter((file) => languageForFile(file) === "wapi").map((file) => ({ label: file.relativePath, kind: monaco.languages.CompletionItemKind.File, insertText: file.relativePath, range })) };
+      }
       if (/(?:\?|\.)\.?[a-zA-Z_]*$/.test(linePrefix) && /(?:\.|\?\.)[a-zA-Z_]*$/.test(linePrefix)) {
         return {
           suggestions: wapiMethodFunctions.map((method) => ({
@@ -1064,12 +1216,30 @@ function installMonacoLanguage() {
       return [{ range: model.getFullModelRange(), text: formatWapi(model.getValue()) }];
     }
   });
+  monaco.languages.registerCodeActionProvider("wapi", {
+    provideCodeActions(model, range, context) {
+      const actions = context.markers
+        .map((marker) => marker.message.match(/add #cap ([\w.]+)/)?.[1])
+        .filter(Boolean)
+        .map((capability) => ({
+          title: `Add #cap ${capability}`,
+          kind: "quickfix",
+          edit: {
+            edits: [{ resource: model.uri, edit: { range: new monaco.Range(directiveInsertLine(model.getValue()), 1, directiveInsertLine(model.getValue()), 1), text: `#cap ${capability}
+` } }]
+          },
+          isPreferred: true
+        }));
+      return { actions, dispose() {} };
+    }
+  });
   monaco.editor.defineTheme("wapi-dark", {
     base: "vs-dark",
     inherit: true,
     rules: [
       { token: "comment", foreground: "6b7280", fontStyle: "italic" },
       { token: "keyword", foreground: "4ade80", fontStyle: "bold" },
+      { token: "keyword.directive", foreground: "22c55e", fontStyle: "bold" },
       { token: "type.identifier", foreground: "38bdf8" },
       { token: "identifier", foreground: "d6d3d1" },
       { token: "string", foreground: "fbbf24" },
@@ -1164,7 +1334,7 @@ async function maybeAutoSaveActiveFile() {
   const file = activeFile();
   if (!file || !ideState.editorPreferences.autoSave || !file.filePath || !isDirty(file)) return;
   await saveFile(file, false);
-  if (ideState.editorPreferences.runOnSave && languageForFile(file) === "wapi") await runWapiCommand("check", { silent: true });
+  if (ideState.editorPreferences.runOnSave && languageForFile(file) === "wapi") await runWapiCommand("lint", { silent: true });
 }
 
 function scheduleAutoSave() {
@@ -1554,10 +1724,11 @@ function renderSidePanel() {
   if (ideState.activePanel === "docs") {
     if (meta) meta.textContent = `${wapiRuntimeFunctions.length} callable entries`;
     const docs = [
-      ["Language", "var/let/const inference, interpolation, return annotations, separators, match, structs, named args, methods, ?., ??."],
-      ["Strings", "Global helpers plus method form: text.len(), text.contains(value), text.trim(), items.push(value)."],
-      ["Checks", "Use Check for preflight. Problems are mapped back into Monaco markers when the runtime reports line/column data."],
-      ["Runtime", "Capabilities stay explicit. Safe mode blocks dangerous process, memory, injection, debug, and token operations."]
+      ["Directives", "Start scripts with #mode, #strict, #cap, #include, and metadata. Settings shows the active script directive summary."],
+      ["Language", "var/let/const inference, interpolation, typed returns, match, structs, named args, methods, ternary, ?., and ??."],
+      ["Strings", "Use interpolation with {expr}; helpers also work as methods: text.len(), text.contains(value), text.trim()."],
+      ["Checks", "Diagnostics use wapi lint, so missing or unused #cap declarations become Monaco warnings without running the script."],
+      ["Runtime", "Capabilities stay explicit. Prefer dotted aliases like proc.find, proc.modules, mem.read, and window.find."]
     ];
     for (const [title, note] of docs) {
       const row = document.createElement("div");
@@ -1630,10 +1801,10 @@ function renderSidePanel() {
   if (ideState.activePanel === "templates") {
     if (meta) meta.textContent = "Script snippets";
     const snippets = [
-      ["poll-loop", "Polling loop", "while loop with break-ready counter"],
-      ["function-helper", "Typed function", "func, typed args, return value"],
-      ["array-scan", "Array loop", "push, len, for range"],
-      ["safe-process", "Process lookup", "find process and print PID"]
+      ["poll-loop", "Polling loop", "while loop with counter and interpolation"],
+      ["function-helper", "Typed function", "typed args, named call, interpolated return"],
+      ["array-scan", "Array loop", "method push, len, indexed reads, for range"],
+      ["safe-process", "Process lookup", "proc.find alias and interpolated PID output"]
     ];
     for (const [id, title, note] of snippets) {
       const button = document.createElement("button");
@@ -1676,6 +1847,7 @@ function renderSidePanel() {
     return;
   }
 
+  renderScriptInfo(content);
   renderProjectSettings(content);
   if (meta) meta.textContent = ideState.projectRoot ? "Project settings" : "Runtime defaults";
 }
@@ -1689,6 +1861,49 @@ function renderPanelEmpty(parent, label, message) {
   text.textContent = message;
   wrap.append(title, text);
   parent.appendChild(wrap);
+}
+
+
+function renderScriptInfo(parent) {
+  const file = activeFile();
+  const directives = activeScriptDirectives();
+  const projectMode = ideState.projectConfig.defaultMode;
+  const scriptMode = directives.mode || projectMode;
+  const section = document.createElement("section");
+  section.className = "settings-section script-info-section";
+  if (!file || languageForFile(file) !== "wapi") {
+    section.innerHTML = `
+      <div class="script-info-head"><strong>Script Info</strong><span>No Wapi script active</span></div>
+    `;
+    parent.appendChild(section);
+    return;
+  }
+  const source = sourceForCommandFile(file);
+  const usedCaps = usedCapabilitiesForSource(source);
+  const missingUsedCaps = usedCaps.filter((capability) => !directives.capabilities.includes(capability));
+  const fallbackCaps = runtimeCapabilities.filter((capability) => !directives.capabilities.includes(capability));
+  const nextCap = missingUsedCaps[0] || fallbackCaps[0] || "";
+  const modeWarning = directives.mode && modeLevel[directives.mode] > modeLevel[projectMode]
+    ? `<div class="script-warning">#mode ${directives.mode} is above project mode ${projectMode}; Run and Check will use ${directives.mode} for this file.</div>`
+    : "";
+  section.innerHTML = `
+    <div class="script-info-head">
+      <strong>Script Info</strong>
+      <span class="mode-badge mode-${scriptMode}">#mode ${scriptMode}</span>
+    </div>
+    <div class="script-info-grid">
+      <span>Name</span><strong>${escapeHtml(directives.name || file.name)}</strong>
+      <span>Version</span><strong>${escapeHtml(directives.version || "-")}</strong>
+      <span>Author</span><strong>${escapeHtml(directives.author || "-")}</strong>
+      <span>Includes</span><strong>${directives.includes.length || 0}</strong>
+    </div>
+    ${modeWarning}
+    <div class="script-capability-cloud">
+      ${directives.capabilities.length ? directives.capabilities.map((capability) => `<span class="capability-chip is-active">${escapeHtml(capability)}</span>`).join("") : `<span class="settings-muted">No #cap directives</span>`}
+    </div>
+    <button class="add-cap-directive" type="button" data-add-script-cap="${nextCap}" ${nextCap ? "" : "disabled"}>+ Add #cap${nextCap ? ` ${escapeHtml(nextCap)}` : ""}</button>
+  `;
+  parent.appendChild(section);
 }
 
 function renderProjectSettings(parent) {
@@ -2286,12 +2501,11 @@ function insertTemplateSnippet(templateId) {
       ""
     ].join("\n"),
     "function-helper": [
-      "func ${1:add}(int ${2:a}, int ${3:b}) -> int {",
-      "    return ${2:a} + ${3:b}",
+      "func ${1:describe}(string name, int value) -> string {",
+      "    return \"{name}={value}\"",
       "}",
       "",
-      "var result = ${1:add}(1, 2)",
-      "print(result)",
+      "print(${1:describe}(name: \"pid\", value: 1234))",
       ""
     ].join("\n"),
     "array-scan": [
@@ -2299,15 +2513,15 @@ function insertTemplateSnippet(templateId) {
       "values.push(10)",
       "values.push(20)",
       "for i in range(values.len()) {",
-      "    var current = values[i]",
+      "    let current = values[i]",
       "    print(\"value {i}: {current}\")",
       "}",
       ""
     ].join("\n"),
     "safe-process": [
       "let target = \"notepad\"",
-      "var pid = findProcessPID(target)",
-      "print(\"pid is {pid}\")",
+      "var pid = proc.find(target)",
+      "print(\"{target} pid={pid}\")",
       ""
     ].join("\n")
   };
@@ -2332,7 +2546,7 @@ async function refreshProcessExplorer() {
   renderSidePanel();
   const result = await bridge.execute({
     command: "check",
-    source: "listProcesses()",
+    source: "proc.list()",
     options: { ...runtimeOptions(), strictPermissions: false, capabilities: [...new Set([...runtimeOptions().capabilities, "proc.list"])] }
   });
   ideState.processExplorer.loading = false;
@@ -2985,6 +3199,14 @@ function bindEvents() {
     const fn = event.target.closest("[data-insert-function]");
     if (fn) {
       insertFunctionSnippet(fn.dataset.insertFunction);
+      return;
+    }
+
+    const addScriptCap = event.target.closest("[data-add-script-cap]");
+    if (addScriptCap) {
+      const capability = addScriptCap.dataset.addScriptCap || runtimeCapabilities.find((cap) => !activeScriptDirectives().capabilities.includes(cap));
+      insertCapabilityDirective(capability);
+      renderSidePanel();
       return;
     }
 

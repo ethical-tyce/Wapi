@@ -17,6 +17,7 @@
 #include <thread>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -54,19 +55,30 @@ void printUsage() {
         << "  --verbose                Enable verbose CLI status.\n"
         << "  --trace                  Print a CLI trace line before execution.\n"
         << "  --profile                Print elapsed execution time.\n"
-        << "  --timeout <ms>           Parsed for wrappers; native calls are not interrupted yet.\n"
+        << "  --timeout <ms>           Stop script execution after this many milliseconds.\n"
         << "  --max-steps <n>          Override loop guard iteration limit.\n"
         << "  --env KEY=VALUE          Set an environment variable for this run.\n"
         << "  --dry-run                Alias for check/preflight mode.\n"
         << "  --watch                  Accepted by run/check for editor integrations.\n"
+        << "\n"
+        << "File directives (top of any .wapi file, before any code):\n"
+        << "  #mode safe|dev|unsafe        Minimum mode this script requires.\n"
+        << "  #cap <name> [<name>...]      Capability or capabilities this script uses.\n"
+        << "  #include \"path/to/file.wapi\" Include another file (preferred over inline include).\n"
+        << "  #strict                      Treat missing capabilities as errors.\n"
+        << "  #allow-injection             Enable injection helpers for this script.\n"
+        << "  #name \"My Script\"            Script display name.\n"
+        << "  #version \"1.0.0\"             Script version string.\n"
+        << "  #author \"ethical-tyce\"       Script author.\n"
+        << "  #description \"...\"           One-line description shown in wapi doc output.\n"
         << "\n"
         << "Syntax highlights:\n"
         << "  var/let/const inference, {expr} string interpolation, -> return types, match, structs, ?. and ??.\n"
         << "  Methods: text.len(), text.contains(value), items.push(value), items.pop().\n"
         << "\n"
         << "Examples:\n"
-        << "  wapi run \"int pid = findProcessPID(\\\"notepad\\\")\" --mode safe\n"
-        << "  wapi check script.wapi --quiet --max-steps 1000\n"
+        << "  wapi lint script.wapi --mode safe\n"
+        << "  wapi check script.wapi --mode safe --strict-permissions\n"
         << "  type script.wapi | wapi run -\n";
 }
 
@@ -75,6 +87,50 @@ WapiMode parseMode(const std::string& value) {
     if (value == "dev") return WapiMode::Dev;
     if (value == "unsafe") return WapiMode::Unsafe;
     throw std::runtime_error("Invalid mode: " + value + " (expected safe|dev|unsafe)");
+}
+
+std::string modeToDirectiveString(WapiMode mode) {
+    if (mode == WapiMode::Dev) return "dev";
+    if (mode == WapiMode::Unsafe) return "unsafe";
+    return "safe";
+}
+
+struct ScriptDirectives {
+    bool hasMode = false;
+    WapiMode mode = WapiMode::Safe;
+    std::unordered_set<std::string> capabilities;
+    std::vector<std::string> includes;
+    bool allowInjection = false;
+    bool strict = false;
+    std::string name;
+    std::string version;
+    std::string author;
+    std::string description;
+};
+
+struct ExtractResult {
+    std::string source;
+    ScriptDirectives directives;
+};
+
+struct ResolvedSource {
+    std::string source;
+    ScriptDirectives directives;
+};
+
+void mergeDirectives(ScriptDirectives& target, const ScriptDirectives& incoming) {
+    if (incoming.hasMode) {
+        target.hasMode = true;
+        target.mode = incoming.mode;
+    }
+    target.capabilities.insert(incoming.capabilities.begin(), incoming.capabilities.end());
+    target.includes.insert(target.includes.end(), incoming.includes.begin(), incoming.includes.end());
+    target.allowInjection = target.allowInjection || incoming.allowInjection;
+    target.strict = target.strict || incoming.strict;
+    if (!incoming.name.empty()) target.name = incoming.name;
+    if (!incoming.version.empty()) target.version = incoming.version;
+    if (!incoming.author.empty()) target.author = incoming.author;
+    if (!incoming.description.empty()) target.description = incoming.description;
 }
 
 WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool checkOnly) {
@@ -92,14 +148,17 @@ WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool check
         if (args[i] == "--mode") {
             if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --mode");
             options.mode = parseMode(args[++i]);
+            options.cliModeExplicit = true;
             continue;
         }
         if (args[i] == "--allow-injection") {
             options.allowInjection = true;
+            options.cliInjectionExplicit = true;
             continue;
         }
         if (args[i] == "--strict-permissions") {
             options.strictPermissions = true;
+            options.cliStrictExplicit = true;
             continue;
         }
         if (args[i] == "--json") {
@@ -143,6 +202,7 @@ WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool check
         if (args[i] == "--timeout") {
             if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --timeout");
             options.timeoutMs = std::stoi(args[++i]);
+            if (options.timeoutMs < 0) throw std::runtime_error("Invalid --timeout value: expected >= 0");
             continue;
         }
         if (args[i] == "--max-steps") {
@@ -171,18 +231,28 @@ WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool check
     return options;
 }
 
+std::string stripUtf8Bom(std::string value) {
+    if (value.size() >= 3 &&
+        static_cast<unsigned char>(value[0]) == 0xEF &&
+        static_cast<unsigned char>(value[1]) == 0xBB &&
+        static_cast<unsigned char>(value[2]) == 0xBF) {
+        value.erase(0, 3);
+    }
+    return value;
+}
+
 std::string readTextFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) throw std::runtime_error("Could not read file: " + path.string());
     std::ostringstream buffer;
     buffer << file.rdbuf();
-    return buffer.str();
+    return stripUtf8Bom(buffer.str());
 }
 
 std::string readStdin() {
     std::ostringstream buffer;
     buffer << std::cin.rdbuf();
-    return buffer.str();
+    return stripUtf8Bom(buffer.str());
 }
 
 void writeTextFileIfMissing(const std::filesystem::path& path, const std::string& content) {
@@ -196,7 +266,15 @@ void writeTextFileIfMissing(const std::filesystem::path& path, const std::string
 void runInit(const std::filesystem::path& dir) {
     std::filesystem::create_directories(dir / "src");
     writeTextFileIfMissing(dir / "wapi.toml", "mode = \"safe\"\nentry = \"src/main.wapi\"\n");
-    writeTextFileIfMissing(dir / "src" / "main.wapi", "print(\"hello from wapi\")\n");
+    writeTextFileIfMissing(
+        dir / "src" / "main.wapi",
+        "#name \"Wapi starter\"\n"
+        "#mode safe\n"
+        "#strict\n"
+        "#cap runtime.print\n"
+        "\n"
+        "print(\"hello from wapi\")\n"
+    );
     std::cout << "Initialized Wapi project at " << std::filesystem::weakly_canonical(dir).string() << "\n";
 }
 
@@ -245,18 +323,83 @@ std::string trimCopy(const std::string& value) {
     return value.substr(start, end - start + 1);
 }
 
+
+ExtractResult extractDirectives(const std::string& raw) {
+    ScriptDirectives dir;
+    std::ostringstream cleaned;
+    std::istringstream in(raw);
+    std::string line;
+
+    while (std::getline(in, line)) {
+        const std::string trimmed = trimCopy(line);
+        if (trimmed.empty()) {
+            cleaned << '\n';
+            continue;
+        }
+        if (trimmed[0] != '#') {
+            cleaned << line << '\n';
+            break;
+        }
+
+        const std::string rest = trimCopy(trimmed.substr(1));
+        if (rest.rfind("mode ", 0) == 0) {
+            dir.hasMode = true;
+            dir.mode = parseMode(trimCopy(rest.substr(5)));
+        }
+        else if (rest.rfind("cap ", 0) == 0) {
+            std::istringstream caps(rest.substr(4));
+            std::string cap;
+            while (caps >> cap) dir.capabilities.insert(cap);
+        }
+        else if (rest.rfind("include \"", 0) == 0 && rest.size() > 10 && rest.back() == '"') {
+            dir.includes.push_back(rest.substr(9, rest.size() - 10));
+        }
+        else if (rest == "strict") {
+            dir.strict = true;
+        }
+        else if (rest == "allow-injection") {
+            dir.allowInjection = true;
+        }
+        else if (rest.rfind("name \"", 0) == 0 && rest.back() == '"') {
+            dir.name = rest.substr(6, rest.size() - 7);
+        }
+        else if (rest.rfind("version \"", 0) == 0 && rest.back() == '"') {
+            dir.version = rest.substr(9, rest.size() - 10);
+        }
+        else if (rest.rfind("author \"", 0) == 0 && rest.back() == '"') {
+            dir.author = rest.substr(8, rest.size() - 9);
+        }
+        else if (rest.rfind("description \"", 0) == 0 && rest.back() == '"') {
+            dir.description = rest.substr(13, rest.size() - 14);
+        }
+        else {
+            std::cerr << "[WAPI_WARN] unknown directive: #" << rest << '\n';
+            cleaned << "// #" << rest << '\n';
+            continue;
+        }
+        cleaned << '\n';
+    }
+
+    while (std::getline(in, line)) cleaned << line << '\n';
+    return { cleaned.str(), dir };
+}
+
 std::string expandIncludes(const std::string& source, const std::filesystem::path& baseDir, std::unordered_set<std::string>& seen) {
     std::ostringstream out;
     std::istringstream input(source);
     std::string line;
     while (std::getline(input, line)) {
         const std::string trimmed = trimCopy(line);
-        if (trimmed.rfind("include \"", 0) == 0 && trimmed.size() > 10 && trimmed.back() == '"') {
-            std::filesystem::path includePath = baseDir / trimmed.substr(9, trimmed.size() - 10);
+        const bool isOldStyle = trimmed.rfind("include \"", 0) == 0 && trimmed.size() > 10 && trimmed.back() == '"';
+        const bool isNewStyle = trimmed.rfind("#include \"", 0) == 0 && trimmed.size() > 11 && trimmed.back() == '"';
+        if (isOldStyle || isNewStyle) {
+            const size_t skip = isOldStyle ? 9 : 10;
+            std::filesystem::path includePath = baseDir / trimmed.substr(skip, trimmed.size() - skip - 1);
             includePath = std::filesystem::weakly_canonical(includePath);
             const std::string key = includePath.string();
             if (!seen.insert(key).second) throw std::runtime_error("E_INCLUDE_CYCLE: " + key);
-            out << expandIncludes(readTextFile(includePath), includePath.parent_path(), seen) << "\n";
+            const ExtractResult nested = extractDirectives(readTextFile(includePath));
+            out << expandIncludes(nested.source, includePath.parent_path(), seen) << "\n";
             continue;
         }
         out << line << "\n";
@@ -264,22 +407,59 @@ std::string expandIncludes(const std::string& source, const std::filesystem::pat
     return out.str();
 }
 
-std::string resolveSourceArgument(const std::string& argument) {
-    if (argument == "-") return readStdin();
-    std::filesystem::path path(argument);
+ResolvedSource resolveSourceWithDirectives(const std::string& argument, const std::filesystem::path& cwd) {
+    std::string raw;
+    std::filesystem::path baseDir = cwd;
     std::unordered_set<std::string> seen;
-    if (std::filesystem::exists(path) && std::filesystem::is_regular_file(path)) {
-        path = std::filesystem::weakly_canonical(path);
-        seen.insert(path.string());
-        return expandIncludes(readTextFile(path), path.parent_path(), seen);
+
+    if (argument == "-") {
+        raw = readStdin();
     }
-    return expandIncludes(argument, std::filesystem::current_path(), seen);
+    else {
+        std::filesystem::path path(argument);
+        if (std::filesystem::exists(path) && std::filesystem::is_regular_file(path)) {
+            path = std::filesystem::weakly_canonical(path);
+            baseDir = path.parent_path();
+            seen.insert(path.string());
+            raw = readTextFile(path);
+        }
+        else {
+            raw = argument;
+        }
+    }
+
+    ExtractResult extracted = extractDirectives(raw);
+    ScriptDirectives directives = extracted.directives;
+    std::ostringstream withIncludes;
+    for (const auto& inc : directives.includes) {
+        std::filesystem::path incPath = std::filesystem::weakly_canonical(baseDir / inc);
+        const std::string key = incPath.string();
+        if (!seen.insert(key).second) throw std::runtime_error("E_INCLUDE_CYCLE: " + key);
+        ExtractResult nested = extractDirectives(readTextFile(incPath));
+        mergeDirectives(directives, nested.directives);
+        withIncludes << expandIncludes(nested.source, incPath.parent_path(), seen) << '\n';
+    }
+    withIncludes << expandIncludes(extracted.source, baseDir, seen);
+    return { withIncludes.str(), directives };
+}
+
+std::string resolveSourceArgument(const std::string& argument) {
+    return resolveSourceWithDirectives(argument, std::filesystem::current_path()).source;
+}
+
+ResolvedSource resolveSourceArgumentsWithDirectives(const std::vector<std::string>& arguments) {
+    std::ostringstream source;
+    ScriptDirectives directives;
+    for (const auto& argument : arguments) {
+        ResolvedSource resolved = resolveSourceWithDirectives(argument, std::filesystem::current_path());
+        source << resolved.source << "\n";
+        mergeDirectives(directives, resolved.directives);
+    }
+    return { source.str(), directives };
 }
 
 std::string resolveSourceArguments(const std::vector<std::string>& arguments) {
-    std::ostringstream source;
-    for (const auto& argument : arguments) source << resolveSourceArgument(argument) << "\n";
-    return source.str();
+    return resolveSourceArgumentsWithDirectives(arguments).source;
 }
 
 std::string formatSource(const std::string& source) {
@@ -287,8 +467,16 @@ std::string formatSource(const std::string& source) {
     std::istringstream input(source);
     std::string line;
     int depth = 0;
+    bool inDirectiveBlock = true;
     while (std::getline(input, line)) {
         std::string trimmed = trimCopy(line);
+        if (inDirectiveBlock) {
+            if (trimmed.empty() || trimmed[0] == '#') {
+                out << line << "\n";
+                continue;
+            }
+            inDirectiveBlock = false;
+        }
         if (trimmed.empty()) { out << "\n"; continue; }
         if (!trimmed.empty() && trimmed[0] == '}') depth = (std::max)(0, depth - 1);
         out << std::string(static_cast<size_t>(depth * 4), ' ') << trimmed << "\n";
@@ -317,7 +505,8 @@ void printFunctionHelp(const std::string& name) {
         {"print", "print(value)", "Write a value to stdout."},
         {"syntax", "var x = 1_000; let y = \"x={x}\"; match x { _ => print(y) }", "Language syntax overview."},
         {"methods", "text.len(), items.push(value), maybe?.len() ?? 0", "Method call and null-safe syntax."},
-        {"struct", "struct Point { int x } Point p = Point { x: 1 }", "Declare and instantiate structured values."}
+        {"struct", "struct Point { int x } Point p = Point { x: 1 }", "Declare and instantiate structured values."},
+        {"directives", "#mode dev\n#cap proc.list runtime.print\n#include \"helpers.wapi\"\n#strict", "File-level directives must appear before code. CLI flags override conflicting file defaults."}
     };
     if (name.empty()) {
         std::cout << "Available help topics:\n";
@@ -332,13 +521,138 @@ void printFunctionHelp(const std::string& name) {
     }
     std::cout << "No built-in help for " << name << ". Runtime WinAPI calls are listed in the IDE Functions panel.\n";
 }
-void runScript(const std::string& source, const WapiRuntimeOptions& options) {
+
+const std::unordered_map<std::string, std::string>& functionCapabilities() {
+    static const std::unordered_map<std::string, std::string> caps = {
+        {"print", "runtime.print"}, {"findProcessPID", "proc.list"}, {"listProcesses", "proc.list"}, {"openProcess", "proc.open.all_access"},
+        {"terminateProcess", "proc.terminate"}, {"suspendProcess", "proc.suspend"}, {"resumeProcess", "proc.resume"}, {"closeProcess", "proc.close"},
+        {"readMemory", "mem.read"}, {"writeMemory", "mem.write"}, {"allocMemory", "mem.alloc"}, {"freeMemory", "mem.free"},
+        {"listModules", "proc.modules"}, {"getModuleBase", "proc.modules"}, {"getModuleBaseAddress", "proc.modules"}, {"getModuleSize", "proc.modules"},
+        {"protectMemory", "mem.protect"}, {"queryMemory", "mem.query"}, {"listThreads", "thread.list"}, {"openThread", "thread.open"},
+        {"suspendThread", "thread.suspend"}, {"resumeThread", "thread.resume"}, {"getThreadContext", "debug.registers"}, {"setThreadContext", "thread.context.write"},
+        {"injectShellcode", "inject.shellcode"}, {"createRemoteThread", "inject.shellcode"}, {"listWindowsByPID", "window.pid"}, {"findWindowByPID", "window.pid"},
+        {"sendWindowMessage", "window.message"}, {"debugAttach", "debug.attach"}, {"debugWaitEvent", "debug.attach"}, {"debugReadRegisters", "debug.registers"},
+        {"debugContinue", "debug.attach"}, {"openProcessToken", "token.open"}, {"enablePrivilege", "token.privilege"}, {"closeHandle", "proc.handle.close"},
+        {"findWindow", "window.find"}, {"injectDLL", "inject.dll"}, {"testInjectDLL", "inject.dll"},
+        {"proc.find", "proc.list"}, {"proc.list", "proc.list"}, {"proc.open", "proc.open.all_access"}, {"proc.terminate", "proc.terminate"},
+        {"proc.suspend", "proc.suspend"}, {"proc.resume", "proc.resume"}, {"proc.close", "proc.close"}, {"proc.modules", "proc.modules"},
+        {"proc.moduleBase", "proc.modules"}, {"proc.module.base", "proc.modules"}, {"proc.module.size", "proc.modules"},
+        {"mem.read", "mem.read"}, {"mem.write", "mem.write"}, {"mem.alloc", "mem.alloc"}, {"mem.free", "mem.free"},
+        {"mem.protect", "mem.protect"}, {"mem.query", "mem.query"}, {"thread.list", "thread.list"}, {"thread.open", "thread.open"},
+        {"thread.suspend", "thread.suspend"}, {"thread.resume", "thread.resume"}, {"thread.context", "debug.registers"}, {"thread.context.set", "thread.context.write"},
+        {"window.listByPid", "window.pid"}, {"window.findByPid", "window.pid"}, {"window.message", "window.message"},
+        {"inject.shellcode", "inject.shellcode"}, {"inject.thread", "inject.shellcode"}, {"debug.attach", "debug.attach"}, {"debug.wait", "debug.attach"},
+        {"debug.registers", "debug.registers"}, {"debug.continue", "debug.attach"}, {"token.open", "token.open"}, {"token.privilege", "token.privilege"},
+        {"handle.close", "proc.handle.close"}, {"window.find", "window.find"}, {"inject.dll", "inject.dll"}, {"inject.testDll", "inject.dll"},
+        {"inject.test", "inject.dll"}, {"testInjectDll", "inject.dll"},
+        {"len", "language.core"}, {"substr", "language.string"}, {"contains", "language.string"}, {"replace", "language.string"}, {"toLower", "language.string"},
+        {"toInt", "language.string"}, {"abs", "language.math"}, {"min", "language.math"}, {"max", "language.math"}, {"push", "language.array"},
+        {"pop", "language.array"}, {"typeof", "language.core"}, {"assert", "language.core"}, {"toHex", "language.string"}, {"fromHex", "language.string"},
+        {"split", "language.string"}, {"trim", "language.string"}, {"padLeft", "language.string"}, {"padRight", "language.string"}, {"sort", "language.array"},
+        {"size", "language.core"}, {"toUpper", "language.string"}, {"startsWith", "language.string"}, {"endsWith", "language.string"},
+        {"first", "language.array"}, {"last", "language.array"}
+    };
+    return caps;
+}
+
+void collectFunctionCalls(const std::shared_ptr<ASTNode>& node, std::unordered_set<std::string>& calls) {
+    if (!node) return;
+    if (auto program = std::dynamic_pointer_cast<Program>(node)) {
+        for (const auto& stmt : program->statements) collectFunctionCalls(stmt, calls);
+    }
+    else if (auto call = std::dynamic_pointer_cast<FunctionCall>(node)) {
+        calls.insert(call->name);
+        for (const auto& arg : call->args) collectFunctionCalls(arg, calls);
+        for (const auto& arg : call->namedArgs) collectFunctionCalls(arg.value, calls);
+    }
+    else if (auto method = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+        calls.insert(method->method);
+        collectFunctionCalls(method->target, calls);
+        for (const auto& arg : method->args) collectFunctionCalls(arg, calls);
+        for (const auto& arg : method->namedArgs) collectFunctionCalls(arg.value, calls);
+    }
+    else if (auto ns = std::dynamic_pointer_cast<NullSafeCallExpression>(node)) {
+        calls.insert(ns->method);
+        collectFunctionCalls(ns->target, calls);
+        for (const auto& arg : ns->args) collectFunctionCalls(arg, calls);
+        for (const auto& arg : ns->namedArgs) collectFunctionCalls(arg.value, calls);
+    }
+    else if (auto unary = std::dynamic_pointer_cast<UnaryExpression>(node)) collectFunctionCalls(unary->value, calls);
+    else if (auto binary = std::dynamic_pointer_cast<BinaryExpression>(node)) { collectFunctionCalls(binary->left, calls); collectFunctionCalls(binary->right, calls); }
+    else if (auto nullish = std::dynamic_pointer_cast<NullCoalesceExpression>(node)) { collectFunctionCalls(nullish->left, calls); collectFunctionCalls(nullish->right, calls); }
+    else if (auto ternary = std::dynamic_pointer_cast<TernaryExpression>(node)) { collectFunctionCalls(ternary->condition, calls); collectFunctionCalls(ternary->whenTrue, calls); collectFunctionCalls(ternary->whenFalse, calls); }
+    else if (auto decl = std::dynamic_pointer_cast<VarDeclaration>(node)) collectFunctionCalls(decl->value, calls);
+    else if (auto assignment = std::dynamic_pointer_cast<Assignment>(node)) collectFunctionCalls(assignment->value, calls);
+    else if (auto field = std::dynamic_pointer_cast<FieldAssignment>(node)) { collectFunctionCalls(field->target, calls); collectFunctionCalls(field->value, calls); }
+    else if (auto index = std::dynamic_pointer_cast<IndexAssignment>(node)) { collectFunctionCalls(index->index, calls); collectFunctionCalls(index->value, calls); }
+    else if (auto block = std::dynamic_pointer_cast<BlockStatement>(node)) { for (const auto& stmt : block->statements) collectFunctionCalls(stmt, calls); }
+    else if (auto fn = std::dynamic_pointer_cast<FunctionDeclaration>(node)) collectFunctionCalls(fn->body, calls);
+    else if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) { collectFunctionCalls(ifs->condition, calls); collectFunctionCalls(ifs->thenBranch, calls); collectFunctionCalls(ifs->elseBranch, calls); }
+    else if (auto wh = std::dynamic_pointer_cast<WhileStatement>(node)) { collectFunctionCalls(wh->condition, calls); collectFunctionCalls(wh->body, calls); }
+    else if (auto fr = std::dynamic_pointer_cast<ForRangeStatement>(node)) { collectFunctionCalls(fr->start, calls); collectFunctionCalls(fr->end, calls); collectFunctionCalls(fr->step, calls); collectFunctionCalls(fr->body, calls); }
+    else if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) collectFunctionCalls(ret->value, calls);
+    else if (auto tc = std::dynamic_pointer_cast<TryCatchStatement>(node)) { collectFunctionCalls(tc->tryBlock, calls); collectFunctionCalls(tc->catchBlock, calls); }
+    else if (auto match = std::dynamic_pointer_cast<MatchStatement>(node)) {
+        collectFunctionCalls(match->subject, calls);
+        for (const auto& arm : match->arms) { collectFunctionCalls(arm.pattern.value, calls); collectFunctionCalls(arm.guard, calls); collectFunctionCalls(arm.body, calls); }
+    }
+    else if (auto literal = std::dynamic_pointer_cast<StructLiteral>(node)) { for (const auto& field : literal->fields) collectFunctionCalls(field.value, calls); }
+    else if (auto access = std::dynamic_pointer_cast<FieldAccessExpression>(node)) collectFunctionCalls(access->target, calls);
+    else if (auto array = std::dynamic_pointer_cast<ArrayLiteral>(node)) { for (const auto& item : array->items) collectFunctionCalls(item, calls); }
+    else if (auto index = std::dynamic_pointer_cast<IndexExpression>(node)) { collectFunctionCalls(index->target, calls); collectFunctionCalls(index->index, calls); }
+}
+
+void emitLintWarnings(const std::shared_ptr<Program>& program, const ScriptDirectives& directives) {
+    std::unordered_set<std::string> calls;
+    std::unordered_set<std::string> usedCapabilities;
+    collectFunctionCalls(program, calls);
+    const auto& caps = functionCapabilities();
+    for (const auto& call : calls) {
+        auto found = caps.find(call);
+        if (found == caps.end()) continue;
+        usedCapabilities.insert(found->second);
+        if (directives.capabilities.count(found->second) == 0) {
+            std::cout << "[LINT] " << call << " requires capability '" << found->second << "' - add #cap " << found->second << "\n";
+        }
+    }
+    for (const auto& cap : directives.capabilities) {
+        if (usedCapabilities.count(cap) == 0) {
+            std::cout << "[LINT] #cap '" << cap << "' declared but no functions using it were found\n";
+        }
+    }
+}
+
+void applyDirectivesToOptions(const ScriptDirectives& dir, WapiRuntimeOptions& options) {
+    if (dir.hasMode) {
+        if (options.cliModeExplicit && static_cast<int>(dir.mode) > static_cast<int>(options.mode)) {
+            throw std::runtime_error(
+                "E_DIRECTIVE: script requires mode '" + modeToDirectiveString(dir.mode) +
+                "' but runtime is '" + modeToDirectiveString(options.mode) +
+                "'. Re-run with --mode " + modeToDirectiveString(dir.mode)
+            );
+        }
+        if (!options.cliModeExplicit) options.mode = dir.mode;
+    }
+    for (const auto& cap : dir.capabilities) options.capabilities.insert(cap);
+    if (dir.allowInjection && !options.cliInjectionExplicit) options.allowInjection = true;
+    if (dir.strict && !options.cliStrictExplicit) options.strictPermissions = true;
+    if (options.verbose && !dir.name.empty()) {
+        std::cout << "[WAPI] script: " << dir.name;
+        if (!dir.version.empty()) std::cout << " v" << dir.version;
+        if (!dir.author.empty()) std::cout << " by " << dir.author;
+        std::cout << "\n";
+    }
+}
+
+std::shared_ptr<Program> parseProgram(const std::string& source) {
     Lexer lexer(source);
     auto tokens = lexer.tokenize();
-
     Parser parser(tokens);
-    auto program = parser.parse();
+    return parser.parse();
+}
 
+void runScript(const std::string& source, const WapiRuntimeOptions& options) {
+    auto program = parseProgram(source);
     Evaluator evaluator(options);
     evaluator.run(program);
 }
@@ -402,64 +716,64 @@ void runStandardizedTests() {
     test("syntax improvements", "var pid = 1_000 let label = \"pid={pid}\" var items = [] items.push(pid) func add(int left, int right) -> int { return left + right } struct Point { int x int y } Point p = Point { x: add(right: 2, left: 3), y: items.len() } p.x += 4 var maybe = null var fallback = maybe?.len() ?? p.x match fallback { 9 => print(label) _ => print(\"bad\") }", options);
 
     std::cout << "[Process] ---------------------------------------------\n";
-    test("listProcesses", "listProcesses()", options);
-    test("findProcessPID", "int pid = findProcessPID(\"notepad\")", options);
-    test("openProcess", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid)", options);
-    test("suspendProcess", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) suspendProcess(handle)", options);
-    test("resumeProcess", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) resumeProcess(handle)", options);
-    test("terminateProcess", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) terminateProcess(handle)", options);
+    test("proc.list", "proc.list()", options);
+    test("proc.find", "int pid = proc.find(\"notepad\")", options);
+    test("proc.open", "int pid = proc.find(\"notepad\") int handle = proc.open(pid)", options);
+    test("proc.suspend", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) proc.suspend(handle)", options);
+    test("proc.resume", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) proc.resume(handle)", options);
+    test("proc.terminate", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) proc.terminate(handle)", options);
 
     std::cout << "\n[Memory] --------------------------------------------\n";
-    test("readMemory", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) int val = readMemory(handle, 0x1000)", options);
-    test("writeMemory", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) writeMemory(handle, 0x1000, 42)", options);
-    test("allocMemory", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) int addr = allocMemory(handle, 1024)", options);
-    test("freeMemory", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) int addr = allocMemory(handle, 1024) freeMemory(handle, addr)", options);
+    test("mem.read", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) int val = mem.read(handle, 0x1000)", options);
+    test("mem.write", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) mem.write(handle, 0x1000, 42)", options);
+    test("mem.alloc", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) int addr = mem.alloc(handle, 1024)", options);
+    test("mem.free", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) int addr = mem.alloc(handle, 1024) mem.free(handle, addr)", options);
 
     std::cout << "\n[Window] --------------------------------------------\n";
-    test("findWindow", "int win = findWindow(\"Notepad\")", options);
-    test("injectDLL", "int pid = findProcessPID(\"notepad\") injectDLL(pid, \"C:\\\\Temp\\\\TestDLL.dll\")", options);
-    test("testInjectDLL", "int pid = findProcessPID(\"notepad\") testInjectDLL(pid)", options);
+    test("window.find", "int win = window.find(\"Notepad\")", options);
+    test("inject.dll", "int pid = proc.find(\"notepad\") inject.dll(pid, \"C:\\\\Temp\\\\TestDLL.dll\")", options);
+    test("inject.testDll", "int pid = proc.find(\"notepad\") inject.testDll(pid)", options);
 
     std::cout << "\n[Roadmap / To Implement]\n";
     std::cout << "(These are expected to fail until you implement each API)\n";
     std::cout << "[Process] ---------------------------------------------\n";
-    test("closeProcess", "int pid = findProcessPID(\"notepad\") int handle = openProcess(pid) closeProcess(handle)", options);
+    test("proc.close", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) proc.close(handle)", options);
 
     std::cout << "\n[Modules] --------------------------------------------\n";
-    test("listModules", "int pid = findProcessPID(\"notepad\") listModules(pid)", options);
-    test("getModuleBase", "int pid = findProcessPID(\"notepad\") int base = getModuleBase(pid, \"kernel32.dll\")", options);
-    test("getModuleSize", "int pid = findProcessPID(\"notepad\") int size = getModuleSize(pid, \"kernel32.dll\")", options);
+    test("proc.modules", "int pid = proc.find(\"notepad\") proc.modules(pid)", options);
+    test("proc.module.base", "int pid = proc.find(\"notepad\") int base = proc.module.base(pid, \"kernel32.dll\")", options);
+    test("proc.module.size", "int pid = proc.find(\"notepad\") int size = proc.module.size(pid, \"kernel32.dll\")", options);
 
     std::cout << "\n[Memory Advanced] ------------------------------------\n";
-    test("protectMemory", "int pid = findProcessPID(\"notepad\") int h = openProcess(pid) protectMemory(h, 0x1000, 0x1000, 0x40)", options);
-    test("queryMemory", "int pid = findProcessPID(\"notepad\") int h = openProcess(pid) queryMemory(h, 0x1000)", options);
+    test("mem.protect", "int pid = proc.find(\"notepad\") int h = proc.open(pid) mem.protect(h, 0x1000, 0x1000, 0x40)", options);
+    test("mem.query", "int pid = proc.find(\"notepad\") int h = proc.open(pid) mem.query(h, 0x1000)", options);
 
     std::cout << "\n[Threads] --------------------------------------------\n";
-    test("listThreads", "int pid = findProcessPID(\"notepad\") listThreads(pid)", options);
-    test("openThread", "int tid = 1 int th = openThread(tid)", options);
-    test("suspendThread", "int tid = 1 int th = openThread(tid) suspendThread(th)", options);
-    test("resumeThread", "int tid = 1 int th = openThread(tid) resumeThread(th)", options);
-    test("getThreadContext", "int tid = 1 int th = openThread(tid) int ctx = getThreadContext(th)", options);
-    test("setThreadContext", "int tid = 1 int th = openThread(tid) setThreadContext(th, 0)", options);
+    test("thread.list", "int pid = proc.find(\"notepad\") thread.list(pid)", options);
+    test("thread.open", "int tid = 1 int th = thread.open(tid)", options);
+    test("thread.suspend", "int tid = 1 int th = thread.open(tid) thread.suspend(th)", options);
+    test("thread.resume", "int tid = 1 int th = thread.open(tid) thread.resume(th)", options);
+    test("thread.context", "int tid = 1 int th = thread.open(tid) int ctx = thread.context(th)", options);
+    test("thread.context.set", "int tid = 1 int th = thread.open(tid) thread.context.set(th, 0)", options);
 
     std::cout << "\n[Injection Advanced] ---------------------------------\n";
-    test("injectShellcode", "int pid = findProcessPID(\"notepad\") injectShellcode(pid, \"90 90 C3\")", options);
-    test("createRemoteThread", "int pid = findProcessPID(\"notepad\") createRemoteThread(pid, 0x1000, 0)", options);
+    test("inject.shellcode", "int pid = proc.find(\"notepad\") inject.shellcode(pid, \"90 90 C3\")", options);
+    test("inject.thread", "int pid = proc.find(\"notepad\") inject.thread(pid, 0x1000, 0)", options);
 
     std::cout << "\n[Window By PID] --------------------------------------\n";
-    test("listWindowsByPID", "int pid = findProcessPID(\"notepad\") listWindowsByPID(pid)", options);
-    test("findWindowByPID", "int pid = findProcessPID(\"notepad\") int w = findWindowByPID(pid, \"Notepad\")", options);
-    test("sendWindowMessage", "int pid = findProcessPID(\"notepad\") int w = findWindowByPID(pid, \"Notepad\") sendWindowMessage(w, 0x000C, 0, 0)", options);
+    test("window.listByPid", "int pid = proc.find(\"notepad\") window.listByPid(pid)", options);
+    test("window.findByPid", "int pid = proc.find(\"notepad\") int w = window.findByPid(pid, \"Notepad\")", options);
+    test("window.message", "int pid = proc.find(\"notepad\") int w = window.findByPid(pid, \"Notepad\") window.message(w, 0x000C, 0, 0)", options);
 
     std::cout << "\n[Debug] ----------------------------------------------\n";
-    test("debugAttach", "int pid = findProcessPID(\"notepad\") debugAttach(pid)", options);
-    test("debugWaitEvent", "int ev = debugWaitEvent()", options);
-    test("debugReadRegisters", "int tid = 1 int r = debugReadRegisters(tid)", options);
-    test("debugContinue", "debugContinue(0)", options);
+    test("debug.attach", "int pid = proc.find(\"notepad\") debug.attach(pid)", options);
+    test("debug.wait", "int ev = debug.wait()", options);
+    test("debug.registers", "int tid = 1 int r = debug.registers(tid)", options);
+    test("debug.continue", "debug.continue(0)", options);
 
     std::cout << "\n[Token / Privilege] ----------------------------------\n";
-    test("openProcessToken", "int pid = findProcessPID(\"notepad\") int h = openProcess(pid) int tok = openProcessToken(h)", options);
-    test("enablePrivilege", "enablePrivilege(\"SeDebugPrivilege\")", options);
+    test("token.open", "int pid = proc.find(\"notepad\") int h = proc.open(pid) int tok = token.open(h)", options);
+    test("token.privilege", "token.privilege(\"SeDebugPrivilege\")", options);
 
     int total = passed + failed;
     float percent = total == 0 ? 0.0f : (float)passed / total * 100;
@@ -576,7 +890,8 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        if (command == "lint" || command == "validate") command = "check";
+        const bool lintMode = command == "lint" || command == "validate";
+        if (lintMode) command = "check";
 
         if (command != "run" && command != "check") {
             printUsage();
@@ -597,14 +912,23 @@ int main(int argc, char* argv[]) {
 
         WapiRuntimeOptions options = parseOptions(optionArgs, command == "check");
         if (options.verbose && options.timeoutMs > 0 && !options.quiet) {
-            std::cout << "[WAPI_INFO] timeout parsed as " << options.timeoutMs << "ms; native interruption is not enabled yet\n";
+            std::cout << "[WAPI_INFO] timeout set to " << options.timeoutMs << "ms\n";
         }
         if (options.trace && !options.quiet) {
             std::cout << "[WAPI_TRACE] command=" << command << " sources=" << sourceArgs.size() << " mode=" << (options.checkOnly ? "check" : "run") << "\n";
         }
 
         const auto started = std::chrono::steady_clock::now();
-        runScript(resolveSourceArguments(sourceArgs), options);
+        ResolvedSource resolved = resolveSourceArgumentsWithDirectives(sourceArgs);
+        applyDirectivesToOptions(resolved.directives, options);
+        auto program = parseProgram(resolved.source);
+        if (lintMode) {
+            emitLintWarnings(program, resolved.directives);
+            if (!options.quiet) std::cout << "[WAPI_LINT] Completed without execution\n";
+            return 0;
+        }
+        Evaluator evaluator(options);
+        evaluator.run(program);
 
         if (options.checkOnly && !options.quiet) {
             std::cout << "[WAPI_CHECK] Preflight completed without execution side effects\n";
@@ -622,6 +946,7 @@ int main(int argc, char* argv[]) {
         if (message.rfind("E_LEX", 0) == 0 || message.rfind("E_PARSE", 0) == 0) return 65;
         if (message.rfind("E_TYPE", 0) == 0 || message.rfind("E_ARG", 0) == 0) return 66;
         if (message.rfind("E_PERMISSION", 0) == 0) return 77;
+        if (message.rfind("E_TIMEOUT", 0) == 0) return 124;
         return 1;
     }
 }

@@ -1,0 +1,7 @@
+#name "Process list"
+#mode safe
+#strict
+#cap proc.list runtime.print
+
+print("Listing processes")
+proc.list()

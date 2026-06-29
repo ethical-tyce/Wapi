@@ -25,6 +25,12 @@ bool isQualifiedRuntimePrefix(const std::string& name) {
     };
     return prefixes.count(name) > 0;
 }
+
+bool isNameSegmentToken(TokenType type) {
+    return type == IDENTIFIER || type == IF || type == ELSE || type == WHILE || type == FOR || type == IN ||
+        type == FUNC || type == RETURN || type == BREAK || type == CONTINUE || type == TRY || type == CATCH ||
+        type == INCLUDE || type == MATCH || type == STRUCT || type == VAR || type == LET || type == CONST;
+}
 }
 
 Parser::Parser(const std::vector<Token>& tokens) : tokens(tokens), pos(0) {}
@@ -35,6 +41,11 @@ Token Parser::consume() { return tokens[pos++]; }
 
 Token Parser::expect(TokenType type) {
     if (current().type != type) throw parseError(current(), "Unexpected token: " + current().value);
+    return consume();
+}
+
+Token Parser::expectNameSegment() {
+    if (!isNameSegmentToken(current().type)) throw parseError(current(), "Unexpected token: " + current().value);
     return consume();
 }
 
@@ -64,7 +75,7 @@ bool Parser::isFieldAssignmentStart() const {
     if (look >= tokens.size() || tokens[look].type != IDENTIFIER) return false;
     ++look;
     bool sawField = false;
-    while (look + 1 < tokens.size() && tokens[look].type == DOT_CALL && tokens[look + 1].type == IDENTIFIER) {
+    while (look + 1 < tokens.size() && tokens[look].type == DOT_CALL && isNameSegmentToken(tokens[look + 1].type)) {
         sawField = true;
         look += 2;
     }
@@ -152,7 +163,7 @@ std::shared_ptr<ASTNode> Parser::parseFieldAssignment() {
     std::shared_ptr<ASTNode> target = std::make_shared<Identifier>(expect(IDENTIFIER).value);
     std::string field;
     while (match(DOT_CALL)) {
-        field = expect(IDENTIFIER).value;
+        field = expectNameSegment().value;
         if (peek().type == DOT_CALL) {
             auto access = std::make_shared<FieldAccessExpression>();
             access->target = target;
@@ -398,7 +409,7 @@ std::shared_ptr<ASTNode> Parser::parsePostfix() {
         }
         if (match(DOT_CALL) || match(QUESTION_DOT)) {
             const bool nullSafe = tokens[pos - 1].type == QUESTION_DOT;
-            const std::string member = expect(IDENTIFIER).value;
+            const std::string member = expectNameSegment().value;
             if (check(LPAREN)) {
                 if (nullSafe) {
                     auto call = std::make_shared<NullSafeCallExpression>();
@@ -483,6 +494,6 @@ std::shared_ptr<ASTNode> Parser::parsePrimary() {
 
 std::string Parser::parseQualifiedName() {
     std::string name = expect(IDENTIFIER).value;
-    while (match(DOT_CALL)) { name += "."; name += expect(IDENTIFIER).value; }
+    while (match(DOT_CALL)) { name += "."; name += expectNameSegment().value; }
     return name;
 }

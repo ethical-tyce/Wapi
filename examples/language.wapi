@@ -1,0 +1,26 @@
+#name "Language smoke"
+#mode safe
+#strict
+#cap runtime.print language.core language.array language.math
+
+struct Point {
+    int x
+    int y
+}
+
+func describe(string name, int value) -> string {
+    return "{name}={value}"
+}
+
+var values = []
+values.push(10)
+values.push(20)
+
+Point p = Point { x: values.len(), y: max(3, 7) }
+var maybe = null
+var fallback = maybe?.len() ?? p.y
+
+match fallback {
+    7 => print(describe("fallback", fallback))
+    _ => print("unexpected {fallback}")
+}

@@ -1,54 +1,67 @@
-
-<h2 class="sr-only">Wapi full task checklist — filter by category and status across all 200+ planned items</h2>
+<meta charset="utf-8">
+<h1 class="roadmap-title">Wapi roadmap</h1>
+<p class="roadmap-subtitle">Pick a category, filter by status, then work from the highlighted remaining cards. Done items stay visible for context; partial and todo cards show the next action.</p>
 <style>
+:root{
+  --rm-bg:#0d1117;
+  --rm-bg-soft:#111827;
+  --rm-panel:#ffffff;
+  --rm-panel-soft:#f8fafc;
+  --rm-text:#101828;
+  --rm-muted:#667085;
+  --rm-border:#d0d5dd;
+  --rm-border-strong:#98a2b3;
+  --rm-shadow:0 18px 45px rgba(15,23,42,.14);
+  --rm-green:#12b76a;
+  --rm-amber:#f79009;
+  --rm-red:#f04438;
+  --rm-blue:#2e90fa;
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:var(--font-sans);padding:1rem 0}
-.top{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:1rem;align-items:center}
-.pills{display:flex;flex-wrap:wrap;gap:6px}
-.pill{font-size:12px;padding:3px 10px;border-radius:20px;border:0.5px solid var(--border-strong);cursor:pointer;background:var(--surface-2);color:var(--text-secondary);font-weight:400;transition:all .12s}
-.pill.on{color:#fff;border-color:transparent;font-weight:500}
-.pill[data-c="lang"].on{background:#534AB7}
-.pill[data-c="cli"].on{background:#0F6E56}
-.pill[data-c="ide"].on{background:#BA7517}
-.pill[data-c="api"].on{background:#993C1D}
-.pill[data-c="infra"].on{background:#185FA5}
-.pill[data-c="all"].on{background:var(--text-primary)}
-.sfilter{display:flex;gap:4px}
-.sf{font-size:11px;padding:3px 8px;border-radius:20px;border:0.5px solid var(--border);cursor:pointer;background:var(--surface-2);color:var(--text-muted)}
-.sf.on{background:var(--text-primary);color:#fff;border-color:transparent}
-.divider{width:0.5px;background:var(--border);margin:0 4px;align-self:stretch}
-.count{font-size:12px;color:var(--text-muted);margin-left:auto}
-.cats{display:flex;flex-direction:column;gap:1.2rem}
-.cat-head{display:flex;align-items:center;gap:8px;margin-bottom:.4rem}
-.cat-label{font-size:11px;font-weight:500;color:var(--text-secondary);letter-spacing:.06em}
-.bar{flex:1;height:3px;border-radius:2px;background:var(--border);overflow:hidden}
-.barfill{height:100%;border-radius:2px}
-.pct{font-size:11px;color:var(--text-muted)}
-.items{display:flex;flex-direction:column;gap:2px}
-.row{display:flex;align-items:flex-start;gap:8px;padding:5px 8px;border-radius:6px;border:0.5px solid var(--border);background:var(--surface-2)}
-.row.new-todo{border-style:dashed}
-.row.done{opacity:1}
-.row.partial{opacity:.85}
-.row.todo,.row.new-todo{opacity:.7}
-.chk{width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:10px;margin-top:1px}
-.chk.done{background:#EAF3DE;color:#3B6D11}
-.chk.partial{background:#FAEEDA;color:#633806}
-.chk.todo{background:var(--surface-1);border:0.5px solid var(--border-strong);color:var(--text-muted)}
-.chk.new-todo{background:var(--surface-1);border:0.5px dashed var(--border-strong);color:var(--text-muted)}
-.rn{font-size:12px;font-weight:500;color:var(--text-primary);flex:1;line-height:1.3}
-.rd{font-size:11px;color:var(--text-muted);text-align:right;flex-shrink:0;max-width:200px}
-.badge{font-size:10px;padding:1px 6px;border-radius:10px;background:#EEEDFE;color:#3C3489;margin-left:4px;flex-shrink:0}
-.empty{font-size:13px;color:var(--text-muted);padding:1rem 0;text-align:center}
+body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;background:linear-gradient(135deg,#eef4ff 0%,#f8fafc 42%,#ecfdf3 100%);color:var(--rm-text)}
+.roadmap-title{font-family:"Segoe UI Variable Display","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;font-size:34px;line-height:1.05;font-weight:750;letter-spacing:0;margin:0 auto 8px;max-width:1180px;color:#0b1220}
+.roadmap-subtitle{max-width:760px;margin:0 auto 18px;color:#475467;font-size:15px;line-height:1.55}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.roadmap-shell{max-width:1180px;margin:0 auto;padding:18px;border:1px solid rgba(152,162,179,.45);border-radius:18px;background:rgba(255,255,255,.78);box-shadow:var(--rm-shadow);backdrop-filter:blur(18px)}
+.summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}
+.summary-card{border:1px solid var(--rm-border);border-radius:12px;background:var(--rm-panel);padding:13px 14px;box-shadow:0 8px 20px rgba(15,23,42,.06)}
+.summary-card span{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--rm-muted);margin-bottom:5px}
+.summary-card strong{font-family:"Segoe UI Variable Display","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;font-size:26px;line-height:1;color:#0b1220}
+.summary-card.done strong{color:#067647}.summary-card.partial strong{color:#b54708}.summary-card.todo strong{color:#b42318}
+.next-panel{display:grid;grid-template-columns:minmax(180px,.55fr) 1fr;gap:14px;align-items:start;margin-bottom:16px;border:1px solid #fedf89;border-radius:14px;background:#fffbeb;padding:14px}
+.next-panel h2{font-size:15px;line-height:1.2;margin-bottom:5px;color:#7a2e0e}.next-panel p{font-size:13px;line-height:1.45;color:#93370d}
+.next-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.next-item{border:1px solid #fdb022;border-radius:10px;background:#fff;padding:9px 10px;min-height:74px}.next-item b{display:block;font-size:12px;color:#7a2e0e;margin-bottom:4px}.next-item span{display:block;font-size:12px;color:#475467;line-height:1.35}
+.top{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:10px;margin:0 -4px 16px;padding:8px 4px;align-items:center;background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(255,255,255,.78));backdrop-filter:blur(14px);border-bottom:1px solid rgba(208,213,221,.65)}
+.pills,.sfilter{display:flex;flex-wrap:wrap;gap:7px}.pill,.sf{appearance:none;border:1px solid var(--rm-border);border-radius:999px;background:#fff;color:#344054;cursor:pointer;font-weight:650;letter-spacing:0;transition:transform .12s,border-color .12s,box-shadow .12s,background .12s,color .12s}.pill{font-size:13px;padding:8px 12px}.sf{font-size:12px;padding:7px 10px}.pill:hover,.sf:hover{transform:translateY(-1px);border-color:var(--rm-border-strong);box-shadow:0 8px 18px rgba(15,23,42,.09)}.pill.on,.sf.on{color:#fff;border-color:transparent;box-shadow:0 10px 22px rgba(15,23,42,.14)}
+.pill[data-c="lang"].on{background:#534AB7}.pill[data-c="cli"].on{background:#0F6E56}.pill[data-c="ide"].on{background:#BA7517}.pill[data-c="api"].on{background:#993C1D}.pill[data-c="infra"].on{background:#185FA5}.pill[data-c="all"].on,.sf.on{background:#111827}.divider{width:1px;background:var(--rm-border);margin:0 2px;align-self:stretch}.count{font-size:13px;font-weight:650;color:#344054;margin-left:auto;padding:7px 10px;border-radius:999px;background:#f2f4f7;border:1px solid var(--rm-border)}
+.cats{display:flex;flex-direction:column;gap:18px}.cat-section{border:1px solid var(--rm-border);border-radius:16px;background:rgba(255,255,255,.85);overflow:hidden}.cat-head{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:13px 14px;border-bottom:1px solid var(--rm-border);background:#f8fafc}.cat-label{font-size:13px;font-weight:750;color:#101828;letter-spacing:.06em}.bar{height:8px;border-radius:999px;background:#eaecf0;overflow:hidden}.barfill{height:100%;border-radius:999px}.pct{font-size:12px;font-weight:650;color:#475467;white-space:nowrap}.items{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px}
+.row{position:relative;display:grid;grid-template-columns:auto 1fr;gap:10px;min-height:104px;padding:13px;border:1px solid var(--rm-border);border-left:5px solid var(--cat-color,#667085);border-radius:12px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.06)}.row:hover{border-color:var(--rm-border-strong);box-shadow:0 12px 26px rgba(15,23,42,.1)}.row.done{background:#f6fef9;border-left-color:var(--rm-green)}.row.partial{background:#fffcf5;border-left-color:var(--rm-amber)}.row.todo,.row.new-todo{background:#fff8f6;border-left-color:var(--rm-red)}.row.new-todo{border-style:solid;border-left-style:solid}.chk{width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:12px;font-weight:750}.chk.done{background:#dcfae6;color:#067647}.chk.partial{background:#fef0c7;color:#b54708}.chk.todo,.chk.new-todo{background:#fee4e2;color:#b42318}.row-main{min-width:0}.row-top{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px}.rn{font-size:15px;font-weight:700;color:#101828;line-height:1.25;min-width:0}.rd{font-size:13px;color:#475467;line-height:1.42;overflow-wrap:anywhere}.status{margin-left:auto;white-space:nowrap;font-size:10px;line-height:1;padding:5px 7px;border-radius:999px;text-transform:uppercase;font-weight:750;letter-spacing:.08em}.status.done{background:#dcfae6;color:#067647}.status.partial{background:#fef0c7;color:#b54708}.status.todo,.status.new-todo{background:#fee4e2;color:#b42318}.action{display:inline-flex;margin-top:10px;border-radius:999px;padding:6px 9px;background:#f2f4f7;color:#344054;font-size:11px;font-weight:700}.row.todo .action,.row.new-todo .action{background:#fee4e2;color:#912018}.row.partial .action{background:#fef0c7;color:#93370d}.row.done .action{background:#dcfae6;color:#05603a}.badge{font-size:10px;padding:3px 6px;border-radius:999px;background:#fee4e2;color:#b42318;margin-left:6px;flex-shrink:0;text-transform:uppercase;font-weight:750;letter-spacing:.06em}.empty{font-size:14px;color:#667085;padding:30px;text-align:center;border:1px dashed var(--rm-border);border-radius:14px;background:#fff}
+@media (max-width:900px){body{padding:14px}.summary-grid,.items,.next-list{grid-template-columns:1fr}.next-panel{grid-template-columns:1fr}.roadmap-title{font-size:28px}.roadmap-shell{padding:12px;border-radius:14px}.top{position:static}.count{margin-left:0}.cat-head{grid-template-columns:1fr}.pct{justify-self:start}.row{min-height:auto}}
 </style>
 
-<div class="top">
-  <div class="pills" id="cpills"></div>
-  <div class="divider"></div>
-  <div class="sfilter" id="spills"></div>
-  <span class="count" id="cnt"></span>
+<h2 class="sr-only">Wapi full task checklist - filter by category and status across all planned items</h2>
+<div class="roadmap-shell">
+  <section class="summary-grid" aria-label="Roadmap summary">
+    <div class="summary-card"><span>Total shown</span><strong id="totalTasks">0</strong></div>
+    <div class="summary-card done"><span>Done</span><strong id="doneTasks">0</strong></div>
+    <div class="summary-card partial"><span>Partial</span><strong id="partialTasks">0</strong></div>
+    <div class="summary-card todo"><span>To do</span><strong id="todoTasks">0</strong></div>
+  </section>
+  <section class="next-panel" aria-label="Next work">
+    <div>
+      <h2>What to do next</h2>
+      <p>Focus on the first partial or todo cards in the selected category. Partial means there is code, but the checklist behavior is not finished.</p>
+    </div>
+    <div class="next-list" id="nextList"></div>
+  </section>
+  <div class="top">
+    <div class="pills" id="cpills"></div>
+    <div class="divider"></div>
+    <div class="sfilter" id="spills"></div>
+    <span class="count" id="cnt"></span>
+  </div>
+  <div class="cats" id="out"></div>
 </div>
-<div class="cats" id="out"></div>
-
 <script>
 const CATS=[
   {id:"lang",label:"Language",color:"#534AB7"},
@@ -69,13 +82,13 @@ const D=[
   ["lang","done","Math functions","abs min max"],
   ["lang","done","Error handling","TRY/CATCH, TryCatchStatement"],
   ["lang","done","Typed return values","returnType on FunctionDeclaration"],
-  ["lang","todo","String interpolation","\"pid is ${pid}\" — not in lexer yet"],
-  ["lang","new-todo","Float / double type","New numeric type + float literals"],
-  ["lang","new-todo","Null / nil literal","null type + null checks"],
-  ["lang","new-todo","const keyword","Immutable variable declaration"],
-  ["lang","new-todo","Compound assignment","+=  -=  *=  /=  operators"],
-  ["lang","new-todo","Increment / decrement","++ and -- prefix/postfix"],
-  ["lang","new-todo","Ternary operator","condition ? a : b expression"],
+  ["lang","done","String interpolation","String literals interpolate variables and expressions in evaluator"],
+  ["lang","done","Float / double type","DOUBLE_LITERAL + double/float type tokens"],
+  ["lang","done","Null / nil literal","null literal + null-safe calls"],
+  ["lang","done","const keyword","const declarations reject reassignment"],
+  ["lang","done","Compound assignment","+= -= *= /= %= on vars and fields"],
+  ["lang","done","Increment / decrement","++ and -- prefix/postfix on vars and fields"],
+  ["lang","done","Ternary operator","condition ? a : b expression"],
   ["lang","new-todo","Multi-line strings","Triple-quote \"\"\"...\"\"\" literals"],
   ["lang","new-todo","Switch / case","switch val { case 1: ... }"],
   ["lang","new-todo","Default param values","func f(int x = 0) { ... }"],
@@ -86,18 +99,18 @@ const D=[
   ["lang","new-todo","Dictionary / map type","map<string, int> key-value type"],
   ["lang","new-todo","do-while loop","do { } while condition"],
   ["lang","new-todo","Enums","enum Color { Red, Green, Blue }"],
-  ["lang","new-todo","typeof operator","typeof(x) returns type string"],
-  ["lang","new-todo","assert statement","assert pid != 0, \"no pid\""],
-  ["lang","new-todo","Range with step","range(0, 10, 2) stride arg"],
-  ["lang","new-todo","toHex() built-in","int to hex string conversion"],
-  ["lang","new-todo","fromHex() built-in","hex string to int"],
-  ["lang","new-todo","split() built-in","split(\"a,b\", \",\") → array"],
-  ["lang","new-todo","trim() built-in","trim(\" hello \") → \"hello\""],
-  ["lang","new-todo","padLeft / padRight","string padding built-ins"],
-  ["lang","new-todo","sort() built-in","sort array in-place"],
-  ["lang","new-todo","String escape sequences","\\n \\t \\r in string literals"],
+  ["lang","done","typeof operator","typeof(x) returns type string"],
+  ["lang","done","assert statement","assert(condition, message) throws E_ASSERT"],
+  ["lang","done","Range with step","for i in range(0, 10, 2) stride arg"],
+  ["lang","done","toHex() built-in","int to hex string conversion"],
+  ["lang","done","fromHex() built-in","hex string to int"],
+  ["lang","done","split() built-in","split(text, delimiter) returns array"],
+  ["lang","done","trim() built-in","trim(text) returns trimmed string"],
+  ["lang","done","padLeft / padRight","string padding built-ins"],
+  ["lang","done","sort() built-in","sort array in-place"],
+  ["lang","done","String escape sequences","newline tab carriage-return quote and slash escapes"],
   ["lang","new-todo","Closures","func values as first-class vars"],
-  ["lang","new-todo","Auto type inference","int x = ... → x = ... infers"],
+  ["lang","done","Auto type inference","var / let infer runtime value type"],
   ["lang","new-todo","Recursive depth guard","Stack overflow protection"],
 
   ["cli","done","Script file input","wapi run script.wapi via resolveSourceArgument"],
@@ -105,72 +118,74 @@ const D=[
   ["cli","done","REPL mode","wapi repl with :quit"],
   ["cli","done","JSON output mode","--output json + emitJsonEvent()"],
   ["cli","done","wapi help <fn>","printFunctionHelp() per-function docs"],
-  ["cli","done","Import / include","include \"helpers.wapi\" + cycle detection"],
+  ["cli","done","Import / include","#include \"helpers.wapi\" preferred; legacy include still works"],
   ["cli","done","wapi fmt","formatSource() + --write flag"],
-  ["cli","new-todo","--version flag","Print semver and exit"],
-  ["cli","new-todo","--verbose flag","Detailed step-by-step output"],
-  ["cli","new-todo","--quiet flag","Suppress non-error output"],
-  ["cli","new-todo","--timeout <ms>","Kill script after N milliseconds"],
-  ["cli","new-todo","--no-color flag","Disable ANSI escape codes"],
+  ["cli","done","--version flag","Print wapi version and exit"],
+  ["cli","partial","--verbose flag","Verbose status exists; full step-by-step output is trace"],
+  ["cli","done","--quiet flag","Suppress audit/warning/status chatter"],
+  ["cli","done","--timeout <ms>","Evaluator throws E_TIMEOUT after N milliseconds"],
+  ["cli","partial","--no-color flag","Flag is parsed; CLI has no colorized output path yet"],
   ["cli","new-todo","Colorized ANSI output","Green pass / red fail coloring"],
-  ["cli","new-todo","Structured exit codes","E_PARSE=2 E_RUNTIME=3 E_POLICY=4"],
-  ["cli","new-todo","wapi init","Scaffold a new project on disk"],
-  ["cli","new-todo","wapi lint","Static analysis beyond parse check"],
-  ["cli","new-todo","wapi test <file>","Run .wapi test script files"],
-  ["cli","new-todo","wapi bundle","Inline all includes into one file"],
-  ["cli","new-todo","wapi completions","Generate bash / powershell completions"],
-  ["cli","new-todo","wapi doc","Generate docs from /// comments"],
-  ["cli","new-todo","wapi audit-report","Format [WAPI_AUDIT] lines as report"],
-  ["cli","new-todo","Stdin piping","wapi run - reads from stdin"],
-  ["cli","new-todo","--watch flag","Re-run on file change"],
-  ["cli","new-todo","--profile flag","Per-function execution timing"],
-  ["cli","new-todo","--trace flag","Step-by-step execution log"],
+  ["cli","partial","Structured exit codes","CLI maps parse/type/permission/timeout to stable nonzero exits"],
+  ["cli","done","wapi init","Scaffold wapi.toml and src/main.wapi on disk"],
+  ["cli","done","wapi lint","Parse + capability directive lint without execution"],
+  ["cli","done","File-level directives","#mode #cap #include metadata #strict #allow-injection"],
+  ["cli","partial","wapi test <file>","wapi test runs built-in suite; file-based test runner still missing"],
+  ["cli","done","wapi bundle","Inline all includes into one output stream/file"],
+  ["cli","done","wapi completions","Generate bash / powershell completions"],
+  ["cli","partial","wapi doc","Built-in function/directive docs exist; comment extraction missing"],
+  ["cli","partial","wapi audit-report","Command exists as JSON template; does not parse audit lines yet"],
+  ["cli","done","Stdin piping","wapi run - reads from stdin"],
+  ["cli","partial","--watch flag","Accepted by run/check; file watcher loop missing"],
+  ["cli","done","--profile flag","Print elapsed execution time"],
+  ["cli","done","--trace flag","Print CLI execution trace line"],
   ["cli","new-todo","--cap-file <path>","Load capabilities from JSON file"],
-  ["cli","new-todo","--env KEY=VALUE","Inject env vars at runtime"],
-  ["cli","new-todo","WAPI_MODE env var","Configure defaults via env"],
-  ["cli","new-todo","wapi validate","Validate project.json schema"],
-  ["cli","new-todo","Multi-file input","wapi run a.wapi b.wapi chained"],
+  ["cli","done","--env KEY=VALUE","Inject env vars at runtime"],
+  ["cli","done","WAPI_MODE env var","Configure default runtime mode via env"],
+  ["cli","partial","wapi validate","Alias of lint/check; project schema validation missing"],
+  ["cli","done","Multi-file input","wapi run a.wapi b.wapi chains sources"],
   ["cli","new-todo","Progress spinner","Spinner for long-running scripts"],
-  ["cli","new-todo","wapi update","Self-update binary from GitHub"],
+  ["cli","partial","wapi update","Placeholder command explains updater is not available yet"],
   ["cli","new-todo","WinGet manifest","wapi install via winget"],
-  ["cli","new-todo","--max-steps limit","Prevent infinite loops"],
-  ["cli","new-todo","--output csv","Tabular structured output"],
-  ["cli","new-todo","wapi errors","Error code reference command"],
-  ["cli","new-todo","Dry-run alias","wapi dry == wapi check"],
+  ["cli","done","--max-steps limit","Override evaluator loop guard"],
+  ["cli","partial","--output csv","Accepted for tooling compatibility; tabular output missing"],
+  ["cli","done","wapi errors","Error code reference command"],
+  ["cli","partial","Dry-run alias","--dry-run flag works; wapi dry command alias missing"],
 
   ["ide","done",".wapi Monaco language","tokens, autocomplete, hover, signatures, fmt"],
   ["ide","done","Inline diagnostics","scheduleDiagnostics + applyMarkers"],
   ["ide","done","Process explorer panel","refreshProcessExplorer + click PID to insert"],
   ["ide","done","Execution history","recordExecutionHistory + history sidebar"],
-  ["ide","done","Script templates","3 project templates + 4 snippet inserts"],
+  ["ide","done","Script templates","Directive-first project templates + current syntax snippets"],
+  ["ide","done","Directive-aware editor","Highlighting, completion, hover, Script Info, and #cap quick fixes"],
   ["ide","done","Settings panel","mode / strict / injection / capabilities"],
   ["ide","done","Search across files","searchResults() + line+col in sidebar"],
   ["ide","done","Variable watch panel","updateVariableWatchFromResult + watch sidebar"],
   ["ide","done","Audit log viewer","auditLines + Audit tool tab"],
-  ["ide","new-todo","Light / dark theme toggle","System or manual override"],
-  ["ide","new-todo","Font size slider","Settings slider 11–20px"],
+  ["ide","done","Light / dark theme toggle","Settings tab switches editor theme"],
+  ["ide","partial","Font size slider","Settings select supports 12 / 13 / 14 / 16px"],
   ["ide","new-todo","Tab size preference","2 or 4 spaces per project"],
-  ["ide","new-todo","Word wrap toggle","Soft wrap long lines option"],
-  ["ide","new-todo","Minimap toggle","Show/hide minimap in settings"],
+  ["ide","done","Word wrap toggle","Settings tab toggles Monaco wordWrap"],
+  ["ide","done","Minimap toggle","Settings tab toggles Monaco minimap"],
   ["ide","new-todo","Split editor panes","Side-by-side file comparison"],
   ["ide","new-todo","Go to definition","Jump to func declaration line"],
-  ["ide","new-todo","Find and replace","In-file find+replace dialog"],
-  ["ide","new-todo","Rename symbol","Refactor rename across open files"],
-  ["ide","new-todo","Comment/uncomment toggle","Ctrl+/ for line comments"],
-  ["ide","new-todo","Code folding","Collapse { } blocks in editor"],
+  ["ide","done","Find and replace","Toolbar/menu invokes Monaco find and replace"],
+  ["ide","partial","Rename symbol","Monaco rename action wired; Wapi language provider is limited"],
+  ["ide","done","Comment/uncomment toggle","Toolbar and Ctrl+/ invoke Monaco line comment"],
+  ["ide","done","Code folding","Toolbar invokes Monaco fold all"],
   ["ide","new-todo","Breadcrumb bar","Path > file > symbol header"],
   ["ide","new-todo","Drag-and-drop file order","Reorder files in explorer"],
-  ["ide","new-todo","New file from explorer","Create file inside project"],
-  ["ide","new-todo","Delete file from explorer","Remove file with confirmation"],
-  ["ide","new-todo","Rename file in explorer","Inline rename in tree"],
-  ["ide","new-todo","Copy path to clipboard","Right-click copy relative path"],
-  ["ide","new-todo","Auto-save on run","Save dirty files before running"],
-  ["ide","new-todo","Run on save","Trigger check on Ctrl+S"],
+  ["ide","done","New file from explorer","More actions menu creates files in project"],
+  ["ide","partial","Delete file from explorer","Removes active file from workspace, not disk"],
+  ["ide","partial","Rename file in explorer","Prompt-based active file rename, not inline tree rename"],
+  ["ide","partial","Copy path to clipboard","More actions copies active path"],
+  ["ide","done","Auto-save on run","runWapiCommand saves dirty file before execution"],
+  ["ide","partial","Run on save","Settings can trigger lint/check on auto-save; Ctrl+S hook missing"],
   ["ide","new-todo","Output filter by level","info / warn / error toggles"],
   ["ide","new-todo","Audit log export","Save audit panel to .txt file"],
   ["ide","new-todo","WinAPI docs browser","Inline function reference panel"],
   ["ide","new-todo","Keyboard shortcut panel","Reference list of all keybinds"],
-  ["ide","new-todo","Capability browser","Descriptions + examples per cap"],
+  ["ide","partial","Capability browser","Search/toggle works; detailed per-cap examples still missing"],
   ["ide","new-todo","Diff view","Current vs last-saved diff"],
   ["ide","new-todo","Peek error widget","Inline error explanation popup"],
   ["ide","new-todo","Quick-fix suggestions","Lint-driven one-click fixes"],
@@ -183,7 +198,7 @@ const D=[
   ["api","done","createRemoteThread","wapi_createRemoteThread"],
   ["api","done","Privilege helpers","openProcessToken + enablePrivilege"],
   ["api","todo","sleep(ms)","Not in evaluator.h"],
-  ["api","todo","timestamp()","nowIso8601 is private — not exposed"],
+  ["api","todo","timestamp()","nowIso8601 is private - not exposed"],
   ["api","todo","getEnv / setEnv","Not in evaluator.h"],
   ["api","todo","scanPattern (AOB)","Not in evaluator.h"],
   ["api","todo","Registry R/W","regRead regWrite regDelete"],
@@ -209,14 +224,14 @@ const D=[
   ["api","new-todo","writeMemoryBytes(h, addr, hex)","Write raw bytes from hex string"],
   ["api","new-todo","scanMemory(h, pattern)","AOB scan across a process handle"],
   ["api","new-todo","getThreadStartAddress(th)","NtQueryInformationThread start addr"],
-  ["api","new-todo","setHardwareBreakpoint(tid,addr)","DR0–DR3 hardware breakpoint"],
+  ["api","new-todo","setHardwareBreakpoint(tid,addr)","DR0-DR3 hardware breakpoint"],
   ["api","new-todo","messageBox(title, text)","Win32 MessageBox dialog"],
   ["api","new-todo","getWindowText(hwnd)","WM_GETTEXT wrapper"],
   ["api","new-todo","setWindowText(hwnd, text)","SetWindowText wrapper"],
-  ["api","new-todo","getWindowRect(hwnd)","GetWindowRect → x y w h"],
+  ["api","new-todo","getWindowRect(hwnd)","GetWindowRect -> x y w h"],
   ["api","new-todo","moveWindow(hwnd,x,y,w,h)","MoveWindow wrapper"],
   ["api","new-todo","enumChildWindows(hwnd)","List child HWND handles"],
-  ["api","new-todo","getCursorPos()","GetCursorPos → x,y"],
+  ["api","new-todo","getCursorPos()","GetCursorPos -> x,y"],
   ["api","new-todo","setCursorPos(x, y)","SetCursorPos wrapper"],
   ["api","new-todo","sendKeys(hwnd, keys)","Synthetic keyboard input"],
   ["api","new-todo","listDrivers()","Enumerate loaded kernel drivers"],
@@ -263,6 +278,27 @@ const D=[
 ];
 
 let activeCat="all", activeStatus="all";
+const SEP=" - ";
+
+function esc(value){
+  return String(value).replace(/[&<>"]/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch]));
+}
+
+function visibleStatus(status){
+  return status==="new-todo"?"todo":status;
+}
+
+function statusLabel(status){
+  if(status==="done")return "Done";
+  if(status==="partial")return "Partial";
+  return status==="new-todo"?"New todo":"To do";
+}
+
+function actionLabel(status){
+  if(status==="done")return "Implemented";
+  if(status==="partial")return "Finish this gap";
+  return "Build this next";
+}
 
 function render(){
   const filtered=D.filter(r=>{
@@ -270,7 +306,22 @@ function render(){
     const sOk=activeStatus==="all"||(activeStatus==="done"&&r[1]==="done")||(activeStatus==="partial"&&r[1]==="partial")||(activeStatus==="todo"&&(r[1]==="todo"||r[1]==="new-todo"));
     return catOk&&sOk;
   });
-  document.getElementById("cnt").textContent=filtered.length+" tasks";
+
+  const doneCount=filtered.filter(r=>r[1]==="done").length;
+  const partialCount=filtered.filter(r=>r[1]==="partial").length;
+  const todoCount=filtered.filter(r=>r[1]==="todo"||r[1]==="new-todo").length;
+  document.getElementById("cnt").textContent=filtered.length+" visible tasks";
+  document.getElementById("totalTasks").textContent=filtered.length;
+  document.getElementById("doneTasks").textContent=doneCount;
+  document.getElementById("partialTasks").textContent=partialCount;
+  document.getElementById("todoTasks").textContent=todoCount;
+
+  const nextItems=filtered.filter(r=>r[1]!=="done").slice(0,3);
+  const nextList=document.getElementById("nextList");
+  nextList.innerHTML=nextItems.length?nextItems.map(r=>{
+    const cat=CATS.find(c=>c.id===r[0]);
+    return `<div class="next-item"><b>${esc(cat?.label||r[0])}${SEP}${esc(statusLabel(r[1]))}</b><span>${esc(r[2])}</span></div>`;
+  }).join(""):`<div class="next-item"><b>Nothing blocked here</b><span>Switch to another category or show todo items to find remaining work.</span></div>`;
 
   const byCat={};
   for(const r of filtered){
@@ -289,25 +340,37 @@ function render(){
     const all=D.filter(r=>r[0]===cid);
     const done=all.filter(r=>r[1]==="done").length;
     const partial=all.filter(r=>r[1]==="partial").length;
+    const todo=all.length-done-partial;
     const pct=Math.round((done+partial*0.5)/all.length*100);
-    const div=document.createElement("div");
+    const div=document.createElement("section");
+    div.className="cat-section";
     div.innerHTML=`<div class="cat-head">
-      <span class="cat-label">${cat.label.toUpperCase()}</span>
+      <span class="cat-label">${esc(cat.label.toUpperCase())}</span>
       <div class="bar"><div class="barfill" style="width:${pct}%;background:${cat.color}"></div></div>
-      <span class="pct">${done}/${all.length}</span>
+      <span class="pct">${done} done${SEP}${partial} partial${SEP}${todo} left</span>
     </div><div class="items" id="items-${cid}"></div>`;
     out.appendChild(div);
     const list=document.getElementById("items-"+cid);
     for(const r of byCat[cid]){
-      const row=document.createElement("div");
+      const row=document.createElement("article");
       row.className="row "+r[1];
+      row.style.setProperty("--cat-color",cat.color);
+      const symbol=r[1]==="done"?"OK":r[1]==="partial"?"~":"!";
       const isNew=r[1]==="new-todo";
-      row.innerHTML=`<span class="chk ${r[1]}">${r[1]==="done"?"✓":r[1]==="partial"?"~":""}</span><span class="rn">${r[2]}${isNew?'<span class="badge">new</span>':""}</span><span class="rd">${r[3]}</span>`;
+      row.innerHTML=`
+        <span class="chk ${r[1]}">${symbol}</span>
+        <div class="row-main">
+          <div class="row-top">
+            <h3 class="rn">${esc(r[2])}${isNew?'<span class="badge">new</span>':""}</h3>
+            <span class="status ${r[1]}">${esc(statusLabel(r[1]))}</span>
+          </div>
+          <p class="rd">${esc(r[3])}</p>
+          <span class="action">${esc(actionLabel(r[1]))}</span>
+        </div>`;
       list.appendChild(row);
     }
   }
 }
-
 function buildPills(){
   const cp=document.getElementById("cpills");
   [["all","All"],["lang","Language"],["cli","CLI"],["ide","IDE"],["api","WinAPI"],["infra","Infrastructure"]].forEach(([id,label])=>{
