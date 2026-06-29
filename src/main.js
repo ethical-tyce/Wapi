@@ -175,6 +175,23 @@ const wapiLanguageFunctions = [
   { name: "padRight", argCount: 3, capability: "language.string", requiresInjectionFlag: false, params: [{ name: "text", type: "string" }, { name: "width", type: "int" }, { name: "fill", type: "string" }] },
   { name: "sort", argCount: 1, capability: "language.array", requiresInjectionFlag: false, params: [{ name: "array", type: "array" }] }
 ];
+
+const wapiMethodFunctions = [
+  { name: "len", receiver: "string|array", detail: ".len() -> int" },
+  { name: "size", receiver: "string|array", detail: ".size() -> int" },
+  { name: "trim", receiver: "string", detail: ".trim() -> string" },
+  { name: "toLower", receiver: "string", detail: ".toLower() -> string" },
+  { name: "toUpper", receiver: "string", detail: ".toUpper() -> string" },
+  { name: "contains", receiver: "string|array", detail: ".contains(value) -> bool", params: ["value"] },
+  { name: "startsWith", receiver: "string", detail: ".startsWith(text) -> bool", params: ["text"] },
+  { name: "endsWith", receiver: "string", detail: ".endsWith(text) -> bool", params: ["text"] },
+  { name: "push", receiver: "array", detail: ".push(value) -> array", params: ["value"] },
+  { name: "pop", receiver: "array", detail: ".pop() -> value" },
+  { name: "first", receiver: "array", detail: ".first() -> value" },
+  { name: "last", receiver: "array", detail: ".last() -> value" },
+  { name: "sort", receiver: "array", detail: ".sort() -> array" }
+];
+
 const wapiRuntimeFunctions = [...wapiLanguageFunctions, ...parseEvaluatorFunctionRegistry(evaluatorSource)]
   .sort((a, b) => a.name.localeCompare(b.name));
 const wapiRuntimeFunctionMap = new Map(wapiRuntimeFunctions.map((fn) => [fn.name, fn]));
@@ -266,7 +283,7 @@ const projectTemplates = [
     source: (name) => [
       `// ${name}`,
       "// Check before running runtime actions.",
-      "listProcesses()",
+      "proc.list()",
       ""
     ].join("\n")
   },
@@ -276,9 +293,10 @@ const projectTemplates = [
     note: "Process discovery plus module inspection APIs.",
     source: (name) => [
       `// ${name} - Process Inspector`,
-      "int pid = findProcessPID(\"notepad\")",
-      "listModules(pid)",
-      "int base = getModuleBaseAddress(pid, \"kernel32.dll\")",
+      "var pid = findProcessPID(\"notepad\")",
+      "proc.modules(pid)",
+      "var base = proc.module.base(pid, \"kernel32.dll\")",
+      "print(\"kernel32 base={base}\")",
       ""
     ].join("\n")
   },
@@ -288,11 +306,12 @@ const projectTemplates = [
     note: "Memory allocation/read/write flow using allocMemory.",
     source: (name) => [
       `// ${name} - Memory Sandbox`,
-      "int pid = findProcessPID(\"notepad\")",
-      "long handle = openProcess(pid)",
-      "long address = allocMemory(handle, 64)",
+      "var pid = findProcessPID(\"notepad\")",
+      "let handle = openProcess(pid)",
+      "let address = allocMemory(handle, 64)",
       "writeMemory(handle, address, 1234)",
-      "int value = readMemory(handle, address)",
+      "var value = readMemory(handle, address)",
+      "print(\"read value={value}\")",
       "freeMemory(handle, address)",
       "closeHandle(handle)",
       ""
@@ -899,20 +918,28 @@ function installMonacoLanguage() {
     tokenizer: {
       root: [
         [/\/\/.*$/, "comment"],
+        [/\/\*/, "comment", "@comment"],
         [/"([^"\\]|\\.)*$/, "string.invalid"],
         [/"/, "string", "@string"],
-        [/\b(?:print|if|else|while|for|in|func|return|break|continue|try|catch|include|true|false|null|const|int|string|bool|long|float|double)\b/, "keyword"],
-        [/[=+\-*\/%<>!&|^~]+/, "operator"],
+        [/\b(?:print|if|else|while|for|in|func|return|break|continue|try|catch|include|match|struct|true|false|null|var|let|const|int|string|bool|long|float|double)\b/, "keyword"],
+        [/=>|->|\?\.|\?\?|\+\+|--|\+=|-=|\*=|\/=|%=|==|!=|<=|>=|&&|\|\||<<|>>/, "operator"],
+        [/[=+\-*\/%<>!&|^~?:]+/, "operator"],
         [wapiFunctionNameRegex, "type.identifier"],
-        [/\b0x[0-9a-fA-F]+\b/, "number.hex"],
-        [/\b\d+(?:\.\d+)?\b/, "number"],
+        [/\b0x[0-9a-fA-F](?:_?[0-9a-fA-F])*\b/, "number.hex"],
+        [/\b\d(?:_?\d)*(?:\.\d(?:_?\d)*)?\b/, "number"],
         [/[{}()[\]]/, "@brackets"],
         [/[a-zA-Z_]\w*/, "identifier"]
       ],
       string: [
-        [/[^\\"]+/, "string"],
+        [/\{[^}]*\}/, "variable.template"],
+        [/[^\"{]+/, "string"],
         [/\\./, "string.escape"],
         [/"/, "string", "@pop"]
+      ],
+      comment: [
+        [/[^/*]+/, "comment"],
+        [/\*\//, "comment", "@pop"],
+        [/[/*]/, "comment"]
       ]
     }
   });
@@ -936,17 +963,55 @@ function installMonacoLanguage() {
         endColumn: word.endColumn
       };
 
+      const linePrefix = model.getValueInRange({
+        startLineNumber: position.lineNumber,
+        startColumn: 1,
+        endLineNumber: position.lineNumber,
+        endColumn: position.column
+      });
+      if (/(?:\?|\.)\.?[a-zA-Z_]*$/.test(linePrefix) && /(?:\.|\?\.)[a-zA-Z_]*$/.test(linePrefix)) {
+        return {
+          suggestions: wapiMethodFunctions.map((method) => ({
+            label: method.name,
+            kind: monaco.languages.CompletionItemKind.Method,
+            detail: method.detail,
+            documentation: `Receiver: ${method.receiver}`,
+            insertText: method.params?.length ? `${method.name}(${method.params.map((param, index) => "${" + `${index + 1}:${param}` + "}").join(", ")})` : `${method.name}()`,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            range,
+            sortText: `0_${method.name}`
+          }))
+        };
+      }
+
+      const syntaxSnippets = [
+        { label: "match", insertText: "match ${1:value} {\n    ${2:_} => ${3:print(${1:value})}\n}", detail: "match expression" },
+        { label: "struct", insertText: "struct ${1:Name} {\n    ${2:int} ${3:field}\n}\n\n${1:Name} ${4:item} = ${1:Name} { ${3:field}: ${5:0} }", detail: "struct declaration and literal" },
+        { label: "func ->", insertText: "func ${1:name}(${2:int value}) -> ${3:int} {\n    return ${4:value}\n}", detail: "function with return type" }
+      ];
+
       return {
-        suggestions: wapiRuntimeFunctions.map((fn) => ({
-          label: fn.name,
-          kind: monaco.languages.CompletionItemKind.Function,
-          detail: wapiFunctionSignature(fn),
-          documentation: wapiFunctionDocs(fn),
-          insertText: wapiFunctionSnippet(fn),
-          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-          range,
-          sortText: `0_${fn.name}`
-        }))
+        suggestions: [
+          ...syntaxSnippets.map((snippet) => ({
+            label: snippet.label,
+            kind: monaco.languages.CompletionItemKind.Snippet,
+            detail: snippet.detail,
+            insertText: snippet.insertText,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            range,
+            sortText: `0_${snippet.label}`
+          })),
+          ...wapiRuntimeFunctions.map((fn) => ({
+            label: fn.name,
+            kind: monaco.languages.CompletionItemKind.Function,
+            detail: wapiFunctionSignature(fn),
+            documentation: wapiFunctionDocs(fn),
+            insertText: wapiFunctionSnippet(fn),
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            range,
+            sortText: `1_${fn.name}`
+          }))
+        ]
       };
     }
   });
@@ -1003,24 +1068,29 @@ function installMonacoLanguage() {
     base: "vs-dark",
     inherit: true,
     rules: [
-      { token: "comment", foreground: "444444", fontStyle: "italic" },
-      { token: "keyword", foreground: "aaaaaa", fontStyle: "bold" },
-      { token: "type.identifier", foreground: "999999" },
-      { token: "string", foreground: "888888" },
-      { token: "number", foreground: "999999" },
-      { token: "delimiter", foreground: "666666" },
-      { token: "operator", foreground: "777777" }
+      { token: "comment", foreground: "6b7280", fontStyle: "italic" },
+      { token: "keyword", foreground: "4ade80", fontStyle: "bold" },
+      { token: "type.identifier", foreground: "38bdf8" },
+      { token: "identifier", foreground: "d6d3d1" },
+      { token: "string", foreground: "fbbf24" },
+      { token: "string.escape", foreground: "fde68a" },
+      { token: "variable.template", foreground: "38bdf8" },
+      { token: "string.invalid", foreground: "f87171" },
+      { token: "number", foreground: "c084fc" },
+      { token: "number.hex", foreground: "a78bfa" },
+      { token: "delimiter", foreground: "94a3b8" },
+      { token: "operator", foreground: "e5e7eb" }
     ],
     colors: {
-      "editor.background": "#1a1a1a",
-      "editor.foreground": "#888888",
+      "editor.background": "#111312",
+      "editor.foreground": "#d6d3d1",
       "editorLineNumber.foreground": "#333333",
       "editorLineNumber.activeForeground": "#22c55e",
       "editorCursor.foreground": "#22c55e",
       "editor.selectionBackground": "#2a2a2a88",
       "editor.inactiveSelectionBackground": "#22222266",
       "editor.selectionHighlightBackground": "#22222244",
-      "editor.lineHighlightBackground": "#1f1f1f",
+      "editor.lineHighlightBackground": "#171a18",
       "editorIndentGuide.background1": "#222222",
       "editorIndentGuide.activeBackground1": "#333333",
       "editorBracketMatch.background": "#22c55e22",
@@ -1036,7 +1106,7 @@ function installMonacoLanguage() {
       "input.background": "#161616",
       "input.border": "#2a2a2a",
       "focusBorder": "#22c55e",
-      "minimap.background": "#161616"
+      "minimap.background": "#101211"
     }
   });
 }
@@ -1254,7 +1324,7 @@ function renderProjectTreeNode(parent, node, depth = 0) {
     button.dataset.folderPath = folder.path;
     button.style.setProperty("--depth", depth);
     button.innerHTML = `
-      ${iconSvg(ChevronRight, "ui-icon chevron")}
+      ${iconSvg(collapsed ? ChevronRight : ChevronDown, "ui-icon chevron")}
       ${iconSvg(collapsed ? Folder : FolderOpen, "ui-icon folder-icon")}
       <span class="tree-label"></span>
       <span class="dirty-dot" aria-hidden="true"></span>
@@ -1484,8 +1554,8 @@ function renderSidePanel() {
   if (ideState.activePanel === "docs") {
     if (meta) meta.textContent = `${wapiRuntimeFunctions.length} callable entries`;
     const docs = [
-      ["Language", "const, null, double/float, ternary expressions, block comments, interpolation, arrays, range(start,end,step)."],
-      ["Strings", "trim, split, padLeft, padRight, toHex, fromHex, contains, replace, toLower."],
+      ["Language", "var/let/const inference, interpolation, return annotations, separators, match, structs, named args, methods, ?., ??."],
+      ["Strings", "Global helpers plus method form: text.len(), text.contains(value), text.trim(), items.push(value)."],
       ["Checks", "Use Check for preflight. Problems are mapped back into Monaco markers when the runtime reports line/column data."],
       ["Runtime", "Capabilities stay explicit. Safe mode blocks dangerous process, memory, injection, debug, and token operations."]
     ];
@@ -1703,12 +1773,14 @@ async function exportActiveToolLog() {
 function renderToolWindow() {
   const tabs = document.getElementById("toolTabs");
   const body = document.getElementById("toolBody");
+  const headerControls = document.getElementById("toolHeaderControls");
   if (!tabs || !body) return;
   body.closest(".tool-window")?.classList.toggle("is-forced-open", ideState.activeTool === "terminal");
   tabs.querySelectorAll("[data-tool]").forEach((tab) => {
     tab.classList.toggle("is-active", tab.dataset.tool === ideState.activeTool);
   });
   body.replaceChildren();
+  headerControls?.replaceChildren();
 
   if (ideState.activeTool === "problems") {
     if (ideState.problems.length === 0) {
@@ -1734,7 +1806,7 @@ function renderToolWindow() {
   }
 
   if (ideState.activeTool === "audit") {
-    renderLogToolbar(body);
+    if (headerControls) renderLogToolbar(headerControls);
     renderLogLines(body, filteredLogLines(ideState.auditLines), "No audit lines yet");
     return;
   }
@@ -1776,7 +1848,7 @@ function renderToolWindow() {
     return;
   }
 
-  renderLogToolbar(body);
+  if (headerControls) renderLogToolbar(headerControls);
   renderLogLines(body, filteredLogLines(ideState.outputLines), "No output yet");
 }
 
@@ -2206,35 +2278,36 @@ function insertEditorSnippet(snippet) {
 function insertTemplateSnippet(templateId) {
   const snippets = {
     "poll-loop": [
-      "int attempts = 0",
+      "var attempts = 0",
       "while attempts < ${1:10} {",
-      "    attempts = attempts + 1",
-      "    print(\"attempt ${attempts}\")",
+      "    attempts += 1",
+      "    print(\"attempt {attempts}\")",
       "}",
       ""
     ].join("\n"),
     "function-helper": [
-      "func int ${1:add}(int ${2:a}, int ${3:b}) {",
+      "func ${1:add}(int ${2:a}, int ${3:b}) -> int {",
       "    return ${2:a} + ${3:b}",
       "}",
       "",
-      "int result = ${1:add}(1, 2)",
+      "var result = ${1:add}(1, 2)",
       "print(result)",
       ""
     ].join("\n"),
     "array-scan": [
-      "int[] values = []",
-      "push(values, 10)",
-      "push(values, 20)",
-      "for i in range(len(values)) {",
-      "    print(\"value ${i}: ${values}\")",
+      "var values = []",
+      "values.push(10)",
+      "values.push(20)",
+      "for i in range(values.len()) {",
+      "    var current = values[i]",
+      "    print(\"value {i}: {current}\")",
       "}",
       ""
     ].join("\n"),
     "safe-process": [
-      "string target = \"notepad\"",
-      "int pid = findProcessPID(target)",
-      "print(\"pid is ${pid}\")",
+      "let target = \"notepad\"",
+      "var pid = findProcessPID(target)",
+      "print(\"pid is {pid}\")",
       ""
     ].join("\n")
   };
@@ -2676,6 +2749,7 @@ function renderWindowBar() {
               <button class="tool-tab" type="button" data-tool="terminal">Terminal</button>
               <button class="tool-tab" type="button" data-tool="audit">Audit</button>
               <span class="tool-tabs-spacer"></span>
+              <div id="toolHeaderControls" class="tool-header-controls"></div>
               <button class="tool-utility" type="button" title="New terminal" data-new-terminal>${iconSvg(Plus)}</button>
               <button class="tool-utility" type="button" title="Close panel" data-close-tool>${iconSvg(X)}</button>
             </div>
@@ -2969,8 +3043,19 @@ function bindEvents() {
   });
 
   document.getElementById("toolTabs")?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-export-log]")) {
+      exportActiveToolLog();
+      return;
+    }
     const tab = event.target.closest("[data-tool]");
     if (tab) setActiveTool(tab.dataset.tool);
+  });
+
+  document.getElementById("toolTabs")?.addEventListener("change", (event) => {
+    if (event.target.id === "outputFilter") {
+      ideState.outputFilter = event.target.value;
+      renderToolWindow();
+    }
   });
 
   document.getElementById("toolBody")?.addEventListener("change", (event) => {

@@ -60,6 +60,10 @@ void printUsage() {
         << "  --dry-run                Alias for check/preflight mode.\n"
         << "  --watch                  Accepted by run/check for editor integrations.\n"
         << "\n"
+        << "Syntax highlights:\n"
+        << "  var/let/const inference, {expr} string interpolation, -> return types, match, structs, ?. and ??.\n"
+        << "  Methods: text.len(), text.contains(value), items.push(value), items.pop().\n"
+        << "\n"
         << "Examples:\n"
         << "  wapi run \"int pid = findProcessPID(\\\"notepad\\\")\" --mode safe\n"
         << "  wapi check script.wapi --quiet --max-steps 1000\n"
@@ -310,7 +314,10 @@ void printFunctionHelp(const std::string& name) {
         {"max", "max(a, b)", "Larger numeric value."},
         {"push", "push(array, value)", "Append to an array and return it."},
         {"pop", "pop(array)", "Remove and return the last array item."},
-        {"print", "print(value)", "Write a value to stdout."}
+        {"print", "print(value)", "Write a value to stdout."},
+        {"syntax", "var x = 1_000; let y = \"x={x}\"; match x { _ => print(y) }", "Language syntax overview."},
+        {"methods", "text.len(), items.push(value), maybe?.len() ?? 0", "Method call and null-safe syntax."},
+        {"struct", "struct Point { int x } Point p = Point { x: 1 }", "Declare and instantiate structured values."}
     };
     if (name.empty()) {
         std::cout << "Available help topics:\n";
@@ -392,6 +399,7 @@ void runStandardizedTests() {
     test("while loops", "int i = 0 while i < 3 { i = i + 1 }", options);
     test("print expression", "print(\"value=\" + 42)", options);
     test("namespaced runtime call", "proc.list()", options);
+    test("syntax improvements", "var pid = 1_000 let label = \"pid={pid}\" var items = [] items.push(pid) func add(int left, int right) -> int { return left + right } struct Point { int x int y } Point p = Point { x: add(right: 2, left: 3), y: items.len() } p.x += 4 var maybe = null var fallback = maybe?.len() ?? p.x match fallback { 9 => print(label) _ => print(\"bad\") }", options);
 
     std::cout << "[Process] ---------------------------------------------\n";
     test("listProcesses", "listProcesses()", options);

@@ -9,9 +9,12 @@
 #include "parser.h"
 
 struct WapiArray;
+struct WapiStructInstance;
 using WapiArrayPtr = std::shared_ptr<WapiArray>;
-using WapiValue = std::variant<std::monostate, int, long long, double, std::string, bool, WapiArrayPtr>;
+using WapiStructPtr = std::shared_ptr<WapiStructInstance>;
+using WapiValue = std::variant<std::monostate, int, long long, double, std::string, bool, WapiArrayPtr, WapiStructPtr>;
 struct WapiArray { std::vector<WapiValue> values; };
+struct WapiStructInstance { std::string typeName; std::unordered_map<std::string, WapiValue> fields; };
 
 enum class WapiMode {
     Safe,
@@ -53,8 +56,9 @@ public:
 private:
     WapiRuntimeOptions options;
     std::unordered_map<std::string, WapiValue> variables;
-    std::unordered_set<std::string> constants;
+    std::unordered_set<std::string> immutableBindings;
     std::unordered_map<std::string, std::shared_ptr<FunctionDeclaration>> userFunctions;
+    std::unordered_map<std::string, std::shared_ptr<StructDeclaration>> structRegistry;
     std::unordered_set<long long> trackedHandles;
     std::unordered_map<long long, std::unordered_set<long long>> trackedAllocations;
 
@@ -63,6 +67,12 @@ private:
     WapiValue evalUnaryExpression(const UnaryExpression& expr);
     WapiValue evalBinaryExpression(const BinaryExpression& expr);
     WapiValue evalIndexExpression(const IndexExpression& expr);
+    WapiValue evalMethodCall(const MethodCallExpression& expr);
+    WapiValue evalNullSafeCall(const NullSafeCallExpression& expr);
+    WapiValue evalFieldAccess(const FieldAccessExpression& expr);
+    WapiValue evalFieldAssignment(const FieldAssignment& stmt);
+    WapiValue evalMatchStatement(const MatchStatement& stmt);
+    WapiValue evalStructLiteral(const StructLiteral& literal);
     WapiValue evalUserFunction(const std::shared_ptr<FunctionDeclaration>& declaration, const std::shared_ptr<FunctionCall>& call);
     WapiValue evalBuiltInFunction(const std::shared_ptr<FunctionCall>& call);
 

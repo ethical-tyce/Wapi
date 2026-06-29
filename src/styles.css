@@ -388,8 +388,7 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .tree-folder .chevron { width: 13px; height: 13px; transform: rotate(90deg); }
-    .tree-folder.is-collapsed .chevron { transform: rotate(0); }
+    .tree-folder .chevron { width: 13px; height: 13px; transform: none; }
     .tree-spacer { width: 13px; }
     .dirty-dot {
       display: none;

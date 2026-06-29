@@ -888,3 +888,146 @@ img.window-wordmark{
 .tool-window{grid-column:1;grid-row:3;min-width:0;min-height:0}
 .menu-strip .toolbar-actions-compact{width:auto}
 .runtime-inspector-drawer{grid-row:2 / 4}
+/* Tabs sit on the toolbar baseline; primary actions stay compact vertically. */
+.menu-strip .document-tabs{
+  align-items:flex-end;
+}
+.document-tab{
+  height:34px;
+  min-height:34px;
+  margin-top:auto;
+  border-bottom-color:#1d1f1d;
+  border-radius:6px 6px 0 0;
+}
+.document-tab.is-active{
+  border-bottom-color:#151915;
+}
+#toolbarCheck,
+#toolbarRun{
+  height:32px;
+  min-height:32px;
+  padding-block:0;
+  align-self:center;
+}
+#toolbarCheck .ui-icon,
+#toolbarRun .ui-icon{
+  width:13px;
+  height:13px;
+}
+/* Active document tab underline spans the full tab width. */
+.document-tab:after{
+  left:0;
+  right:0;
+  bottom:-1px;
+}
+/* Darker editor canvas and scrollable rounded document tabs. */
+.editor-workbench,
+#monacoEditor,
+.monaco-editor,
+.monaco-editor .margin,
+.monaco-editor-background{
+  background:#111312!important;
+}
+.monaco-editor .current-line,
+.monaco-editor .view-overlays .current-line{
+  background:#171a18!important;
+}
+.menu-strip .document-tabs{
+  flex:1 1 0;
+  max-width:100%;
+  overflow-x:auto;
+  overflow-y:hidden;
+  overscroll-behavior-x:contain;
+  scrollbar-width:thin;
+  scrollbar-color:#2a312b transparent;
+}
+.menu-strip .document-tabs::-webkit-scrollbar{height:5px}
+.menu-strip .document-tabs::-webkit-scrollbar-track{background:transparent}
+.menu-strip .document-tabs::-webkit-scrollbar-thumb{background:#2a312b;border-radius:99px}
+.document-tab{
+  border-radius:11px 11px 0 0;
+}
+/* Status bar top separator. */
+.status-bar{
+  border-top:1px solid #1e241f;
+}
+
+/* Browser QA polish: activity rail, tool controls, and tab corners. */
+.activity-bar{
+  gap:0;
+  overflow:hidden;
+}
+.activity-button,
+.activity-button:hover,
+.activity-button.is-active,
+.activity-button:active,
+.activity-button:focus-visible{
+  border:0;
+  border-bottom:0;
+  color:#6f786f;
+  background:transparent;
+}
+.activity-button:hover{
+  color:#b8c0b8;
+}
+.activity-button:active,
+.activity-button.is-active{
+  color:var(--accent);
+}
+.activity-button.is-active .ui-icon,
+.activity-button:active .ui-icon{
+  filter:drop-shadow(0 0 8px rgb(74 222 128/.28));
+  stroke-width:1.85;
+}
+.activity-button:not(.is-active):not(:active) .ui-icon{
+  filter:none;
+  stroke-width:1.55;
+}
+.document-tab{
+  border-radius:7px 7px 0 0;
+}
+.tool-tabs{
+  align-items:center;
+}
+.tool-tabs-spacer{
+  flex:1 1 auto;
+}
+.tool-header-controls{
+  display:flex;
+  align-items:center;
+  flex:0 0 auto;
+  min-width:0;
+  height:100%;
+  margin-left:auto;
+  padding:0 8px;
+}
+.tool-header-controls:empty{
+  display:none;
+}
+.tool-header-controls .tool-log-controls{
+  position:static;
+  display:flex;
+  align-items:center;
+  gap:7px;
+  height:100%;
+  padding:0;
+  border:0;
+  background:transparent;
+}
+.tool-header-controls .tool-log-controls select,
+.tool-header-controls .tool-export{
+  height:25px;
+  border-color:#242a24;
+  border-radius:4px;
+  background:#0b0e0b;
+}
+.tool-header-controls .tool-log-controls select{
+  width:94px;
+  padding:0 8px;
+}
+.tool-header-controls .tool-export{
+  padding:0 9px;
+}
+.tool-body>.tool-log-controls{
+  display:none;
+}

@@ -85,7 +85,7 @@ Token Lexer::readHex() {
     advance();
     advance();
     std::string num;
-    while (pos < src.size() && isxdigit(static_cast<unsigned char>(src[pos]))) { num += src[pos]; advance(); }
+    while (pos < src.size() && (isxdigit(static_cast<unsigned char>(src[pos])) || src[pos] == '_')) { if (src[pos] != '_') num += src[pos]; advance(); }
     if (num.empty()) throw lexError(tokenLine, tokenColumn, "Invalid hexadecimal literal");
     return { HEX_LITERAL, num, tokenLine, tokenColumn, tokenOffset };
 }
@@ -95,11 +95,11 @@ Token Lexer::readInt() {
     const int tokenColumn = column;
     const size_t tokenOffset = pos;
     std::string num;
-    while (pos < src.size() && isdigit(static_cast<unsigned char>(src[pos]))) { num += src[pos]; advance(); }
+    while (pos < src.size() && (isdigit(static_cast<unsigned char>(src[pos])) || src[pos] == '_')) { if (src[pos] != '_') num += src[pos]; advance(); }
     if (pos < src.size() && src[pos] == '.' && pos + 1 < src.size() && isdigit(static_cast<unsigned char>(src[pos + 1]))) {
         num += src[pos];
         advance();
-        while (pos < src.size() && isdigit(static_cast<unsigned char>(src[pos]))) { num += src[pos]; advance(); }
+        while (pos < src.size() && (isdigit(static_cast<unsigned char>(src[pos])) || src[pos] == '_')) { if (src[pos] != '_') num += src[pos]; advance(); }
         return { DOUBLE_LITERAL, num, tokenLine, tokenColumn, tokenOffset };
     }
     return { INT_LITERAL, num, tokenLine, tokenColumn, tokenOffset };
@@ -122,7 +122,7 @@ Token Lexer::readString() {
         advance();
         advance();
         advance();
-        return { STRING_LITERAL, str, tokenLine, tokenColumn, tokenOffset };
+        return { STRING_LITERAL, str, tokenLine, tokenColumn, tokenOffset, str.find('{') != std::string::npos };
     }
 
     advance();
@@ -147,7 +147,7 @@ Token Lexer::readString() {
     }
     if (pos >= src.size()) throw lexError(tokenLine, tokenColumn, "Unterminated string literal");
     advance();
-    return { STRING_LITERAL, str, tokenLine, tokenColumn, tokenOffset };
+    return { STRING_LITERAL, str, tokenLine, tokenColumn, tokenOffset, str.find('{') != std::string::npos };
 }
 
 Token Lexer::readIdentifierOrKeyword() {
@@ -168,6 +168,10 @@ Token Lexer::readIdentifierOrKeyword() {
     if (word == "try")      return { TRY, word, tokenLine, tokenColumn, tokenOffset };
     if (word == "catch")    return { CATCH, word, tokenLine, tokenColumn, tokenOffset };
     if (word == "include")  return { INCLUDE, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "match")    return { MATCH, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "struct")   return { STRUCT, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "var")      return { VAR, word, tokenLine, tokenColumn, tokenOffset };
+    if (word == "let")      return { LET, word, tokenLine, tokenColumn, tokenOffset };
     if (word == "const")    return { CONST, word, tokenLine, tokenColumn, tokenOffset };
     if (word == "int")      return { TYPE_INT, word, tokenLine, tokenColumn, tokenOffset };
     if (word == "long")     return { TYPE_LONG, word, tokenLine, tokenColumn, tokenOffset };
@@ -196,7 +200,10 @@ Token Lexer::readSymbol() {
     case ']': return { RBRACKET, "]", tokenLine, tokenColumn, tokenOffset };
     case ';': return { SEMICOLON, ";", tokenLine, tokenColumn, tokenOffset };
     case ',': return { COMMA, ",", tokenLine, tokenColumn, tokenOffset };
-    case '?': return { QUESTION, "?", tokenLine, tokenColumn, tokenOffset };
+    case '?':
+        if (pos < src.size() && src[pos] == '.') { advance(); return { QUESTION_DOT, "?.", tokenLine, tokenColumn, tokenOffset }; }
+        if (pos < src.size() && src[pos] == '?') { advance(); return { QUESTION_QUESTION, "??", tokenLine, tokenColumn, tokenOffset }; }
+        return { QUESTION, "?", tokenLine, tokenColumn, tokenOffset };
     case ':': return { COLON, ":", tokenLine, tokenColumn, tokenOffset };
     case '+':
         if (pos < src.size() && src[pos] == '+') { advance(); return { INCREMENT, "++", tokenLine, tokenColumn, tokenOffset }; }
@@ -226,6 +233,7 @@ Token Lexer::readSymbol() {
         return { BIT_OR, "|", tokenLine, tokenColumn, tokenOffset };
     case '=':
         if (pos < src.size() && src[pos] == '=') { advance(); return { EQUALS, "==", tokenLine, tokenColumn, tokenOffset }; }
+        if (pos < src.size() && src[pos] == '>') { advance(); return { FAT_ARROW, "=>", tokenLine, tokenColumn, tokenOffset }; }
         return { ASSIGN, "=", tokenLine, tokenColumn, tokenOffset };
     case '!':
         if (pos < src.size() && src[pos] == '=') { advance(); return { NOT_EQUALS, "!=", tokenLine, tokenColumn, tokenOffset }; }
