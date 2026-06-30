@@ -47,7 +47,7 @@ self.MonacoEnvironment = {
 function attrsString(attrs = {}) {
   return Object.entries(attrs)
     .filter(([, value]) => value !== undefined && value !== null)
-    .map(([key, value]) => `${key}="${String(value)}"`)
+    .map(([key, value]) => `${key}="${escapeHtml(String(value))}"`)
     .join(" ");
 }
 
@@ -65,6 +65,15 @@ const welcomeSource = "";
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
 }
 
 function normalizePath(value = "") {
@@ -727,7 +736,7 @@ function renderRuntimeInspector() {
         ]
       : [["STATE", "No runtime process yet"], ["SOURCE", "Run Check or Run to inspect"]];
     processBody.innerHTML = rows.map(([label, value]) =>
-      `<div class="inspector-kv"><span>${label}</span><strong>${String(value)}</strong></div>`
+      `<div class="inspector-kv"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`
     ).join("");
   }
 
@@ -737,7 +746,7 @@ function renderRuntimeInspector() {
       ? ideState.projectConfig.capabilities
       : ["No capabilities granted"];
     capabilityBody.innerHTML = caps.slice(0, 5).map((capability) =>
-      `<div class="inspector-cap"><span class="inspector-led"></span><code>${capability}</code><strong>${capability.startsWith("No ") ? "NONE" : "GRANTED"}</strong></div>`
+      `<div class="inspector-cap"><span class="inspector-led"></span><code>${escapeHtml(capability)}</code><strong>${capability.startsWith("No ") ? "NONE" : "GRANTED"}</strong></div>`
     ).join("");
   }
 
@@ -746,14 +755,14 @@ function renderRuntimeInspector() {
     const last = ideState.runtimeInspector.lastResult;
     mapBody.innerHTML = last?.exe
       ? `<div class="memory-row memory-head"><span>MODULE</span><span>STATE</span><span>HOST</span></div>
-         <div class="memory-row"><span>${fileName(last.exe)}</span><span>managed</span><span>${last.pid ?? "--"}</span></div>`
+         <div class="memory-row"><span>${escapeHtml(fileName(last.exe))}</span><span>managed</span><span>${escapeHtml(String(last.pid ?? "--"))}</span></div>`
       : '<div class="inspector-empty">Memory map becomes available with a runtime session.</div>';
   }
 
   const eventsBody = drawer.querySelector("[data-inspector-events]");
   if (eventsBody) {
     eventsBody.innerHTML = ideState.runtimeInspector.events.map((event) =>
-      `<div class="event-row is-${event.status}"><time>${event.time}</time><span>${event.message}</span></div>`
+      `<div class="event-row is-${escapeHtml(event.status)}"><time>${escapeHtml(event.time)}</time><span>${escapeHtml(event.message)}</span></div>`
     ).join("");
   }
 }
@@ -1476,7 +1485,7 @@ function renderDocumentTabs() {
       ${iconSvg(fileExtension(file.name) === ".wapi" ? FileCode : FileText, "ui-icon tab-file-icon")}
       <span class="document-tab-name"></span>
       <span class="dirty-dot" aria-hidden="true"></span>
-      <span class="tab-close" data-close-tab="${file.id}" aria-label="Close tab">${iconSvg(X)}</span>
+      <span class="tab-close" data-close-tab="${escapeHtml(file.id)}" aria-label="Close tab">${iconSvg(X)}</span>
     `;
     tab.querySelector(".document-tab-name").textContent = file.name;
     tabs.appendChild(tab);
@@ -2100,7 +2109,7 @@ function renderSettingsSurface() {
     <div class="settings-tab-shell">
       <div class="settings-tab-header">
         <strong>Settings</strong>
-        <span>${projectDisplayName()}</span>
+        <span>${escapeHtml(projectDisplayName())}</span>
       </div>
       <div class="settings-tab-grid">
         <section class="settings-tab-section">
@@ -2140,7 +2149,7 @@ function renderSettingsSurface() {
           <h2>Capabilities</h2>
           <div class="settings-capability-grid">
             ${runtimeCapabilities.map((capability) => `
-              <button class="capability-chip${ideState.projectConfig.capabilities.includes(capability) ? " is-active" : ""}" type="button" data-settings-tab-capability="${capability}">${capability}</button>
+              <button class="capability-chip${ideState.projectConfig.capabilities.includes(capability) ? " is-active" : ""}" type="button" data-settings-tab-capability="${escapeHtml(capability)}">${escapeHtml(capability)}</button>
             `).join("")}
           </div>
         </section>
