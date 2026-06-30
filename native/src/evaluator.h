@@ -148,6 +148,7 @@ private:
     WapiValue wapi_debugContinue(int eventCode);
     WapiValue wapi_openProcessToken(long long handle);
     WapiValue wapi_enablePrivilege(const std::string& privilegeName);
+    WapiValue wapi_sleep(long long milliseconds);
 
 
 

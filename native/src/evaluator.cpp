@@ -644,7 +644,7 @@ void Evaluator::enforcePolicy(const std::string& functionName, const std::string
         "window.message", "inject.dll", "inject.shellcode"
     };
     static const std::unordered_set<std::string> softMissingCapabilities = {
-        "runtime.print", "language.core", "language.string", "language.math", "language.array"
+        "runtime.print", "language.core", "language.string", "language.math", "language.array", "runtime.sleep"
     };
     if (devOnlyCapabilities.count(capability) && options.mode == WapiMode::Safe) {
         emitAudit(functionName, capability, "deny", "capability requires dev or unsafe mode");
@@ -1153,6 +1153,12 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
             "testInjectDLL",
             {1, "inject.dll", true, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
                 return evaluator.wapi_testInjectDLL(evaluator.asInt(call->args[0], call->name, 0));
+            }}
+        },
+        {
+            "sleep",
+            {1, "runtime.sleep", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_sleep(evaluator.asLongLong(call->args[0], call->name, 0));
             }}
         }
     };
@@ -1817,4 +1823,16 @@ WapiValue Evaluator::wapi_testInjectDLL(int pid) {
         throw WapiUnstableException("TestDLL.dll was not found beside Wapi.exe or in the matching TestDLL build output");
     }
     return wapi_injectDLL(pid, wideToUtf8(dllPath.wstring()));
+}
+
+WapiValue Evaluator::wapi_sleep(long long milliseconds) {
+    if (milliseconds < 0) {
+        throw WapiUnstableException("Sleep duration cannot be negative");
+    }
+    if (options.checkOnly) {
+        emitAudit("sleep", "runtime.sleep", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+    ::Sleep(static_cast<DWORD>(milliseconds));
+    return 0;
 }
