@@ -1,38 +1,9 @@
 # Wapi
 
-Wapi is a C++ command-line language and desktop IDE for controlled Windows API scripting.
-
-It is built around a small custom language, explicit file-level directives, and a safety-first runtime policy model. Scripts can inspect processes, inspect modules, work with process memory, find windows, and call higher-risk runtime helpers only when the script and runtime policy both allow it.
-
-## Current Status
-
-This repository is an early Wapi build with:
-
-- a native lexer/parser/evaluator pipeline in `native/src/`,
-- a directive-aware CLI for `run`, `check`, `lint`, `fmt`, `bundle`, `doc`, and project scaffolding,
-- a Tauri/Vite IDE with Monaco editing, project templates, diagnostics, settings, and terminal integration,
-- implemented process, memory, module, thread, window, injection, debug, and token runtime bindings,
-- runtime audit output and strict capability checks.
-
-## Project Structure
-
-- `native/src/` - C++ CLI, lexer, parser, evaluator, and Windows API runtime.
-- `native/TestDLL/` - sample DLL project used by `testInjectDLL(pid)`.
-- `native/Wapi.vcxproj` - main Visual Studio project.
-- `src/` - Vite renderer for the desktop IDE.
-- `src-tauri/` - Tauri host, guarded runtime execution, projects, and terminal integration.
-- `docs/language.md` - current Wapi language and directive reference.
-- `docs/assets/` - application branding shared by the renderer and desktop bundle.
-- `docs/design/` - design reference and visual QA notes.
-- `Wapi.slnx` - root Visual Studio solution for the native projects.
-
-## Script Shape
-
-New scripts should start with a directive block. Directives are read before lexing, so they are not normal language statements.
+**A scripting language for Windows API automation where every script declares its own capabilities before it runs.**
 
 ```wapi
 #name "Process quick check"
-#version "1.0.0"
 #mode safe
 #strict
 #cap proc.list runtime.print
@@ -42,40 +13,90 @@ var pid = proc.find(target)
 print("{target} pid={pid}")
 ```
 
-Common directives:
+Reading `proc.find`, `proc.open`, and `mem.write` calls in a Windows API script doesn't tell you the blast radius. Wapi scripts declare it up front, in the file, in plain text — `#mode`, `#cap` — and the runtime enforces it before a single Windows API call executes. You can read the first five lines of any `.wapi` file and know exactly what it's allowed to touch.
 
-- `#mode safe|dev|unsafe` sets the script mode requirement.
-- `#cap <name> [<name>...]` declares runtime capabilities used by the file.
-- `#include "relative/file.wapi"` includes another relative `.wapi` file before parsing. Includes cannot be absolute paths or escape the source root.
-- `#strict` makes missing capabilities hard errors.
-- `#allow-injection` allows injection helpers outside `unsafe` mode.
-- `#name`, `#version`, `#author`, and `#description` add script metadata.
+## Why Wapi
 
-Old inline `include "helpers.wapi"` still works, but `#include` is preferred for file-level dependencies.
+PowerShell can call into the Windows API, but the P/Invoke syntax is painful and there's no safety model. Python with `ctypes` works but is verbose, brittle, and equally ungoverned. Frida is powerful but assumes you already trust the script. Wapi is a small purpose-built language with:
 
-## Language Snapshot
+- a real lexer → parser → evaluator pipeline, not a wrapper script,
+- a capability system where scripts declare what they need (`#cap proc.read memory.write`) and the runtime enforces it per function call,
+- three enforced modes — `safe`, `dev`, `unsafe` — with a hard floor a script can't silently exceed,
+- full audit logging of every privileged call,
+- a desktop IDE with Monaco editing, inline diagnostics, a process explorer, and a live capability inspector.
 
-The language currently supports:
+## Quick start
 
-- `var`, `let`, and `const` declarations with inference,
-- typed declarations: `int`, `long`, `string`, `bool`, `double`, `float`, and custom struct names,
-- string, int, hex, bool, double, and `null` literals,
-- arrays, indexing, method calls, and field access,
-- string interpolation with `{expr}` inside strings,
-- arithmetic, comparison, logical, bitwise, compound assignment, increment, decrement, ternary, and null-coalescing expressions,
-- `if` / `else`, `while`, and `for i in range(...)` loops,
-- `func` declarations with `->` return annotations,
-- `struct` declarations and struct literals,
-- `match` with literal, binding, guarded, and `_` default arms,
-- `try` / `catch`,
-- named arguments in calls, for example `add(right: 2, left: 1)`,
-- null-safe method calls with `?.` and fallback with `??`,
-- dotted runtime aliases such as `proc.find`, `proc.modules`, `mem.read`, and `window.find`.
+```powershell
+git clone https://github.com/ethical-tyce/Wapi.git
+cd Wapi
 
-Language-only example:
+# build the CLI
+& 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe' .\native\Wapi.vcxproj /p:Configuration=Release /p:Platform=x64
+
+# run a script
+.\native\x64\Release\Wapi.exe run examples/process_check.wapi
+```
+
+Prebuilt binaries aren't published yet — see [Build native runtime](#build-native-runtime) below for full requirements. A tagged release with a standalone `Wapi.exe` and IDE installer is on the roadmap.
+
+## The capability model
+
+Every `.wapi` file can open with a directive block. Directives are read before the lexer runs, so they're not language statements — they're metadata the runtime enforces.
 
 ```wapi
-#name "Language smoke"
+#mode dev
+#cap proc.read proc.write
+#cap memory.read memory.write
+#strict
+```
+
+- `#mode safe|dev|unsafe` — the minimum mode this script requires. Running it under a lower mode is a hard error.
+- `#cap <name> [<name>...]` — capabilities this script uses. Calling a function outside the declared set fails under `#strict`.
+- `#strict` — missing capabilities become hard errors instead of warnings.
+- `#allow-injection` — opt in to injection helpers outside `unsafe` mode.
+- `#include "file.wapi"` — include another `.wapi` file relative to the source root (cannot be absolute or escape the root).
+- `#name`, `#version`, `#author`, `#description` — script metadata, surfaced in the IDE and `wapi doc`.
+
+Run someone else's script with a tighter cap set than it declares and the runtime — not the script — decides what's actually granted:
+
+```powershell
+wapi run untrusted.wapi --mode safe --cap proc.read --strict
+```
+
+`wapi lint` cross-checks every function call against your `#cap` block and tells you what's declared-but-unused and what's used-but-undeclared.
+
+## Project structure
+
+| Path | What's there |
+|---|---|
+| `native/src/` | C++ CLI, lexer, parser, evaluator, Windows API runtime |
+| `native/TestDLL/` | Sample DLL used by `testInjectDLL(pid)` |
+| `native/Wapi.vcxproj` | Main Visual Studio project |
+| `src/` | Vite renderer for the desktop IDE |
+| `src-tauri/` | Tauri host, guarded execution, projects, terminal integration |
+| `docs/language.md` | Full language and directive reference |
+| `Wapi.slnx` | Root Visual Studio solution |
+
+## Language
+
+Wapi currently supports:
+
+- `var` / `let` / `const` with type inference, plus explicit `int`, `long`, `string`, `bool`, `double`, `float`, and struct types
+- string interpolation with `{expr}`
+- arrays, indexing, method calls, field access
+- arithmetic, comparison, logical, bitwise, compound assignment, increment/decrement, ternary, and null-coalescing (`??`) expressions
+- `if`/`else`, `while`, `for i in range(...)`
+- `func` declarations with `->` return type annotations
+- `struct` declarations and struct literals
+- `match` with literal, binding, guarded, and `_` default arms
+- `try`/`catch`
+- named arguments — `add(right: 2, left: 1)`
+- null-safe method calls (`?.`)
+- dotted runtime aliases — `proc.find`, `mem.read`, `window.find`, etc.
+
+```wapi
+#name "Language smoke test"
 #mode safe
 #strict
 #cap runtime.print language.core language.array language.math
@@ -98,213 +119,73 @@ var maybe = null
 var fallback = maybe?.len() ?? p.y
 
 match fallback {
-    7 => print(describe("fallback", fallback))
-    _ => print("unexpected {fallback}")
+    0 => print("zero")
+    _ => print(describe("fallback", fallback))
 }
 ```
 
-## CLI Usage
+Full syntax reference: [`docs/language.md`](docs/language.md).
 
-```txt
-wapi run <script-or-file.wapi|-> [options]
-wapi check <script-or-file.wapi|-> [options]
-wapi lint|validate <script-or-file.wapi|-> [options]
-wapi fmt <script-or-file.wapi> [--write]
-wapi bundle <file.wapi>... [-o output.wapi]
-wapi init [directory]
-wapi doc [function|syntax|directives]
-wapi completions [powershell|bash]
-wapi test
+## Runtime bindings
+
+Every function below has a global name and a dotted alias, and is gated behind a capability declared via `#cap`.
+
+**Process** — `findProcessPID` / `proc.find`, `openProcess` / `proc.open`, `terminateProcess` / `proc.terminate`, `suspendProcess` / `proc.suspend`, `resumeProcess` / `proc.resume`, `closeProcess` / `proc.close`, `closeHandle` / `handle.close`
+
+**Modules** — `listModules` / `proc.modules`, `getModuleBase`, `getModuleBaseAddress` / `proc.module.base`, `getModuleSize` / `proc.module.size`
+
+**Memory** — `readMemory` / `mem.read`, `writeMemory` / `mem.write`, `allocMemory` / `mem.alloc`, `freeMemory` / `mem.free`, `protectMemory` / `mem.protect`, `queryMemory` / `mem.query`
+
+**Threads** — `listThreads` / `thread.list`, `openThread` / `thread.open`, `suspendThread` / `thread.suspend`, `resumeThread` / `thread.resume`, `getThreadContext` / `thread.context`, `setThreadContext` / `thread.context.set`
+
+**Window** — `findWindow` / `window.find`, `listWindowsByPID` / `window.listByPid`, `findWindowByPID` / `window.findByPid`, `sendWindowMessage` / `window.message`
+
+**Injection** *(requires `#allow-injection` outside `unsafe` mode)* — `injectDLL` / `inject.dll`, `testInjectDLL` / `inject.test`, `injectShellcode` / `inject.shellcode`, `createRemoteThread` / `inject.thread`
+
+**Debug / token** — `debugAttach` / `debug.attach`, `debugWaitEvent` / `debug.wait`, `debugReadRegisters` / `debug.registers`, `debugContinue` / `debug.continue`, `openProcessToken` / `token.open`, `enablePrivilege` / `token.privilege`
+
+## CLI
+
+```
+wapi run <file>          run a script
+wapi check <file>        preflight check, side effects suppressed
+wapi lint <file>         capability cross-check + static analysis
+wapi fmt <file>          format in place
+wapi bundle <file>       inline all #include dependencies
+wapi doc <file>          print script metadata + capability summary
+wapi init                scaffold a new project
+wapi repl                interactive shell
 ```
 
-Useful options:
-
-- `--mode safe|dev|unsafe`
-- `--cap <capability>` repeated as needed
-- `--strict-permissions`
-- `--allow-injection`
-- `--timeout <ms>`
-- `--max-steps <n>`
-- `--json`
-- `--quiet`
-- `--verbose`
-- `--trace`
-- `--profile`
-- `--env KEY=VALUE`
-
-File directives are the normal way to describe a script. CLI flags are still useful for wrappers, CI, and one-off overrides. If an explicit CLI mode is lower than the script's `#mode`, Wapi fails before evaluation.
-
-Examples:
-
-```powershell
-.\native\x64\Debug\Wapi.exe lint .\examples\language.wapi --mode safe
-.\native\x64\Debug\Wapi.exe check .\examples\language.wapi --mode safe --strict-permissions
-.\native\x64\Debug\Wapi.exe run .\examples\language.wapi
-.\native\x64\Debug\Wapi.exe check .\examples\process.wapi --mode safe --strict-permissions
-.\native\x64\Debug\Wapi.exe check .\examples\memory.wapi --mode dev --strict-permissions
-.\native\x64\Debug\Wapi.exe doc directives
-.\native\x64\Debug\Wapi.exe fmt .\examples\language.wapi --write
-```
-
-`examples/process.wapi` and `examples/memory.wapi` target `powershell`, matching the documented PowerShell command examples. `proc.find` adds `.exe` internally.
-
-For stdin:
-
-```powershell
-"#mode safe`n#cap runtime.print`nprint(1)" | .\native\x64\Debug\Wapi.exe run -
-```
-
-## Safety Model
-
-Wapi enforces policy at runtime with:
-
-- script directives: `#mode`, `#cap`, `#strict`, `#allow-injection`,
-- CLI flags: `--mode`, `--cap`, `--strict-permissions`, `--allow-injection`,
-- evaluator-side checks for dev-only and injection-only capabilities.
-
-Sensitive WinAPI capabilities are always hard errors when missing. Compatibility mode only soft-warns for non-sensitive helpers such as `runtime.print`; strict mode makes every missing capability a hard error.
-
-Audit lines are emitted as `[WAPI_AUDIT] ...`. `lint` emits `[LINT] ...` lines for missing or unused `#cap` declarations without executing the script.
-
-## Implemented Functions
-
-### Language Helpers
-
-- `len(value)`
-- `substr(text, start, count)`
-- `contains(text, needle)`
-- `replace(text, needle, replacement)`
-- `toLower(text)`
-- `toInt(value)`
-- `abs(number)`
-- `min(a, b)`
-- `max(a, b)`
-- `push(array, value)`
-- `pop(array)`
-- `typeof(value)`
-- `assert(condition, message)`
-- `toHex(number)`
-- `fromHex(text)`
-- `split(text, delimiter)`
-- `trim(text)`
-- `padLeft(text, width, fill)`
-- `padRight(text, width, fill)`
-- `sort(array)`
-
-Many helpers also have method form, such as `text.len()`, `text.contains(value)`, `text.trim()`, `items.push(value)`, `items.pop()`, and `items.sort()`.
-
-### Runtime
-
-- `print(value)`
-
-### Process
-
-- `listProcesses()` / `proc.list()`
-- `findProcessPID(name)` / `proc.find(name)`
-- `openProcess(pid)` / `proc.open(pid)`
-- `terminateProcess(handle)` / `proc.terminate(handle)`
-- `suspendProcess(handle)` / `proc.suspend(handle)`
-- `resumeProcess(handle)` / `proc.resume(handle)`
-- `closeProcess(handle)` / `proc.close(handle)`
-- `closeHandle(handle)` / `handle.close(handle)`
-
-### Modules
-
-- `listModules(pid)` / `proc.modules(pid)`
-- `getModuleBase(pid, moduleName)`
-- `getModuleBaseAddress(pid, moduleName)` / `proc.module.base(pid, moduleName)`
-- `getModuleSize(pid, moduleName)` / `proc.module.size(pid, moduleName)`
-
-### Memory
-
-- `readMemory(handle, address)` / `mem.read(handle, address)`
-- `writeMemory(handle, address, value)` / `mem.write(handle, address, value)`
-- `allocMemory(handle, size)` / `mem.alloc(handle, size)`
-- `freeMemory(handle, address)` / `mem.free(handle, address)`
-- `protectMemory(handle, address, size, protection)` / `mem.protect(handle, address, size, protection)`
-- `queryMemory(handle, address)` / `mem.query(handle, address)`
-
-### Threads
-
-- `listThreads(pid)` / `thread.list(pid)`
-- `openThread(tid)` / `thread.open(tid)`
-- `suspendThread(threadHandle)` / `thread.suspend(threadHandle)`
-- `resumeThread(threadHandle)` / `thread.resume(threadHandle)`
-- `getThreadContext(threadHandle)` / `thread.context(threadHandle)`
-- `setThreadContext(threadHandle, instructionPointer)` / `thread.context.set(threadHandle, instructionPointer)`
-
-### Window
-
-- `findWindow(windowTitle)` / `window.find(windowTitle)`
-- `listWindowsByPID(pid)` / `window.listByPid(pid)`
-- `findWindowByPID(pid, title)` / `window.findByPid(pid, title)`
-- `sendWindowMessage(hwnd, message, wparam, lparam)` / `window.message(hwnd, message, wparam, lparam)`
-
-### Injection
-
-- `injectDLL(pid, dllPath)` / `inject.dll(pid, dllPath)`
-- `testInjectDLL(pid)` / `inject.test(pid)` / `inject.testDll(pid)`
-- `injectShellcode(pid, hexBytes)` / `inject.shellcode(pid, hexBytes)`
-- `createRemoteThread(pid, startAddress, parameter)` / `inject.thread(pid, startAddress, parameter)`
-
-Injection helpers require `#allow-injection` outside `unsafe` mode.
-
-### Debug / Token
-
-- `debugAttach(pid)` / `debug.attach(pid)`
-- `debugWaitEvent()` / `debug.wait()`
-- `debugReadRegisters(tid)` / `debug.registers(tid)`
-- `debugContinue(eventCode)` / `debug.continue(eventCode)`
-- `openProcessToken(handle)` / `token.open(handle)`
-- `enablePrivilege(privilegeName)` / `token.privilege(privilegeName)`
+Add `--json` to any command for machine-readable event lines.
 
 ## IDE
 
-The desktop IDE uses Tauri 2 with a vanilla HTML, CSS, and JavaScript renderer.
+Desktop app built on Tauri 2 with a vanilla HTML/CSS/JS renderer.
 
-The IDE provides:
+- directive-aware Monaco syntax highlighting, completion, hover, and quick fixes
+- directive-first project templates
+- Script Info panel for `#mode`, metadata, includes, and `#cap` directives
+- live `lint` diagnostics while editing
+- guarded native `check`/`run` execution through the Tauri host
+- process explorer, execution history, variable watch, and audit log viewer
+- project dialogs, recent projects, custom window controls, integrated PTY terminal
 
-- directive-aware Monaco syntax highlighting, completion, hover, and quick fixes,
-- directive-first project templates,
-- Script Info in Settings for `#mode`, metadata, includes, and `#cap` directives,
-- `lint`-based diagnostics while editing,
-- guarded native `check` / `run` execution through the Tauri host,
-- project dialogs, recent projects, file persistence, custom window controls, and PTY terminal sessions.
-
-Requirements:
-
-- Node.js 20 or newer
-- Rust stable with the MSVC toolchain
-- Microsoft Edge WebView2 Runtime
-- Visual Studio Build Tools with Desktop development with C++
-
-Run the desktop app:
+**Requirements:** Node.js 20+, Rust stable with the MSVC toolchain, Microsoft Edge WebView2 Runtime, Visual Studio Build Tools with Desktop development with C++.
 
 ```powershell
 npm install
-npm run dev
+npm run dev          # run the desktop app
+npm run build:web    # build the web renderer only
+npm run build         # build the installer + executable
 ```
 
-Build the web renderer only:
-
-```powershell
-npm run build:web
-```
-
-Build the installer and executable:
-
-```powershell
-npm run build
-```
-
-## Build Native Runtime
+## Build native runtime
 
 1. Open `Wapi.slnx` or `native/Wapi.vcxproj` in Visual Studio.
-2. Select target platform (`x64` or `ARM64`) and configuration (`Debug` or `Release`).
+2. Select platform (`x64` or `ARM64`) and configuration (`Debug` or `Release`).
 3. Build the main `Wapi` project.
 4. Build `TestDLL` too if you want `testInjectDLL(pid)` to work.
-
-From the repository root with Visual Studio installed:
 
 ```powershell
 & 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe' .\native\Wapi.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
@@ -312,11 +193,11 @@ From the repository root with Visual Studio installed:
 
 ## Notes
 
-- This project uses low-level Windows APIs and can be unstable if used on invalid targets or addresses.
-- `check` mode is intended for preflight verification with side effects suppressed.
-- Prefer directive blocks in committed scripts so capabilities and mode are visible in the file itself.
-- Use `--json` for machine-readable event lines when integrating with tools.
+- This project uses low-level Windows APIs and can be unstable against invalid targets or addresses.
+- `check` mode is for preflight verification with side effects suppressed.
+- Prefer directive blocks in committed scripts — capabilities and mode should be visible in the file itself, not implied by CLI flags.
+- Use `--json` for machine-readable output when integrating with other tools.
 
 ## License
 
-MIT - see `LICENSE`.
+MIT — see [`LICENSE`](LICENSE).
