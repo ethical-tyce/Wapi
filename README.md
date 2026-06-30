@@ -46,7 +46,7 @@ Common directives:
 
 - `#mode safe|dev|unsafe` sets the script mode requirement.
 - `#cap <name> [<name>...]` declares runtime capabilities used by the file.
-- `#include "relative/file.wapi"` includes another file before parsing.
+- `#include "relative/file.wapi"` includes another relative `.wapi` file before parsing. Includes cannot be absolute paths or escape the source root.
 - `#strict` makes missing capabilities hard errors.
 - `#allow-injection` allows injection helpers outside `unsafe` mode.
 - `#name`, `#version`, `#author`, and `#description` add script metadata.
@@ -140,9 +140,13 @@ Examples:
 .\native\x64\Debug\Wapi.exe lint .\examples\language.wapi --mode safe
 .\native\x64\Debug\Wapi.exe check .\examples\language.wapi --mode safe --strict-permissions
 .\native\x64\Debug\Wapi.exe run .\examples\language.wapi
+.\native\x64\Debug\Wapi.exe check .\examples\process.wapi --mode safe --strict-permissions
+.\native\x64\Debug\Wapi.exe check .\examples\memory.wapi --mode dev --strict-permissions
 .\native\x64\Debug\Wapi.exe doc directives
 .\native\x64\Debug\Wapi.exe fmt .\examples\language.wapi --write
 ```
+
+`examples/process.wapi` and `examples/memory.wapi` target `powershell`, matching the documented PowerShell command examples. `proc.find` adds `.exe` internally.
 
 For stdin:
 
@@ -158,7 +162,7 @@ Wapi enforces policy at runtime with:
 - CLI flags: `--mode`, `--cap`, `--strict-permissions`, `--allow-injection`,
 - evaluator-side checks for dev-only and injection-only capabilities.
 
-In compatibility mode, missing capabilities emit warnings and audit logs. In strict mode, missing capabilities become hard errors.
+Sensitive WinAPI capabilities are always hard errors when missing. Compatibility mode only soft-warns for non-sensitive helpers such as `runtime.print`; strict mode makes every missing capability a hard error.
 
 Audit lines are emitted as `[WAPI_AUDIT] ...`. `lint` emits `[LINT] ...` lines for missing or unused `#cap` declarations without executing the script.
 

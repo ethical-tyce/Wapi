@@ -637,8 +637,14 @@ void Evaluator::emitAudit(const std::string& functionName, const std::string& ca
 void Evaluator::enforcePolicy(const std::string& functionName, const std::string& capability, bool requiresInjectionFlag) const {
     const bool hasCapability = options.capabilities.count(capability) > 0;
     static const std::unordered_set<std::string> devOnlyCapabilities = {
-        "proc.terminate", "mem.write", "mem.protect", "inject.dll", "inject.shellcode",
-        "thread.context.write", "debug.attach", "debug.registers", "token.privilege"
+        "proc.open.all_access", "proc.terminate", "proc.suspend", "proc.resume",
+        "mem.read", "mem.write", "mem.alloc", "mem.free", "mem.protect", "mem.query",
+        "thread.open", "thread.suspend", "thread.resume", "thread.context.write",
+        "debug.attach", "debug.registers", "token.open", "token.privilege",
+        "window.message", "inject.dll", "inject.shellcode"
+    };
+    static const std::unordered_set<std::string> softMissingCapabilities = {
+        "runtime.print", "language.core", "language.string", "language.math", "language.array"
     };
     if (devOnlyCapabilities.count(capability) && options.mode == WapiMode::Safe) {
         emitAudit(functionName, capability, "deny", "capability requires dev or unsafe mode");
@@ -652,14 +658,16 @@ void Evaluator::enforcePolicy(const std::string& functionName, const std::string
         emitAudit(functionName, capability, "allow", "capability_present");
         return;
     }
-    if (options.strictPermissions) {
-        emitAudit(functionName, capability, "deny", "missing capability in strict mode");
+    const bool hardMissingCapability = options.strictPermissions || softMissingCapabilities.count(capability) == 0;
+    if (hardMissingCapability) {
+        const std::string detail = options.strictPermissions ? "missing capability in strict mode" : "missing sensitive capability";
+        emitAudit(functionName, capability, "deny", detail);
         throw std::runtime_error("E_PERMISSION:" + functionName + " missing capability=" + capability);
     }
-    emitAudit(functionName, capability, "warn", "missing capability allowed for v0.1 compatibility");
+    emitAudit(functionName, capability, "warn", "missing non-sensitive capability allowed for compatibility");
     if (!options.quiet) std::cout << "[WAPI_WARNING][E_PERMISSION_SOFT] " << functionName
               << " missing capability '" << capability
-              << "' (allowed in v0.1 compatibility mode)\n";
+              << "' (allowed for non-sensitive compatibility)\n";
 }
 [[noreturn]] void Evaluator::throwArgType(const std::string& functionName, int argIndex, const std::string& expectedType) const {
     throw std::runtime_error(
@@ -1589,7 +1597,7 @@ WapiValue Evaluator::wapi_setThreadContext(long long threadHandle, long long con
 WapiValue Evaluator::wapi_closeHandle(long long handle) {
     requireTrackedHandle(handle, "closeHandle");
     if (options.checkOnly) {
-        emitAudit("closeHandle", "proc.open.all_access", "allow", "checkOnly no side-effects");
+        emitAudit("closeHandle", "proc.handle.close", "allow", "checkOnly no side-effects");
         closeTrackedHandle(handle);
         return 0;
     }

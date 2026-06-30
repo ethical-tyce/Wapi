@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     env,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Mutex,
@@ -9,13 +9,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use tauri::State;
 use wait_timeout::ChildExt;
 
-use crate::models::{ExecuteOptions, ExecutePayload, ExecuteResult, ShellPayload, ShellResult};
+use crate::models::{ExecuteOptions, ExecutePayload, ExecuteResult};
 
-const SHELL_CWD_MARKER: &str = "__WAPI_CWD__";
 const OUTPUT_LIMIT_MESSAGE: &str =
     "\n[WAPI_IDE] Output limit reached. Terminating Wapi process to protect memory.";
 
@@ -174,6 +172,7 @@ fn read_limited<R: Read + Send + 'static>(
 fn run_process(
     executable: &Path,
     args: Vec<String>,
+    stdin_data: Option<String>,
     timeout: Duration,
     max_output_bytes: usize,
 ) -> ExecuteResult {
@@ -186,7 +185,11 @@ fn run_process(
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new(".")),
         )
-        .stdin(Stdio::null())
+        .stdin(if stdin_data.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(0x0800_0000)
@@ -200,6 +203,21 @@ fn run_process(
             return result;
         }
     };
+
+    if let Some(input) = stdin_data {
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(error) = stdin.write_all(input.as_bytes()) {
+                let _ = child.kill();
+                let mut result = ExecuteResult::failure(format!(
+                    "Failed to send Wapi source over stdin: {error}"
+                ));
+                result.exe = Some(executable.to_string_lossy().into_owned());
+                result.pid = Some(child.id());
+                result.duration_ms = started.elapsed().as_millis();
+                return result;
+            }
+        }
+    }
 
     let pid = child.id();
     let output_limit = max_output_bytes / 2;
@@ -307,9 +325,10 @@ pub async fn execute(
             } else {
                 1024 * 1024
             };
-            let args = build_args(&command, &payload.source, &payload.options, timeout_ms);
+            let args = build_args(&command, "-", &payload.options, timeout_ms);
+            let source = payload.source;
             tauri::async_runtime::spawn_blocking(move || {
-                run_process(&executable, args, timeout, max_output)
+                run_process(&executable, args, Some(source), timeout, max_output)
             })
             .await
             .unwrap_or_else(|error| {
@@ -357,109 +376,6 @@ mod tests {
             60_000
         );
     }
-}
-fn resolve_shell_cwd(requested: Option<String>) -> PathBuf {
-    if let Some(path) = requested {
-        let path = PathBuf::from(path);
-        if path.is_dir() {
-            return path;
-        }
-    }
-    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-}
-
-fn strip_shell_marker(stdout: String) -> (String, Option<String>) {
-    let mut cwd = None;
-    let mut output = Vec::new();
-    let normalized = stdout.replace("\r\n", "\n");
-    for line in normalized.split('\n') {
-        if let Some(value) = line.strip_prefix(SHELL_CWD_MARKER) {
-            cwd = Some(value.trim().to_string());
-        } else {
-            output.push(line);
-        }
-    }
-    (output.join("\n").trim_end().to_string(), cwd)
-}
-
-fn powershell_encoded_command(command: &str) -> String {
-    let script = format!(
-        "$Error.Clear(); {command}; $wapiExitCode = if ($global:LASTEXITCODE -ne $null) {{ $global:LASTEXITCODE }} elseif ($Error.Count) {{ 1 }} else {{ 0 }}; Write-Output \"{SHELL_CWD_MARKER}$((Get-Location).Path)\"; exit $wapiExitCode"
-    );
-    let bytes = script
-        .encode_utf16()
-        .flat_map(|unit| unit.to_le_bytes())
-        .collect::<Vec<_>>();
-    STANDARD.encode(bytes)
-}
-
-fn run_shell(payload: ShellPayload) -> ShellResult {
-    let shell = if payload.shell.as_deref() == Some("cmd") {
-        "cmd"
-    } else {
-        "powershell"
-    };
-    let command = payload.command.unwrap_or_default().trim().to_string();
-    let cwd = resolve_shell_cwd(payload.cwd);
-    let cwd_string = cwd.to_string_lossy().into_owned();
-    if command.is_empty() {
-        return ShellResult {
-            ok: true,
-            code: Some(0),
-            stdout: String::new(),
-            stderr: String::new(),
-            cwd: cwd_string,
-            shell: shell.into(),
-        };
-    }
-
-    let (executable, args) = if shell == "cmd" {
-        (
-            "cmd.exe",
-            vec![
-                "/v:on".to_string(),
-                "/d".to_string(),
-                "/s".to_string(),
-                "/c".to_string(),
-                format!(
-                    "{command} & set __WAPI_EXIT__=!ERRORLEVEL! & echo {SHELL_CWD_MARKER}%CD% & exit /b !__WAPI_EXIT__"
-                ),
-            ],
-        )
-    } else {
-        (
-            "powershell.exe",
-            vec![
-                "-NoLogo".to_string(),
-                "-NoProfile".to_string(),
-                "-EncodedCommand".to_string(),
-                powershell_encoded_command(&command),
-            ],
-        )
-    };
-
-    let result = run_process(
-        Path::new(executable),
-        args,
-        Duration::from_secs(30),
-        1024 * 1024,
-    );
-    let (stdout, parsed_cwd) = strip_shell_marker(result.stdout);
-    ShellResult {
-        ok: result.ok,
-        code: result.code,
-        stdout,
-        stderr: result.stderr.trim_end().to_string(),
-        cwd: parsed_cwd.unwrap_or(cwd_string),
-        shell: shell.into(),
-    }
-}
-
-#[tauri::command]
-pub async fn shell(payload: ShellPayload) -> Result<ShellResult, String> {
-    tauri::async_runtime::spawn_blocking(move || run_shell(payload))
-        .await
-        .map_err(|error| format!("Shell command failed: {error}"))
 }
 
 #[cfg(windows)]

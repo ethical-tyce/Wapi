@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +18,7 @@
 #include <thread>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -64,7 +66,7 @@ void printUsage() {
         << "File directives (top of any .wapi file, before any code):\n"
         << "  #mode safe|dev|unsafe        Minimum mode this script requires.\n"
         << "  #cap <name> [<name>...]      Capability or capabilities this script uses.\n"
-        << "  #include \"path/to/file.wapi\" Include another file (preferred over inline include).\n"
+        << "  #include \"path/to/file.wapi\" Include a relative .wapi file inside the source root.\n"
         << "  #strict                      Treat missing capabilities as errors.\n"
         << "  #allow-injection             Enable injection helpers for this script.\n"
         << "  #name \"My Script\"            Script display name.\n"
@@ -323,6 +325,58 @@ std::string trimCopy(const std::string& value) {
     return value.substr(start, end - start + 1);
 }
 
+std::string lowerAsciiCopy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+bool isPathInsideRoot(const std::filesystem::path& path, const std::filesystem::path& root) {
+    std::error_code ec;
+    std::filesystem::path relative = std::filesystem::relative(path, root, ec);
+    if (ec || relative.empty()) return false;
+    for (const auto& part : relative) {
+        if (part == "..") return false;
+    }
+    return true;
+}
+
+std::filesystem::path canonicalDirectory(const std::filesystem::path& path) {
+    std::error_code ec;
+    std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
+    if (ec || canonical.empty()) canonical = std::filesystem::absolute(path, ec);
+    if (ec || canonical.empty()) throw std::runtime_error("E_INCLUDE_PATH: could not resolve include root");
+    return canonical;
+}
+
+std::filesystem::path resolveIncludePath(
+    const std::filesystem::path& baseDir,
+    const std::filesystem::path& includeRoot,
+    const std::string& requested
+) {
+    const std::string trimmed = trimCopy(requested);
+    if (trimmed.empty()) throw std::runtime_error("E_INCLUDE_PATH: include path is empty");
+
+    std::filesystem::path relativePath(trimmed);
+    if (relativePath.is_absolute() || relativePath.has_root_name() || relativePath.has_root_directory()) {
+        throw std::runtime_error("E_INCLUDE_PATH: absolute include paths are not allowed: " + trimmed);
+    }
+    if (lowerAsciiCopy(relativePath.extension().string()) != ".wapi") {
+        throw std::runtime_error("E_INCLUDE_PATH: include target must be a .wapi file: " + trimmed);
+    }
+
+    const std::filesystem::path root = canonicalDirectory(includeRoot);
+    std::error_code ec;
+    const std::filesystem::path resolved = std::filesystem::weakly_canonical(baseDir / relativePath, ec);
+    if (ec || !std::filesystem::is_regular_file(resolved)) {
+        throw std::runtime_error("E_INCLUDE_PATH: include file was not found: " + trimmed);
+    }
+    if (!isPathInsideRoot(resolved, root)) {
+        throw std::runtime_error("E_INCLUDE_PATH: include escapes the source root: " + trimmed);
+    }
+    return resolved;
+}
 
 ExtractResult extractDirectives(const std::string& raw) {
     ScriptDirectives dir;
@@ -384,7 +438,13 @@ ExtractResult extractDirectives(const std::string& raw) {
     return { cleaned.str(), dir };
 }
 
-std::string expandIncludes(const std::string& source, const std::filesystem::path& baseDir, std::unordered_set<std::string>& seen) {
+std::string expandIncludes(
+    const std::string& source,
+    const std::filesystem::path& baseDir,
+    const std::filesystem::path& includeRoot,
+    std::unordered_set<std::string>& seen,
+    ScriptDirectives& directives
+) {
     std::ostringstream out;
     std::istringstream input(source);
     std::string line;
@@ -394,12 +454,12 @@ std::string expandIncludes(const std::string& source, const std::filesystem::pat
         const bool isNewStyle = trimmed.rfind("#include \"", 0) == 0 && trimmed.size() > 11 && trimmed.back() == '"';
         if (isOldStyle || isNewStyle) {
             const size_t skip = isOldStyle ? 9 : 10;
-            std::filesystem::path includePath = baseDir / trimmed.substr(skip, trimmed.size() - skip - 1);
-            includePath = std::filesystem::weakly_canonical(includePath);
+            const std::filesystem::path includePath = resolveIncludePath(baseDir, includeRoot, trimmed.substr(skip, trimmed.size() - skip - 1));
             const std::string key = includePath.string();
             if (!seen.insert(key).second) throw std::runtime_error("E_INCLUDE_CYCLE: " + key);
             const ExtractResult nested = extractDirectives(readTextFile(includePath));
-            out << expandIncludes(nested.source, includePath.parent_path(), seen) << "\n";
+            mergeDirectives(directives, nested.directives);
+            out << expandIncludes(nested.source, includePath.parent_path(), includeRoot, seen, directives) << "\n";
             continue;
         }
         out << line << "\n";
@@ -431,15 +491,16 @@ ResolvedSource resolveSourceWithDirectives(const std::string& argument, const st
     ExtractResult extracted = extractDirectives(raw);
     ScriptDirectives directives = extracted.directives;
     std::ostringstream withIncludes;
+    const std::filesystem::path includeRoot = canonicalDirectory(baseDir);
     for (const auto& inc : directives.includes) {
-        std::filesystem::path incPath = std::filesystem::weakly_canonical(baseDir / inc);
+        std::filesystem::path incPath = resolveIncludePath(baseDir, includeRoot, inc);
         const std::string key = incPath.string();
         if (!seen.insert(key).second) throw std::runtime_error("E_INCLUDE_CYCLE: " + key);
         ExtractResult nested = extractDirectives(readTextFile(incPath));
         mergeDirectives(directives, nested.directives);
-        withIncludes << expandIncludes(nested.source, incPath.parent_path(), seen) << '\n';
+        withIncludes << expandIncludes(nested.source, incPath.parent_path(), includeRoot, seen, directives) << '\n';
     }
-    withIncludes << expandIncludes(extracted.source, baseDir, seen);
+    withIncludes << expandIncludes(extracted.source, baseDir, includeRoot, seen, directives);
     return { withIncludes.str(), directives };
 }
 
@@ -506,7 +567,7 @@ void printFunctionHelp(const std::string& name) {
         {"syntax", "var x = 1_000; let y = \"x={x}\"; match x { _ => print(y) }", "Language syntax overview."},
         {"methods", "text.len(), items.push(value), maybe?.len() ?? 0", "Method call and null-safe syntax."},
         {"struct", "struct Point { int x } Point p = Point { x: 1 }", "Declare and instantiate structured values."},
-        {"directives", "#mode dev\n#cap proc.list runtime.print\n#include \"helpers.wapi\"\n#strict", "File-level directives must appear before code. CLI flags override conflicting file defaults."}
+        {"directives", "#mode dev\n#cap proc.list runtime.print\n#include \"helpers.wapi\"\n#strict", "File-level directives must appear before code. Includes must be relative .wapi files inside the source root."}
     };
     if (name.empty()) {
         std::cout << "Available help topics:\n";
@@ -694,6 +755,29 @@ void test(const std::string& name, const std::string& script, const WapiRuntimeO
     }
 }
 
+void testFailure(const std::string& name, const std::string& script, const WapiRuntimeOptions& options, const std::string& expected) {
+    std::streambuf* old = std::cout.rdbuf(nullptr);
+
+    try {
+        runScript(script, options);
+        std::cout.rdbuf(old);
+        std::cout << "[FAIL] " << name << " - expected failure containing " << expected << "\n";
+        failed++;
+    }
+    catch (const std::exception& e) {
+        std::cout.rdbuf(old);
+        const std::string message = e.what();
+        if (message.find(expected) != std::string::npos) {
+            std::cout << "[PASS] " << name << "\n";
+            passed++;
+        }
+        else {
+            std::cout << "[FAIL] " << name << " - " << message << "\n";
+            failed++;
+        }
+    }
+}
+
 void runStandardizedTests() {
     passed = 0;
     failed = 0;
@@ -702,6 +786,9 @@ void runStandardizedTests() {
     options.mode = WapiMode::Dev;
     options.checkOnly = true;
     options.allowInjection = true;
+    for (const auto& [_, capability] : functionCapabilities()) {
+        options.capabilities.insert(capability);
+    }
 
     std::cout << "--- Wapi Standardized API Test Suite ---\n\n";
     std::cout << "[Precheck] Start Notepad before running tests for process-dependent coverage.\n\n";
@@ -715,6 +802,14 @@ void runStandardizedTests() {
     test("namespaced runtime call", "proc.list()", options);
     test("syntax improvements", "var pid = 1_000 let label = \"pid={pid}\" var items = [] items.push(pid) func add(int left, int right) -> int { return left + right } struct Point { int x int y } Point p = Point { x: add(right: 2, left: 3), y: items.len() } p.x += 4 var maybe = null var fallback = maybe?.len() ?? p.x match fallback { 9 => print(label) _ => print(\"bad\") }", options);
 
+    std::cout << "[Security Policy] -------------------------------------\n";
+    WapiRuntimeOptions policyOptions;
+    policyOptions.mode = WapiMode::Safe;
+    policyOptions.checkOnly = true;
+    test("runtime.print soft compatibility", "print(\"ok\")", policyOptions);
+    testFailure("missing sensitive capability denies process listing", "proc.list()", policyOptions, "E_PERMISSION");
+    policyOptions.capabilities.insert("proc.open.all_access");
+    testFailure("safe mode denies all-access process handles", "proc.open(1234)", policyOptions, "requires --mode dev|unsafe");
     std::cout << "[Process] ---------------------------------------------\n";
     test("proc.list", "proc.list()", options);
     test("proc.find", "int pid = proc.find(\"notepad\")", options);
@@ -736,6 +831,7 @@ void runStandardizedTests() {
 
     std::cout << "\n[Roadmap / To Implement]\n";
     std::cout << "(These are expected to fail until you implement each API)\n";
+
     std::cout << "[Process] ---------------------------------------------\n";
     test("proc.close", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) proc.close(handle)", options);
 

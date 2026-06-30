@@ -127,25 +127,6 @@ impl ExecuteResult {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ShellPayload {
-    pub shell: Option<String>,
-    pub command: Option<String>,
-    pub cwd: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ShellResult {
-    pub ok: bool,
-    pub code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-    pub cwd: String,
-    pub shell: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TerminalStartPayload {
     pub session_id: String,
     pub shell: Option<String>,

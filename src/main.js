@@ -203,7 +203,7 @@ const runtimeCapabilities = [...new Set(wapiRuntimeFunctions.map((fn) => fn.capa
 const directiveDefinitions = [
   { name: "mode", snippet: "#mode ${1:safe}", detail: "Set script mode floor" },
   { name: "cap", snippet: "#cap ${1:proc.list}", detail: "Declare a required capability" },
-  { name: "include", snippet: "#include \"${1:path.wapi}\"", detail: "Include another Wapi file" },
+  { name: "include", snippet: "#include \"${1:path.wapi}\"", detail: "Include a relative .wapi file" },
   { name: "name", snippet: "#name \"${1:Script name}\"", detail: "Set script display name" },
   { name: "version", snippet: "#version \"${1:1.0.0}\"", detail: "Set script version" },
   { name: "author", snippet: "#author \"${1:ethical-tyce}\"", detail: "Set script author" },

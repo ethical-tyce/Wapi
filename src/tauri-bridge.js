@@ -54,14 +54,6 @@ const bridge = {
   ),
   listRecentProjects: () => call("list_recent_projects", {}, []),
   addRecentProject: (rootPath) => call("add_recent_project", { rootPath }, []),
-  shell: (payload = {}) => call("shell", { payload }, {
-    ok: true,
-    code: 0,
-    stdout: "",
-    stderr: "",
-    cwd: payload.cwd ?? "",
-    shell: payload.shell ?? "powershell"
-  }),
   terminal: {
     start: (payload = {}) => call("terminal_start", { payload }, {
       ok: true,

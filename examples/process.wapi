@@ -1,7 +1,13 @@
-#name "Process list"
+#name "Process quick check"
+#version "1.0.0"
 #mode safe
 #strict
-#cap proc.list runtime.print
+#cap proc.list proc.modules runtime.print
 
-print("Listing processes")
+let target = "powershell"
+var pid = proc.find(target)
+
+print("{target} pid={pid}")
+print("Loaded modules for pid={pid}:")
+proc.modules(pid)
 proc.list()

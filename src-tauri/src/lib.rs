@@ -18,7 +18,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime::execute,
             runtime::locate,
-            runtime::shell,
             terminal::terminal_start,
             terminal::terminal_send,
             terminal::terminal_resize,
