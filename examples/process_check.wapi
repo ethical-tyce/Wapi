@@ -1,0 +1,16 @@
+#name "Process quick check"
+#version "1.0.0"
+#author "Wapi examples"
+#description "Finds a process by name and prints its PID. The smallest possible Wapi script."
+#mode safe
+#strict
+#cap proc.list runtime.print
+
+let target = "notepad"
+var pid = proc.find(target)
+
+if pid != 0 {
+    print("{target} pid={pid}")
+} else {
+    print("{target} is not running")
+}

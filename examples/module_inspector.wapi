@@ -1,0 +1,26 @@
+#name "Module inspector"
+#version "1.0.0"
+#author "Wapi examples"
+#description "Finds a process and prints every loaded module with its base address and size."
+#mode safe
+#strict
+#cap proc.list proc.modules runtime.print
+
+let target = "notepad"
+var pid = proc.find(target)
+
+if pid == 0 {
+    print("{target} is not running")
+} else {
+    // listModules prints "<pid> - <name> @ 0x<base> size=<n> path=<path>"
+    // for every module, and emits a structured JSON event alongside it.
+    print("modules loaded by {target} (pid={pid}):")
+    listModules(pid)
+
+    // getModuleBaseAddress / getModuleSize resolve a single named module
+    // when you already know which one you care about.
+    var exeName = target + ".exe"
+    var base = getModuleBaseAddress(pid, exeName)
+    var size = getModuleSize(pid, exeName)
+    print("{exeName} base={base} size={size}")
+}

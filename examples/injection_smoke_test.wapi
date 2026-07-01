@@ -1,0 +1,23 @@
+#name "Injection smoke test"
+#version "1.0.0"
+#author "Wapi examples"
+#description "Uses the built-in TestDLL to verify injection works end to end. Requires unsafe mode."
+#mode unsafe
+#strict
+#allow-injection
+#cap proc.list inject.dll runtime.print
+
+// Build native/TestDLL first if testInjectDLL keeps returning false.
+let target = "notepad"
+var pid = proc.find(target)
+
+if pid == 0 {
+    print("{target} is not running — start it first")
+} else {
+    var ok = inject.test(pid)
+    if ok {
+        print("test injection into {target} (pid={pid}) succeeded")
+    } else {
+        print("test injection failed — check #mode, #allow-injection, and that TestDLL is built")
+    }
+}

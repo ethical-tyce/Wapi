@@ -1,0 +1,18 @@
+#name "Include demo"
+#version "1.0.0"
+#author "Wapi examples"
+#description "Demonstrates #include by pulling in shared process helpers from another file."
+#mode dev
+#strict
+#cap proc.list proc.open.all_access proc.handle.close runtime.print
+#include "shared/process_helpers.wapi"
+
+var pid = requireRunning("notepad")
+var handle = safeOpen(pid)
+
+if handle != 0 {
+    print("opened handle for pid {pid}")
+    safeClose(handle)
+} else {
+    print("nothing to do")
+}

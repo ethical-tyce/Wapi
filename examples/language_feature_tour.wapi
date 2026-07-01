@@ -1,0 +1,58 @@
+#name "Language feature tour"
+#version "1.0.0"
+#author "Wapi examples"
+#description "No Windows API calls — exercises structs, match, try/catch, named args, and null-coalescing in isolation."
+#mode safe
+#strict
+#cap runtime.print language.core language.array language.math
+
+struct Point {
+    int x
+    int y
+}
+
+func add(int left, int right) -> int {
+    return left + right
+}
+
+func describe(string label, int value) -> string {
+    return "{label}={value}"
+}
+
+// named arguments — order doesn't matter
+var sum = add(right: 7, left: 3)
+print(describe("sum", sum))
+
+// struct literal + field access
+var origin = Point { x: 0, y: 0 }
+var moved = Point { x: origin.x + 5, y: origin.y + 5 }
+print("moved to ({moved.x}, {moved.y})")
+
+// arrays + method calls
+var scores = []
+scores.push(91)
+scores.push(64)
+scores.push(78)
+print("{scores.len()} scores, max={max(scores[0], max(scores[1], scores[2]))}")
+
+// null-coalescing
+var maybeName = null
+var displayName = maybeName ?? "unnamed"
+print("name: {displayName}")
+
+// match with guards and a default arm
+var grade = 78
+match grade {
+    g if g >= 90 => print("grade: A")
+    g if g >= 70 => print("grade: B")
+    g if g >= 50 => print("grade: C")
+    _ => print("grade: F")
+}
+
+// try/catch around a deliberately bad operation
+try {
+    var bad = scores[10]
+    print("unreachable: {bad}")
+} catch err {
+    print("caught error: {err}")
+}

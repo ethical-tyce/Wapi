@@ -1,0 +1,26 @@
+#name "Privilege checker"
+#version "1.0.0"
+#author "Wapi examples"
+#description "Opens a process token and attempts to enable the debug privilege."
+#mode dev
+#strict
+#cap proc.list proc.open.all_access token.open token.privilege proc.handle.close runtime.print
+
+let target = "notepad"
+var pid = proc.find(target)
+
+if pid == 0 {
+    print("{target} is not running")
+} else {
+    var handle = proc.open(pid)
+    var tokenHandle = token.open(handle)
+
+    var enabled = token.privilege("SeDebugPrivilege")
+    if enabled {
+        print("SeDebugPrivilege enabled for this process")
+    } else {
+        print("could not enable SeDebugPrivilege")
+    }
+
+    handle.close(handle)
+}

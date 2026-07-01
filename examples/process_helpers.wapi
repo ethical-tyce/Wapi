@@ -1,0 +1,24 @@
+// Shared helpers — included by other scripts via #include "shared/process_helpers.wapi"
+// Not meant to be run directly; it has no directive block of its own because
+// the including file's directives govern the merged script.
+
+func requireRunning(string name) -> int {
+    var pid = proc.find(name)
+    if pid == 0 {
+        print("required process not running: {name}")
+    }
+    return pid
+}
+
+func safeOpen(int pid) -> long {
+    if pid == 0 {
+        return 0
+    }
+    return proc.open(pid)
+}
+
+func safeClose(long handle) {
+    if handle != 0 {
+        handle.close(handle)
+    }
+}

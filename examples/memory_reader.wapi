@@ -1,0 +1,26 @@
+#name "Memory reader"
+#version "1.0.0"
+#author "Wapi examples"
+#description "Opens a process, resolves a module base, and reads a value at an offset."
+#mode dev
+#strict
+#cap proc.list proc.open.all_access proc.modules mem.read proc.handle.close runtime.print
+
+let target = "notepad"
+var pid = proc.find(target)
+
+if pid == 0 {
+    print("{target} is not running")
+} else {
+    var handle = proc.open(pid)
+    var base = getModuleBaseAddress(pid, target + ".exe")
+    var offset = 16
+    var address = base + offset
+
+    var value = mem.read(handle, address)
+    print("value at {target}+{offset} = {value}")
+
+    if handle != 0 {
+        handle.close(handle)
+    }
+}

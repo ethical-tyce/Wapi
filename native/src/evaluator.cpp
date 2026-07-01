@@ -15,20 +15,24 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+
 namespace {
 bool isNumericValue(const WapiValue& value) {
     return std::holds_alternative<int>(value) || std::holds_alternative<long long>(value) || std::holds_alternative<double>(value);
 }
+
 long long numericValue(const WapiValue& value) {
     if (auto p = std::get_if<int>(&value)) return *p;
     if (auto p = std::get_if<long long>(&value)) return *p;
     return static_cast<long long>(std::get<double>(value));
 }
+
 double numericDoubleValue(const WapiValue& value) {
     if (auto p = std::get_if<int>(&value)) return static_cast<double>(*p);
     if (auto p = std::get_if<long long>(&value)) return static_cast<double>(*p);
     return std::get<double>(value);
 }
+
 std::string jsonEscape(const std::string& value) {
     std::ostringstream oss;
     for (char ch : value) {
@@ -43,6 +47,7 @@ std::string jsonEscape(const std::string& value) {
     }
     return oss.str();
 }
+
 bool valuesEqual(const WapiValue& left, const WapiValue& right) {
     if (isNumericValue(left) && isNumericValue(right)) {
         return numericDoubleValue(left) == numericDoubleValue(right);
@@ -61,21 +66,25 @@ bool valuesEqual(const WapiValue& left, const WapiValue& right) {
     }
     return false;
 }
+
 struct BreakSignal {};
 struct ContinueSignal {};
 struct ReturnSignal { WapiValue value; };
+
 std::string toLowerAscii(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
     });
     return value;
 }
+
 std::string trimAscii(std::string value) {
     const auto notSpace = [](unsigned char ch) { return !std::isspace(ch); };
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
     value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
     return value;
 }
+
 std::string valueTypeName(const WapiValue& value) {
     if (std::holds_alternative<std::monostate>(value)) return "null";
     if (std::holds_alternative<int>(value)) return "int";
@@ -87,6 +96,7 @@ std::string valueTypeName(const WapiValue& value) {
     if (auto p = std::get_if<WapiStructPtr>(&value)) return *p ? (*p)->typeName : "struct";
     return "unknown";
 }
+
 std::string wideToUtf8(const std::wstring& value) {
     if (value.empty()) return "";
     const int length = WideCharToMultiByte(
@@ -113,6 +123,7 @@ std::string wideToUtf8(const std::wstring& value) {
     );
     return result;
 }
+
 } // namespace
 Evaluator::Evaluator(const WapiRuntimeOptions& options) : options(options) {
     if (options.timeoutMs > 0) {
@@ -120,14 +131,17 @@ Evaluator::Evaluator(const WapiRuntimeOptions& options) : options(options) {
         timeoutDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(options.timeoutMs);
     }
 }
+
 Evaluator::~Evaluator() {
     cleanupTrackedResources();
 }
+
 void Evaluator::enforceTimeout() const {
     if (timeoutEnabled && std::chrono::steady_clock::now() >= timeoutDeadline) {
         throw std::runtime_error("E_TIMEOUT: exceeded " + std::to_string(options.timeoutMs) + "ms");
     }
 }
+
 std::string Evaluator::valueToString(const WapiValue& value) const {
     if (std::holds_alternative<std::monostate>(value)) return "null";
     if (auto p = std::get_if<int>(&value)) return std::to_string(*p);
@@ -162,6 +176,7 @@ std::string Evaluator::valueToString(const WapiValue& value) const {
     }
     return "";
 }
+
 bool Evaluator::typeMatches(const std::string& typeName, const WapiValue& value) const {
     if (typeName == "any" || typeName == "auto") return true;
     if (typeName == "int") return std::holds_alternative<int>(value);
@@ -174,12 +189,14 @@ bool Evaluator::typeMatches(const std::string& typeName, const WapiValue& value)
     if (auto p = std::get_if<WapiStructPtr>(&value)) return *p && (*p)->typeName == typeName;
     return true;
 }
+
 WapiArrayPtr Evaluator::asArrayValue(const WapiValue& value, const std::string& context) const {
     if (auto p = std::get_if<WapiArrayPtr>(&value)) {
         if (*p) return *p;
     }
     throw std::runtime_error("E_TYPE:" + context + " expected array");
 }
+
 bool Evaluator::isTruthy(const WapiValue& value) const {
     if (std::holds_alternative<std::monostate>(value)) return false;
     if (auto p = std::get_if<int>(&value)) return *p != 0;
@@ -191,12 +208,14 @@ bool Evaluator::isTruthy(const WapiValue& value) const {
     if (auto p = std::get_if<WapiStructPtr>(&value)) return static_cast<bool>(*p);
     return false;
 }
+
 long long Evaluator::asNumberValue(const WapiValue& value, const std::string& context) const {
     if (auto p = std::get_if<int>(&value)) return *p;
     if (auto p = std::get_if<long long>(&value)) return *p;
     if (auto p = std::get_if<double>(&value)) return static_cast<long long>(*p);
     throw std::runtime_error("E_TYPE:" + context + " expected number");
 }
+
 void Evaluator::run(std::shared_ptr<Program> program) {
     try {
         for (auto& stmt : program->statements) {
@@ -226,6 +245,7 @@ void Evaluator::run(std::shared_ptr<Program> program) {
         throw std::runtime_error("E_RETURN_OUTSIDE_FUNCTION");
     }
 }
+
 WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
     enforceTimeout();
     if (auto n = std::dynamic_pointer_cast<IntLiteral>(node)) return n->value;
@@ -403,6 +423,7 @@ WapiValue Evaluator::evalNode(std::shared_ptr<ASTNode> node) {
     if (auto n = std::dynamic_pointer_cast<FunctionCall>(node)) return evalFunctionCall(n);
     throw std::runtime_error("E_UNKNOWN_NODE: unsupported AST node");
 }
+
 WapiValue Evaluator::evalStructLiteral(const StructLiteral& literal) {
     auto found = structRegistry.find(literal.typeName);
     if (found == structRegistry.end()) throw std::runtime_error("E_UNKNOWN_STRUCT:" + literal.typeName);
@@ -418,6 +439,7 @@ WapiValue Evaluator::evalStructLiteral(const StructLiteral& literal) {
     }
     return instance;
 }
+
 WapiValue Evaluator::evalFieldAccess(const FieldAccessExpression& expr) {
     WapiValue target = evalNode(expr.target);
     if (auto p = std::get_if<WapiStructPtr>(&target)) {
@@ -428,6 +450,7 @@ WapiValue Evaluator::evalFieldAccess(const FieldAccessExpression& expr) {
     }
     throw std::runtime_error("E_TYPE:field access expected struct");
 }
+
 WapiValue Evaluator::evalFieldAssignment(const FieldAssignment& stmt) {
     WapiValue target = evalNode(stmt.target);
     if (!std::holds_alternative<WapiStructPtr>(target) || !std::get<WapiStructPtr>(target)) throw std::runtime_error("E_TYPE:field assignment expected struct");
@@ -451,6 +474,7 @@ WapiValue Evaluator::evalFieldAssignment(const FieldAssignment& stmt) {
     field->second = value;
     return value;
 }
+
 WapiValue Evaluator::evalMethodCall(const MethodCallExpression& expr) {
     WapiValue target = evalNode(expr.target);
     std::vector<WapiValue> args;
@@ -478,6 +502,7 @@ WapiValue Evaluator::evalMethodCall(const MethodCallExpression& expr) {
     }
     throw std::runtime_error("E_UNKNOWN_METHOD:" + method);
 }
+
 WapiValue Evaluator::evalNullSafeCall(const NullSafeCallExpression& expr) {
     WapiValue target = evalNode(expr.target);
     if (!isTruthy(target)) return std::monostate{};
@@ -488,6 +513,7 @@ WapiValue Evaluator::evalNullSafeCall(const NullSafeCallExpression& expr) {
     call.namedArgs = expr.namedArgs;
     return evalMethodCall(call);
 }
+
 WapiValue Evaluator::evalMatchStatement(const MatchStatement& stmt) {
     WapiValue subject = evalNode(stmt.subject);
     for (const auto& arm : stmt.arms) {
@@ -503,6 +529,7 @@ WapiValue Evaluator::evalMatchStatement(const MatchStatement& stmt) {
     }
     return std::monostate{};
 }
+
 WapiValue Evaluator::evalUnaryExpression(const UnaryExpression& expr) {
     WapiValue value = evalNode(expr.value);
     if (expr.op == "-") {
@@ -523,6 +550,7 @@ WapiValue Evaluator::evalUnaryExpression(const UnaryExpression& expr) {
     }
     throw std::runtime_error("E_UNKNOWN_OPERATOR:" + expr.op);
 }
+
 WapiValue Evaluator::evalBinaryExpression(const BinaryExpression& expr) {
     if (expr.op == "&&") return isTruthy(evalNode(expr.left)) && isTruthy(evalNode(expr.right));
     if (expr.op == "||") return isTruthy(evalNode(expr.left)) || isTruthy(evalNode(expr.right));
@@ -578,6 +606,7 @@ WapiValue Evaluator::evalBinaryExpression(const BinaryExpression& expr) {
     if (!promoteToLong && result >= (std::numeric_limits<int>::min)() && result <= (std::numeric_limits<int>::max)()) return static_cast<int>(result);
     return result;
 }
+
 WapiValue Evaluator::evalIndexExpression(const IndexExpression& expr) {
     WapiValue target = evalNode(expr.target);
     const long long index = asNumberValue(evalNode(expr.index), "index");
@@ -590,6 +619,7 @@ WapiValue Evaluator::evalIndexExpression(const IndexExpression& expr) {
     if (static_cast<size_t>(index) >= array->values.size()) throw std::runtime_error("E_INDEX_OUT_OF_RANGE");
     return array->values[static_cast<size_t>(index)];
 }
+
 void Evaluator::checkArgCount(const std::shared_ptr<FunctionCall>& call, size_t expected) {
     if (call->args.size() != expected) {
         throw std::runtime_error(
@@ -598,6 +628,7 @@ void Evaluator::checkArgCount(const std::shared_ptr<FunctionCall>& call, size_t 
         );
     }
 }
+
 std::string Evaluator::modeToString() const {
     switch (options.mode) {
     case WapiMode::Safe: return "safe";
@@ -606,6 +637,7 @@ std::string Evaluator::modeToString() const {
     }
     return "safe";
 }
+
 std::string Evaluator::nowIso8601() const {
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
@@ -615,10 +647,12 @@ std::string Evaluator::nowIso8601() const {
     oss << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
     return oss.str();
 }
+
 void Evaluator::emitJsonEvent(const std::string& kind, const std::string& payload) const {
     if (!options.jsonOutput) return;
     std::cout << "{\"kind\":\"" << jsonEscape(kind) << "\",\"data\":" << payload << "}" << "\n";
 }
+
 void Evaluator::emitAudit(const std::string& functionName, const std::string& capability, const std::string& result, const std::string& detail) const {
     if (options.quiet) return;
     std::cout
@@ -634,6 +668,7 @@ void Evaluator::emitAudit(const std::string& functionName, const std::string& ca
     }
     std::cout << "\n";
 }
+
 void Evaluator::enforcePolicy(const std::string& functionName, const std::string& capability, bool requiresInjectionFlag) const {
     const bool hasCapability = options.capabilities.count(capability) > 0;
     static const std::unordered_set<std::string> devOnlyCapabilities = {
@@ -669,27 +704,32 @@ void Evaluator::enforcePolicy(const std::string& functionName, const std::string
               << " missing capability '" << capability
               << "' (allowed for non-sensitive compatibility)\n";
 }
+
 [[noreturn]] void Evaluator::throwArgType(const std::string& functionName, int argIndex, const std::string& expectedType) const {
     throw std::runtime_error(
         "E_ARG_TYPE:" + functionName + " arg=" + std::to_string(argIndex) + " expected=" + expectedType
     );
 }
+
 std::string Evaluator::asString(const std::shared_ptr<ASTNode>& node, const std::string& functionName, int argIndex) {
     WapiValue v = evalNode(node);
     if (auto p = std::get_if<std::string>(&v)) return *p;
     throwArgType(functionName, argIndex, "string");
 }
+
 int Evaluator::asInt(const std::shared_ptr<ASTNode>& node, const std::string& functionName, int argIndex) {
     WapiValue v = evalNode(node);
     if (auto p = std::get_if<int>(&v)) return *p;
     throwArgType(functionName, argIndex, "int");
 }
+
 long long Evaluator::asLongLong(const std::shared_ptr<ASTNode>& node, const std::string& functionName, int argIndex) {
     WapiValue v = evalNode(node);
     if (auto p = std::get_if<long long>(&v)) return *p;
     if (auto pInt = std::get_if<int>(&v)) return static_cast<long long>(*pInt);
     throwArgType(functionName, argIndex, "long|int");
 }
+
 void* Evaluator::requireTrackedHandle(long long handleValue, const std::string& functionName) {
     if (handleValue == 0) {
         throw std::runtime_error("E_HANDLE_INVALID:" + functionName + " handle=0");
@@ -699,6 +739,7 @@ void* Evaluator::requireTrackedHandle(long long handleValue, const std::string& 
     }
     return reinterpret_cast<void*>(static_cast<uintptr_t>(handleValue));
 }
+
 void Evaluator::releaseTrackedAllocations(long long handleValue) noexcept {
     auto found = trackedAllocations.find(handleValue);
     if (found == trackedAllocations.end()) return;
@@ -712,6 +753,7 @@ void Evaluator::releaseTrackedAllocations(long long handleValue) noexcept {
     }
     trackedAllocations.erase(found);
 }
+
 void Evaluator::closeTrackedHandle(long long handleValue) noexcept {
     if (!trackedHandles.count(handleValue)) {
         trackedAllocations.erase(handleValue);
@@ -724,6 +766,7 @@ void Evaluator::closeTrackedHandle(long long handleValue) noexcept {
     }
     trackedHandles.erase(handleValue);
 }
+
 void Evaluator::cleanupTrackedResources() noexcept {
     std::vector<long long> handles(trackedHandles.begin(), trackedHandles.end());
     for (long long handleValue : handles) {
@@ -732,6 +775,7 @@ void Evaluator::cleanupTrackedResources() noexcept {
     trackedHandles.clear();
     trackedAllocations.clear();
 }
+
 WapiValue Evaluator::evalUserFunction(const std::shared_ptr<FunctionDeclaration>& declaration, const std::shared_ptr<FunctionCall>& call) {
     if (call->args.size() != declaration->params.size()) {
         throw std::runtime_error("E_ARG_COUNT:" + call->name + " expected=" + std::to_string(declaration->params.size()) + " got=" + std::to_string(call->args.size()));
@@ -762,6 +806,7 @@ WapiValue Evaluator::evalUserFunction(const std::shared_ptr<FunctionDeclaration>
     if (!typeMatches(declaration->returnType, result) && !options.quiet) std::cout << "[WAPI_WARN] function " << call->name << " returned " << valueTypeName(result) << " but declared " << declaration->returnType << "\\n";
     return result;
 }
+
 WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
     auto userFunction = userFunctions.find(call->name);
     if (userFunction != userFunctions.end()) return evalUserFunction(userFunction->second, call);
@@ -1239,6 +1284,7 @@ WapiValue Evaluator::wapi_findProcessPID(const std::string& name) {
     CloseHandle(snap);
     throw WapiUnstableException("Process not found: " + name);
 }
+
 WapiValue Evaluator::wapi_listProcesses() {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) throw WapiUnstableException("Snapshot failed");
@@ -1262,6 +1308,7 @@ WapiValue Evaluator::wapi_listProcesses() {
     CloseHandle(snap);
     return 0;
 }
+
 WapiValue Evaluator::wapi_openProcess(int pid) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (options.checkOnly) {
@@ -1276,6 +1323,7 @@ WapiValue Evaluator::wapi_openProcess(int pid) {
     trackedHandles.insert(tracked);
     return tracked;
 }
+
 WapiValue Evaluator::wapi_terminateProcess(long long handle) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "terminateProcess"));
     if (options.checkOnly) {
@@ -1286,6 +1334,7 @@ WapiValue Evaluator::wapi_terminateProcess(long long handle) {
     closeTrackedHandle(handle);
     return 0;
 }
+
 WapiValue Evaluator::wapi_suspendProcess(long long handle) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "suspendProcess"));
     if (options.checkOnly) {
@@ -1301,6 +1350,7 @@ WapiValue Evaluator::wapi_suspendProcess(long long handle) {
     if (status != 0) throw WapiUnstableException("NtSuspendProcess failed");
     return 0;
 }
+
 WapiValue Evaluator::wapi_resumeProcess(long long handle) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "resumeProcess"));
     if (options.checkOnly) {
@@ -1316,6 +1366,7 @@ WapiValue Evaluator::wapi_resumeProcess(long long handle) {
     if (status != 0) throw WapiUnstableException("NtResumeProcess failed");
     return 0;
 }
+
 WapiValue Evaluator::wapi_closeProcess(long long handle) {
     requireTrackedHandle(handle, "closeProcess");
     if (options.checkOnly) {
@@ -1326,6 +1377,7 @@ WapiValue Evaluator::wapi_closeProcess(long long handle) {
     closeTrackedHandle(handle);
     return 0;
 }
+
 WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "readMemory"));
     if (address <= 0) throw WapiUnstableException("Invalid memory address");
@@ -1341,6 +1393,7 @@ WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
     std::cout << "Read " << bytesRead << " bytes from address 0x" << std::hex << address << ": " << std::dec << buffer << "\n";
     return buffer;
 }
+
 WapiValue Evaluator::wapi_writeMemory(long long handle, long long address, int value) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "writeMemory"));
     if (address <= 0) throw WapiUnstableException("Invalid memory address");
@@ -1355,6 +1408,7 @@ WapiValue Evaluator::wapi_writeMemory(long long handle, long long address, int v
     std::cout << "Wrote " << bytesWritten << " bytes to address 0x" << std::hex << address << "\n";
     return 0;
 }
+
 WapiValue Evaluator::wapi_allocMemory(long long handle, int size) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "allocMemory"));
     if (size <= 0) throw WapiUnstableException("Invalid allocation size");
@@ -1369,6 +1423,7 @@ WapiValue Evaluator::wapi_allocMemory(long long handle, int size) {
     std::cout << "Allocated " << size << " bytes\n";
     return trackedAddress;
 }
+
 WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "freeMemory"));
     if (address <= 0) throw WapiUnstableException("Invalid memory address");
@@ -1387,6 +1442,7 @@ WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {
     std::cout << "Freed memory\n";
     return 0;
 }
+
 WapiValue Evaluator::wapi_listModules(int pid) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (options.checkOnly) {
@@ -1428,6 +1484,7 @@ WapiValue Evaluator::wapi_listModules(int pid) {
     CloseHandle(hSnapshot);
     return 0;
 }
+
 WapiValue Evaluator::wapi_getModuleBaseAddress(int pid, const std::string& moduleName) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (moduleName.empty()) throw WapiUnstableException("Module name is empty");
@@ -1474,6 +1531,7 @@ WapiValue Evaluator::wapi_getModuleBaseAddress(int pid, const std::string& modul
     emitAudit("getModuleBaseAddress", "proc.modules", "failure", "module_not_found_" + moduleName);
     throw std::runtime_error("E_MODULE_NOT_FOUND: " + moduleName + " in PID " + std::to_string(pid));
 }
+
 WapiValue Evaluator::wapi_getModuleSize(int pid, const std::string& moduleName) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (moduleName.empty()) throw WapiUnstableException("Module name is empty");
@@ -1501,6 +1559,7 @@ WapiValue Evaluator::wapi_getModuleSize(int pid, const std::string& moduleName) 
     CloseHandle(snapshot);
     throw std::runtime_error("E_MODULE_NOT_FOUND: " + moduleName + " in PID " + std::to_string(pid));
 }
+
 WapiValue Evaluator::wapi_protectMemory(long long handle, long long address, int size, int protection) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "protectMemory"));
     if (address <= 0 || size <= 0) throw WapiUnstableException("Invalid memory range");
@@ -1514,6 +1573,7 @@ WapiValue Evaluator::wapi_protectMemory(long long handle, long long address, int
     }
     return static_cast<int>(oldProtect);
 }
+
 WapiValue Evaluator::wapi_queryMemory(long long handle, long long address) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "queryMemory"));
     if (address <= 0) throw WapiUnstableException("Invalid memory address");
@@ -1531,6 +1591,7 @@ WapiValue Evaluator::wapi_queryMemory(long long handle, long long address) {
     emitJsonEvent("memoryRegion", "{\"base\":" + std::to_string(reinterpret_cast<uintptr_t>(info.BaseAddress)) + ",\"size\":" + std::to_string(info.RegionSize) + ",\"state\":" + std::to_string(info.State) + ",\"protect\":" + std::to_string(info.Protect) + "}");
     return static_cast<long long>(info.RegionSize);
 }
+
 WapiValue Evaluator::wapi_listThreads(int pid) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (options.checkOnly) { emitAudit("listThreads", "thread.list", "allow", "checkOnly no side-effects"); return 0; }
@@ -1544,6 +1605,7 @@ WapiValue Evaluator::wapi_listThreads(int pid) {
     CloseHandle(snapshot);
     return 0;
 }
+
 WapiValue Evaluator::wapi_openThread(int tid) {
     if (tid <= 0) throw WapiUnstableException("Invalid tid");
     if (options.checkOnly) { emitAudit("openThread", "thread.open", "allow", "checkOnly no side-effects"); trackedHandles.insert(2); return 2; }
@@ -1553,6 +1615,7 @@ WapiValue Evaluator::wapi_openThread(int tid) {
     trackedHandles.insert(tracked);
     return tracked;
 }
+
 WapiValue Evaluator::wapi_suspendThread(long long threadHandle) {
     HANDLE thread = reinterpret_cast<HANDLE>(requireTrackedHandle(threadHandle, "suspendThread"));
     if (options.checkOnly) { emitAudit("suspendThread", "thread.suspend", "allow", "checkOnly no side-effects"); return 0; }
@@ -1560,6 +1623,7 @@ WapiValue Evaluator::wapi_suspendThread(long long threadHandle) {
     if (count == static_cast<DWORD>(-1)) throw WapiUnstableException("Failed to suspend thread");
     return static_cast<int>(count);
 }
+
 WapiValue Evaluator::wapi_resumeThread(long long threadHandle) {
     HANDLE thread = reinterpret_cast<HANDLE>(requireTrackedHandle(threadHandle, "resumeThread"));
     if (options.checkOnly) { emitAudit("resumeThread", "thread.resume", "allow", "checkOnly no side-effects"); return 0; }
@@ -1567,6 +1631,7 @@ WapiValue Evaluator::wapi_resumeThread(long long threadHandle) {
     if (count == static_cast<DWORD>(-1)) throw WapiUnstableException("Failed to resume thread");
     return static_cast<int>(count);
 }
+
 WapiValue Evaluator::wapi_getThreadContext(long long threadHandle) {
     HANDLE thread = reinterpret_cast<HANDLE>(requireTrackedHandle(threadHandle, "getThreadContext"));
     if (options.checkOnly) { emitAudit("getThreadContext", "debug.registers", "allow", "checkOnly no side-effects"); return 0; }
@@ -1582,6 +1647,7 @@ WapiValue Evaluator::wapi_getThreadContext(long long threadHandle) {
     #error Unsupported architecture
 #endif
 }
+
 WapiValue Evaluator::wapi_setThreadContext(long long threadHandle, long long contextAddress) {
     HANDLE thread = reinterpret_cast<HANDLE>(requireTrackedHandle(threadHandle, "setThreadContext"));
     if (contextAddress <= 0) throw WapiUnstableException("Invalid context address");
@@ -1600,6 +1666,7 @@ WapiValue Evaluator::wapi_setThreadContext(long long threadHandle, long long con
     if (!SetThreadContext(thread, &context)) throw WapiUnstableException("Failed to write thread context");
     return 0;
 }
+
 WapiValue Evaluator::wapi_closeHandle(long long handle) {
     requireTrackedHandle(handle, "closeHandle");
     if (options.checkOnly) {
@@ -1610,6 +1677,7 @@ WapiValue Evaluator::wapi_closeHandle(long long handle) {
     closeTrackedHandle(handle);
     return 0;
 }
+
 WapiValue Evaluator::wapi_findWindow(const std::string& name) {
     if (options.checkOnly) {
         emitAudit("findWindow", "window.find", "allow", "checkOnly no side-effects");
@@ -1618,6 +1686,7 @@ WapiValue Evaluator::wapi_findWindow(const std::string& name) {
     if (!hwnd) return 0;
     return static_cast<long long>(reinterpret_cast<uintptr_t>(hwnd));
 }
+
 namespace {
 struct WindowSearchState {
     DWORD pid = 0;
@@ -1643,6 +1712,7 @@ BOOL CALLBACK enumWindowsForPid(HWND hwnd, LPARAM lparam) {
     return TRUE;
 }
 }
+
 WapiValue Evaluator::wapi_listWindowsByPID(int pid) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (options.checkOnly) { emitAudit("listWindowsByPID", "window.pid", "allow", "checkOnly no side-effects"); return 0; }
@@ -1650,6 +1720,7 @@ WapiValue Evaluator::wapi_listWindowsByPID(int pid) {
     EnumWindows(enumWindowsForPid, reinterpret_cast<LPARAM>(&state));
     return 0;
 }
+
 WapiValue Evaluator::wapi_findWindowByPID(int pid, const std::string& title) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (options.checkOnly) { emitAudit("findWindowByPID", "window.pid", "allow", "checkOnly no side-effects"); return 0; }
@@ -1657,18 +1728,21 @@ WapiValue Evaluator::wapi_findWindowByPID(int pid, const std::string& title) {
     EnumWindows(enumWindowsForPid, reinterpret_cast<LPARAM>(&state));
     return static_cast<long long>(reinterpret_cast<uintptr_t>(state.found));
 }
+
 WapiValue Evaluator::wapi_sendWindowMessage(long long hwndValue, int message, long long wparam, long long lparam) {
     if (hwndValue <= 0) throw WapiUnstableException("Invalid window handle");
     if (options.checkOnly) { emitAudit("sendWindowMessage", "window.message", "allow", "checkOnly no side-effects"); return 0; }
     LRESULT result = SendMessageA(reinterpret_cast<HWND>(static_cast<uintptr_t>(hwndValue)), static_cast<UINT>(message), static_cast<WPARAM>(wparam), static_cast<LPARAM>(lparam));
     return static_cast<long long>(result);
 }
+
 WapiValue Evaluator::wapi_debugAttach(int pid) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (options.checkOnly) { emitAudit("debugAttach", "debug.attach", "allow", "checkOnly no side-effects"); return 0; }
     if (!DebugActiveProcess(static_cast<DWORD>(pid))) throw WapiUnstableException("Failed to attach debugger");
     return 0;
 }
+
 WapiValue Evaluator::wapi_debugWaitEvent() {
     if (options.checkOnly) { emitAudit("debugWaitEvent", "debug.attach", "allow", "checkOnly no side-effects"); return 0; }
     DEBUG_EVENT event{};
@@ -1676,12 +1750,14 @@ WapiValue Evaluator::wapi_debugWaitEvent() {
     std::cout << "Debug event code=" << event.dwDebugEventCode << " pid=" << event.dwProcessId << " tid=" << event.dwThreadId << "\n";
     return static_cast<int>(event.dwDebugEventCode);
 }
+
 WapiValue Evaluator::wapi_debugReadRegisters(int tid) {
     long long thread = numericValue(wapi_openThread(tid));
     WapiValue result = wapi_getThreadContext(thread);
     closeTrackedHandle(thread);
     return result;
 }
+
 WapiValue Evaluator::wapi_debugContinue(int eventCode) {
     if (options.checkOnly) { emitAudit("debugContinue", "debug.attach", "allow", "checkOnly no side-effects"); return 0; }
     if (!ContinueDebugEvent(eventCode, 0, 0)) {
@@ -1689,6 +1765,7 @@ WapiValue Evaluator::wapi_debugContinue(int eventCode) {
     }
     return 0;
 }
+
 WapiValue Evaluator::wapi_openProcessToken(long long handle) {
     HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "openProcessToken"));
     if (options.checkOnly) { emitAudit("openProcessToken", "token.open", "allow", "checkOnly no side-effects"); trackedHandles.insert(3); return 3; }
@@ -1698,6 +1775,7 @@ WapiValue Evaluator::wapi_openProcessToken(long long handle) {
     trackedHandles.insert(tracked);
     return tracked;
 }
+
 WapiValue Evaluator::wapi_enablePrivilege(const std::string& privilegeName) {
     if (privilegeName.empty()) throw WapiUnstableException("Privilege name is empty");
     if (options.checkOnly) { emitAudit("enablePrivilege", "token.privilege", "allow", "checkOnly no side-effects"); return 0; }
@@ -1711,6 +1789,7 @@ WapiValue Evaluator::wapi_enablePrivilege(const std::string& privilegeName) {
     CloseHandle(token);
     return 0;
 }
+
 WapiValue Evaluator::wapi_createRemoteThread(int pid, long long startAddress, long long parameter) {
     if (pid <= 0 || startAddress <= 0) throw WapiUnstableException("Invalid remote thread arguments");
     if (options.checkOnly) { emitAudit("createRemoteThread", "inject.shellcode", "allow", "checkOnly no side-effects"); return 0; }
@@ -1723,6 +1802,7 @@ WapiValue Evaluator::wapi_createRemoteThread(int pid, long long startAddress, lo
     CloseHandle(process);
     return tracked;
 }
+
 WapiValue Evaluator::wapi_injectShellcode(int pid, const std::string& hexBytes) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (hexBytes.empty()) throw WapiUnstableException("Shellcode is empty");
@@ -1765,6 +1845,7 @@ WapiValue Evaluator::wapi_injectShellcode(int pid, const std::string& hexBytes) 
     std::cout << "Shellcode injected successfully, exit code: " << exitCode << "\n";
     return static_cast<long long>(exitCode);
 }
+
 WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (dllPath.empty()) throw WapiUnstableException("DLL path is empty");
@@ -1805,6 +1886,7 @@ WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
     std::cout << "DLL injected successfully\n";
     return 0;
 }
+
 WapiValue Evaluator::wapi_testInjectDLL(int pid) {
     wchar_t exePath[MAX_PATH]{};
     if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) {

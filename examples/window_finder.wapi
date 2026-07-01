@@ -1,0 +1,26 @@
+#name "Window finder"
+#version "1.0.0"
+#author "Wapi examples"
+#description "Finds a window by title directly, then resolves the same window via its owning process."
+#mode safe
+#strict
+#cap proc.list window.find window.pid runtime.print
+
+let target = "notepad"
+
+// findWindow searches by window title across the whole desktop.
+var directHwnd = window.find(target)
+print("window.find(\"{target}\") -> {directHwnd}")
+
+var pid = proc.find(target)
+if pid == 0 {
+    print("{target} is not running")
+} else {
+    var hwnd = window.findByPid(pid, target)
+    print("main window handle for pid {pid}: {hwnd}")
+
+    // listWindowsByPID prints each matching window as it enumerates them
+    // rather than returning a list — read the output below this line.
+    print("all windows owned by pid {pid}:")
+    window.listByPid(pid)
+}

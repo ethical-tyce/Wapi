@@ -1,0 +1,27 @@
+#name "Process watchlist scanner"
+#version "1.0.0"
+#author "Wapi examples"
+#description "Checks a watchlist of process names and reports which ones are currently running."
+#mode safe
+#strict
+#cap proc.list runtime.print language.core
+
+func checkWatchlist(string[] names) -> int {
+    var runningCount = 0
+    for i in range(0, names.len()) {
+        var name = names[i]
+        var pid = proc.find(name)
+        if pid != 0 {
+            print("[running] {name} pid={pid}")
+            runningCount += 1
+        } else {
+            print("[absent]  {name}")
+        }
+    }
+    return runningCount
+}
+
+var watchlist = ["notepad", "chrome", "explorer", "steam"]
+var running = checkWatchlist(watchlist)
+
+print("{running} of {watchlist.len()} watched processes are running")
