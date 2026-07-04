@@ -1,6 +1,6 @@
 # Wapi
 
-**A scripting language for Windows API automation where every script declares its own capabilities before it runs.**
+**A scripting language for Windows API automation where every script declares required capabilities before it runs.**
 
 ```wapi
 #name "Process quick check"
@@ -13,15 +13,15 @@ var pid = proc.find(target)
 print("{target} pid={pid}")
 ```
 
-Reading `proc.find`, `proc.open`, and `mem.write` calls in a Windows API script doesn't tell you the blast radius. Wapi scripts declare it up front, in the file, in plain text — `#mode`, `#cap` — and the runtime enforces it before a single Windows API call executes. You can read the first five lines of any `.wapi` file and know exactly what it's allowed to touch.
+Reading `proc.find`, `proc.open`, and `mem.write` calls in a Windows API script doesn't tell you the blast radius. Wapi scripts declare requirements up front with `#mode` and `#cap`, then the runtime compares those declarations with explicit CLI, trusted-script, or IDE project grants before any Windows API call executes.
 
 ## Why Wapi
 
 PowerShell can call into the Windows API, but the P/Invoke syntax is painful and there's no safety model. Python with `ctypes` works but is verbose, brittle, and equally ungoverned. Frida is powerful but assumes you already trust the script. Wapi is a small purpose-built language with:
 
-- a real lexer → parser → evaluator pipeline, not a wrapper script,
+- a real lexer -> parser -> evaluator pipeline, not a wrapper script,
 - a capability system where scripts declare what they need (`#cap proc.read memory.write`) and the runtime enforces it per function call,
-- three enforced modes — `safe`, `dev`, `unsafe` — with a hard floor a script can't silently exceed,
+- three enforced modes - `safe`, `dev`, `unsafe` - with a hard floor a script can't silently exceed,
 - full audit logging of every privileged call,
 - a desktop IDE with Monaco editing, inline diagnostics, a process explorer, and a live capability inspector.
 
@@ -34,15 +34,15 @@ cd Wapi
 # build the CLI
 & 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe' .\native\Wapi.vcxproj /p:Configuration=Release /p:Platform=x64
 
-# run a script
-.\native\x64\Release\Wapi.exe run examples/process_check.wapi
+# run a trusted local script that uses its directive block as the grant set
+.\native\x64\Release\Wapi.exe run examples/process_check.wapi --trust-script-directives
 ```
 
-Prebuilt binaries aren't published yet — see [Build native runtime](#build-native-runtime) below for full requirements. A tagged release with a standalone `Wapi.exe` and IDE installer is on the roadmap.
+Prebuilt binaries aren't published yet - see [Build native runtime](#build-native-runtime) below for full requirements. A tagged release with a standalone `Wapi.exe` and IDE installer is on the roadmap.
 
 ## The capability model
 
-Every `.wapi` file can open with a directive block. Directives are read before the lexer runs, so they're not language statements — they're metadata the runtime enforces.
+Every `.wapi` file can open with a directive block. Directives are read before the lexer runs, so they're not language statements. They declare what the script requires; CLI flags, trusted-script mode, or IDE project settings decide what is actually granted.
 
 ```wapi
 #mode dev
@@ -51,18 +51,20 @@ Every `.wapi` file can open with a directive block. Directives are read before t
 #strict
 ```
 
-- `#mode safe|dev|unsafe` — the minimum mode this script requires. Running it under a lower mode is a hard error.
-- `#cap <name> [<name>...]` — capabilities this script uses. Calling a function outside the declared set fails under `#strict`.
-- `#strict` — missing capabilities become hard errors instead of warnings.
-- `#allow-injection` — opt in to injection helpers outside `unsafe` mode.
-- `#include "file.wapi"` — include another `.wapi` file relative to the source root (cannot be absolute or escape the root).
-- `#name`, `#version`, `#author`, `#description` — script metadata, surfaced in the IDE and `wapi doc`.
+- `#mode safe|dev|unsafe` - the minimum mode this script requires. Running it under a lower externally granted mode is a hard error.
+- `#cap <name> [<name>...]` - capabilities this script uses. These are requirements, not grants, unless you explicitly pass `--trust-script-directives` for a trusted script.
+- `#strict` - missing runtime capability grants become hard errors instead of warnings.
+- `#allow-injection` - declares injection helper usage; `--allow-injection`, `unsafe` mode, or trusted directives are still required to grant it.
+- `#include "file.wapi"` - include another `.wapi` file relative to the source root (cannot be absolute or escape the root).
+- `#name`, `#version`, `#author`, `#description` - script metadata, surfaced in the IDE and `wapi doc`.
 
-Run someone else's script with a tighter cap set than it declares and the runtime — not the script — decides what's actually granted:
+Run someone else's script with a tighter cap set than it declares and the runtime - not the script - decides what's actually granted:
 
 ```powershell
-wapi run untrusted.wapi --mode safe --cap proc.read --strict
+wapi run untrusted.wapi --mode safe --cap proc.list --strict-permissions
 ```
+
+For trusted local scripts, `--trust-script-directives` intentionally promotes `#mode`, `#cap`, and `#allow-injection` into runtime grants. Do not use it for scripts you would not already trust to run with those permissions.
 
 `wapi lint` cross-checks every function call against your `#cap` block and tells you what's declared-but-unused and what's used-but-undeclared.
 
@@ -91,9 +93,9 @@ Wapi currently supports:
 - `struct` declarations and struct literals
 - `match` with literal, binding, guarded, and `_` default arms
 - `try`/`catch`
-- named arguments — `add(right: 2, left: 1)`
+- named arguments - `add(right: 2, left: 1)`
 - null-safe method calls (`?.`)
-- dotted runtime aliases — `proc.find`, `mem.read`, `window.find`, etc.
+- dotted runtime aliases - `proc.find`, `mem.read`, `window.find`, etc.
 
 ```wapi
 #name "Language smoke test"
@@ -128,21 +130,21 @@ Full syntax reference: [`docs/language.md`](docs/language.md).
 
 ## Runtime bindings
 
-Every function below has a global name and a dotted alias, and is gated behind a capability declared via `#cap`.
+Every function below has a global name and a dotted alias, and is gated behind a runtime capability grant. Scripts should declare matching requirements with `#cap`; operators grant them with `--cap`, trusted directives, or IDE project settings.
 
-**Process** — `findProcessPID` / `proc.find`, `openProcess` / `proc.open`, `terminateProcess` / `proc.terminate`, `suspendProcess` / `proc.suspend`, `resumeProcess` / `proc.resume`, `closeProcess` / `proc.close`, `closeHandle` / `handle.close`
+**Process** - `findProcessPID` / `proc.find`, `openProcess` / `proc.open`, `terminateProcess` / `proc.terminate`, `suspendProcess` / `proc.suspend`, `resumeProcess` / `proc.resume`, `closeProcess` / `proc.close`, `closeHandle` / `handle.close`
 
-**Modules** — `listModules` / `proc.modules`, `getModuleBase`, `getModuleBaseAddress` / `proc.module.base`, `getModuleSize` / `proc.module.size`
+**Modules** - `listModules` / `proc.modules`, `getModuleBase`, `getModuleBaseAddress` / `proc.module.base`, `getModuleSize` / `proc.module.size`
 
-**Memory** — `readMemory` / `mem.read`, `writeMemory` / `mem.write`, `allocMemory` / `mem.alloc`, `freeMemory` / `mem.free`, `protectMemory` / `mem.protect`, `queryMemory` / `mem.query`
+**Memory** - `readMemory` / `mem.read`, `writeMemory` / `mem.write`, `allocMemory` / `mem.alloc`, `freeMemory` / `mem.free`, `protectMemory` / `mem.protect`, `queryMemory` / `mem.query`
 
-**Threads** — `listThreads` / `thread.list`, `openThread` / `thread.open`, `suspendThread` / `thread.suspend`, `resumeThread` / `thread.resume`, `getThreadContext` / `thread.context`, `setThreadContext` / `thread.context.set`
+**Threads** - `listThreads` / `thread.list`, `openThread` / `thread.open`, `suspendThread` / `thread.suspend`, `resumeThread` / `thread.resume`, `getThreadContext` / `thread.context`, `setThreadContext` / `thread.context.set`
 
-**Window** — `findWindow` / `window.find`, `listWindowsByPID` / `window.listByPid`, `findWindowByPID` / `window.findByPid`, `sendWindowMessage` / `window.message`
+**Window** - `findWindow` / `window.find`, `listWindowsByPID` / `window.listByPid`, `findWindowByPID` / `window.findByPid`, `sendWindowMessage` / `window.message`
 
-**Injection** *(requires `#allow-injection` outside `unsafe` mode)* — `injectDLL` / `inject.dll`, `testInjectDLL` / `inject.test`, `injectShellcode` / `inject.shellcode`, `createRemoteThread` / `inject.thread`
+**Injection** *(requires an injection grant outside `unsafe` mode)* - `injectDLL` / `inject.dll`, `testInjectDLL` / `inject.test`, `injectShellcode` / `inject.shellcode`, `createRemoteThread` / `inject.thread`
 
-**Debug / token** — `debugAttach` / `debug.attach`, `debugWaitEvent` / `debug.wait`, `debugReadRegisters` / `debug.registers`, `debugContinue` / `debug.continue`, `openProcessToken` / `token.open`, `enablePrivilege` / `token.privilege`
+**Debug / token** - `debugAttach` / `debug.attach`, `debugWaitEvent` / `debug.wait`, `debugReadRegisters` / `debug.registers`, `debugContinue` / `debug.continue`, `openProcessToken` / `token.open`, `enablePrivilege` / `token.privilege`
 
 ## CLI
 
@@ -195,9 +197,9 @@ npm run build         # build the installer + executable
 
 - This project uses low-level Windows APIs and can be unstable against invalid targets or addresses.
 - `check` mode is for preflight verification with side effects suppressed.
-- Prefer directive blocks in committed scripts — capabilities and mode should be visible in the file itself, not implied by CLI flags.
+- Prefer directive blocks in committed scripts so required capabilities and mode are visible, but grant them explicitly with CLI flags, IDE project settings, or `--trust-script-directives` for trusted local scripts.
 - Use `--json` for machine-readable output when integrating with other tools.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT - see [`LICENSE`](LICENSE).

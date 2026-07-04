@@ -210,7 +210,7 @@ const wapiFunctionNameRegex = wapiRuntimeFunctions.length
 const runtimeCapabilities = [...new Set(wapiRuntimeFunctions.map((fn) => fn.capability))].sort();
 
 const directiveDefinitions = [
-  { name: "mode", snippet: "#mode ${1:safe}", detail: "Set script mode floor" },
+  { name: "mode", snippet: "#mode ${1:safe}", detail: "Declare the minimum script mode" },
   { name: "cap", snippet: "#cap ${1:proc.list}", detail: "Declare a required capability" },
   { name: "include", snippet: "#include \"${1:path.wapi}\"", detail: "Include a relative .wapi file" },
   { name: "name", snippet: "#name \"${1:Script name}\"", detail: "Set script display name" },
@@ -218,7 +218,7 @@ const directiveDefinitions = [
   { name: "author", snippet: "#author \"${1:ethical-tyce}\"", detail: "Set script author" },
   { name: "description", snippet: "#description \"${1:Description}\"", detail: "Describe this script" },
   { name: "strict", snippet: "#strict", detail: "Enable strict capability checks" },
-  { name: "allow-injection", snippet: "#allow-injection", detail: "Allow injection APIs outside unsafe mode" }
+  { name: "allow-injection", snippet: "#allow-injection", detail: "Declare injection API usage" }
 ];
 const directiveDocs = new Map(directiveDefinitions.map((directive) => [directive.name, directive.detail]));
 const modeLevel = { safe: 0, dev: 1, unsafe: 2 };
@@ -275,12 +275,12 @@ function activeScriptDirectives() {
 
 function runtimeOptionsForSource(source = "") {
   const directives = parseScriptDirectives(source);
-  const baseMode = ideState.projectConfig.defaultMode;
+  const projectCapabilities = [...new Set(ideState.projectConfig.capabilities)].sort();
   return {
-    mode: directives.mode || baseMode,
+    mode: ideState.projectConfig.defaultMode,
     strictPermissions: ideState.projectConfig.strictPermissions || directives.strict,
-    allowInjection: ideState.projectConfig.allowInjection || directives.allowInjection,
-    capabilities: [...new Set([...ideState.projectConfig.capabilities, ...directives.capabilities])].sort(),
+    allowInjection: ideState.projectConfig.allowInjection,
+    capabilities: projectCapabilities,
     jsonOutput: ideState.projectConfig.jsonOutput !== false,
     directives
   };
@@ -990,7 +990,14 @@ async function runWapiCommand(command, { silent = false } = {}) {
     appendLines(ideState.outputLines, [`> wapi.exe ${command} ${file.relativePath}`], "command");
     appendLines(ideState.outputLines, [`Starting ${command} with mode=${runOptions.mode}, strict=${runOptions.strictPermissions ? "on" : "off"}`], "info");
     if (runOptions.directives.mode && modeLevel[runOptions.directives.mode] > modeLevel[ideState.projectConfig.defaultMode]) {
-      appendLines(ideState.outputLines, [`Script #mode ${runOptions.directives.mode} is above project mode ${ideState.projectConfig.defaultMode}.`], "warning");
+      appendLines(ideState.outputLines, [`Script #mode ${runOptions.directives.mode} is above project mode ${ideState.projectConfig.defaultMode}; raise the project mode or pass an explicit trusted grant.`], "warning");
+    }
+    const missingProjectCaps = runOptions.directives.capabilities.filter((capability) => !runOptions.capabilities.includes(capability));
+    if (missingProjectCaps.length) {
+      appendLines(ideState.outputLines, [`Script declares capabilities not enabled in project settings: ${missingProjectCaps.join(", ")}`], "warning");
+    }
+    if (runOptions.directives.allowInjection && !runOptions.allowInjection) {
+      appendLines(ideState.outputLines, ["Script declares #allow-injection, but project settings still block injection helpers."], "warning");
     }
     renderToolWindow();
   }
@@ -1893,7 +1900,14 @@ function renderScriptInfo(parent) {
   const fallbackCaps = runtimeCapabilities.filter((capability) => !directives.capabilities.includes(capability));
   const nextCap = missingUsedCaps[0] || fallbackCaps[0] || "";
   const modeWarning = directives.mode && modeLevel[directives.mode] > modeLevel[projectMode]
-    ? `<div class="script-warning">#mode ${directives.mode} is above project mode ${projectMode}; Run and Check will use ${directives.mode} for this file.</div>`
+    ? `<div class="script-warning">#mode ${directives.mode} is above project mode ${projectMode}; raise the project mode before running.</div>`
+    : "";
+  const missingProjectCaps = directives.capabilities.filter((capability) => !ideState.projectConfig.capabilities.includes(capability));
+  const grantWarning = missingProjectCaps.length
+    ? `<div class="script-warning">Not granted in project settings: ${missingProjectCaps.map(escapeHtml).join(", ")}</div>`
+    : "";
+  const injectionWarning = directives.allowInjection && !ideState.projectConfig.allowInjection
+    ? `<div class="script-warning">#allow-injection is declared, but project settings block injection helpers.</div>`
     : "";
   section.innerHTML = `
     <div class="script-info-head">
@@ -1907,6 +1921,8 @@ function renderScriptInfo(parent) {
       <span>Includes</span><strong>${directives.includes.length || 0}</strong>
     </div>
     ${modeWarning}
+    ${grantWarning}
+    ${injectionWarning}
     <div class="script-capability-cloud">
       ${directives.capabilities.length ? directives.capabilities.map((capability) => `<span class="capability-chip is-active">${escapeHtml(capability)}</span>`).join("") : `<span class="settings-muted">No #cap directives</span>`}
     </div>

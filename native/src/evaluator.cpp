@@ -1915,6 +1915,24 @@ WapiValue Evaluator::wapi_sleep(long long milliseconds) {
         emitAudit("sleep", "runtime.sleep", "allow", "checkOnly no side-effects");
         return 0;
     }
-    ::Sleep(static_cast<DWORD>(milliseconds));
+    if (!timeoutEnabled) {
+        if (milliseconds > static_cast<long long>((std::numeric_limits<DWORD>::max)())) {
+            throw WapiUnstableException("Sleep duration exceeds Windows limit");
+        }
+        ::Sleep(static_cast<DWORD>(milliseconds));
+        return 0;
+    }
+
+    long long remaining = milliseconds;
+    while (remaining > 0) {
+        enforceTimeout();
+        const auto now = std::chrono::steady_clock::now();
+        const auto untilDeadline = std::chrono::duration_cast<std::chrono::milliseconds>(timeoutDeadline - now).count();
+        if (untilDeadline <= 0) enforceTimeout();
+        const long long chunkMs = (std::min)(remaining, (std::min)(untilDeadline, 50LL));
+        ::Sleep(static_cast<DWORD>((std::max)(1LL, chunkMs)));
+        remaining -= chunkMs;
+    }
+    enforceTimeout();
     return 0;
 }

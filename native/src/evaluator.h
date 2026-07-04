@@ -37,6 +37,7 @@ struct WapiRuntimeOptions {
     bool cliModeExplicit = false;
     bool cliInjectionExplicit = false;
     bool cliStrictExplicit = false;
+    bool trustScriptDirectives = false;
     int timeoutMs = 0;
     int maxSteps = 100000;
     std::string outputFormat = "text";

@@ -49,6 +49,8 @@ void printUsage() {
         << "Options:\n"
         << "  --mode safe|dev|unsafe   Runtime safety mode; WAPI_MODE is used when omitted.\n"
         << "  --cap <name>             Add a capability grant.\n"
+        << "  --trust-script-directives\n"
+        << "                           Grant #mode/#cap/#allow-injection from trusted scripts.\n"
         << "  --allow-injection        Permit injection helpers outside unsafe mode.\n"
         << "  --strict-permissions     Turn missing capabilities into errors.\n"
         << "  --json|--output json     Emit JSON runtime events.\n"
@@ -65,10 +67,10 @@ void printUsage() {
         << "\n"
         << "File directives (top of any .wapi file, before any code):\n"
         << "  #mode safe|dev|unsafe        Minimum mode this script requires.\n"
-        << "  #cap <name> [<name>...]      Capability or capabilities this script uses.\n"
+        << "  #cap <name> [<name>...]      Declared capability requirements, not grants.\n"
         << "  #include \"path/to/file.wapi\" Include a relative .wapi file inside the source root.\n"
         << "  #strict                      Treat missing capabilities as errors.\n"
-        << "  #allow-injection             Enable injection helpers for this script.\n"
+        << "  #allow-injection             Declare injection helper usage.\n"
         << "  #name \"My Script\"            Script display name.\n"
         << "  #version \"1.0.0\"             Script version string.\n"
         << "  #author \"ethical-tyce\"       Script author.\n"
@@ -80,7 +82,7 @@ void printUsage() {
         << "\n"
         << "Examples:\n"
         << "  wapi lint script.wapi --mode safe\n"
-        << "  wapi check script.wapi --mode safe --strict-permissions\n"
+        << "  wapi check script.wapi --mode safe --strict-permissions --cap runtime.print\n"
         << "  type script.wapi | wapi run -\n";
 }
 
@@ -142,7 +144,10 @@ WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool check
     char* envMode = nullptr;
     size_t envModeSize = 0;
     if (_dupenv_s(&envMode, &envModeSize, "WAPI_MODE") == 0 && envMode != nullptr) {
-        if (*envMode) options.mode = parseMode(envMode);
+        if (*envMode) {
+            options.mode = parseMode(envMode);
+            options.cliModeExplicit = true;
+        }
         free(envMode);
     }
 
@@ -156,6 +161,10 @@ WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool check
         if (args[i] == "--allow-injection") {
             options.allowInjection = true;
             options.cliInjectionExplicit = true;
+            continue;
+        }
+        if (args[i] == "--trust-script-directives") {
+            options.trustScriptDirectives = true;
             continue;
         }
         if (args[i] == "--strict-permissions") {
@@ -685,17 +694,31 @@ void emitLintWarnings(const std::shared_ptr<Program>& program, const ScriptDirec
 
 void applyDirectivesToOptions(const ScriptDirectives& dir, WapiRuntimeOptions& options) {
     if (dir.hasMode) {
-        if (options.cliModeExplicit && static_cast<int>(dir.mode) > static_cast<int>(options.mode)) {
-            throw std::runtime_error(
-                "E_DIRECTIVE: script requires mode '" + modeToDirectiveString(dir.mode) +
-                "' but runtime is '" + modeToDirectiveString(options.mode) +
-                "'. Re-run with --mode " + modeToDirectiveString(dir.mode)
-            );
+        if (static_cast<int>(dir.mode) > static_cast<int>(options.mode)) {
+            if (options.cliModeExplicit) {
+                throw std::runtime_error(
+                    "E_DIRECTIVE: script requires mode '" + modeToDirectiveString(dir.mode) +
+                    "' but runtime is '" + modeToDirectiveString(options.mode) +
+                    "'. Re-run with --mode " + modeToDirectiveString(dir.mode)
+                );
+            }
+            if (!options.trustScriptDirectives) {
+                throw std::runtime_error(
+                    "E_DIRECTIVE: script requires mode '" + modeToDirectiveString(dir.mode) +
+                    "' but script directives are not trusted. Re-run with --mode " +
+                    modeToDirectiveString(dir.mode) + " or --trust-script-directives"
+                );
+            }
+            options.mode = dir.mode;
         }
-        if (!options.cliModeExplicit) options.mode = dir.mode;
+        else if (!options.cliModeExplicit && options.trustScriptDirectives) {
+            options.mode = dir.mode;
+        }
     }
-    for (const auto& cap : dir.capabilities) options.capabilities.insert(cap);
-    if (dir.allowInjection && !options.cliInjectionExplicit) options.allowInjection = true;
+    if (options.trustScriptDirectives) {
+        for (const auto& cap : dir.capabilities) options.capabilities.insert(cap);
+        if (dir.allowInjection && !options.cliInjectionExplicit) options.allowInjection = true;
+    }
     if (dir.strict && !options.cliStrictExplicit) options.strictPermissions = true;
     if (options.verbose && !dir.name.empty()) {
         std::cout << "[WAPI] script: " << dir.name;
@@ -778,6 +801,26 @@ void testFailure(const std::string& name, const std::string& script, const WapiR
     }
 }
 
+void testDirectiveFailure(const std::string& name, const ScriptDirectives& directives, const WapiRuntimeOptions& options, const std::string& expected) {
+    try {
+        WapiRuntimeOptions mutableOptions = options;
+        applyDirectivesToOptions(directives, mutableOptions);
+        std::cout << "[FAIL] " << name << " - expected failure containing " << expected << "\n";
+        failed++;
+    }
+    catch (const std::exception& e) {
+        const std::string message = e.what();
+        if (message.find(expected) != std::string::npos) {
+            std::cout << "[PASS] " << name << "\n";
+            passed++;
+        }
+        else {
+            std::cout << "[FAIL] " << name << " - " << message << "\n";
+            failed++;
+        }
+    }
+}
+
 void runStandardizedTests() {
     passed = 0;
     failed = 0;
@@ -810,6 +853,43 @@ void runStandardizedTests() {
     testFailure("missing sensitive capability denies process listing", "proc.list()", policyOptions, "E_PERMISSION");
     policyOptions.capabilities.insert("proc.open.all_access");
     testFailure("safe mode denies all-access process handles", "proc.open(1234)", policyOptions, "requires --mode dev|unsafe");
+
+    ScriptDirectives devDirective;
+    devDirective.hasMode = true;
+    devDirective.mode = WapiMode::Dev;
+    testDirectiveFailure("untrusted #mode cannot raise runtime mode", devDirective, policyOptions, "script directives are not trusted");
+
+    WapiRuntimeOptions untrustedCapOptions;
+    untrustedCapOptions.mode = WapiMode::Dev;
+    untrustedCapOptions.checkOnly = true;
+    untrustedCapOptions.strictPermissions = true;
+    ScriptDirectives privilegeDirective;
+    privilegeDirective.capabilities.insert("token.privilege");
+    applyDirectivesToOptions(privilegeDirective, untrustedCapOptions);
+    testFailure("untrusted #cap cannot grant token privilege", "token.privilege(\"SeDebugPrivilege\")", untrustedCapOptions, "missing capability=token.privilege");
+
+    WapiRuntimeOptions trustedDirectiveOptions;
+    trustedDirectiveOptions.checkOnly = true;
+    trustedDirectiveOptions.trustScriptDirectives = true;
+    ScriptDirectives trustedPrivilegeDirective;
+    trustedPrivilegeDirective.hasMode = true;
+    trustedPrivilegeDirective.mode = WapiMode::Dev;
+    trustedPrivilegeDirective.capabilities.insert("token.privilege");
+    applyDirectivesToOptions(trustedPrivilegeDirective, trustedDirectiveOptions);
+    test("trusted directives can grant token privilege in check mode", "token.privilege(\"SeDebugPrivilege\")", trustedDirectiveOptions);
+
+    WapiRuntimeOptions untrustedInjectionOptions;
+    untrustedInjectionOptions.mode = WapiMode::Dev;
+    untrustedInjectionOptions.checkOnly = true;
+    untrustedInjectionOptions.capabilities.insert("inject.shellcode");
+    ScriptDirectives injectionDirective;
+    injectionDirective.allowInjection = true;
+    applyDirectivesToOptions(injectionDirective, untrustedInjectionOptions);
+    testFailure("untrusted #allow-injection cannot grant injection flag", "inject.shellcode(1, \"90\")", untrustedInjectionOptions, "requires --allow-injection");
+
+    WapiRuntimeOptions sleepTimeoutOptions;
+    sleepTimeoutOptions.timeoutMs = 1;
+    testFailure("sleep respects runtime timeout", "sleep(50)", sleepTimeoutOptions, "E_TIMEOUT");
     std::cout << "[Process] ---------------------------------------------\n";
     test("proc.list", "proc.list()", options);
     test("proc.find", "int pid = proc.find(\"notepad\")", options);

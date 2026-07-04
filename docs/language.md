@@ -21,11 +21,11 @@ print("ready")
 
 Supported directives:
 
-- `#mode safe|dev|unsafe`
-- `#cap <capability> [<capability>...]`
+- `#mode safe|dev|unsafe` declares the minimum runtime mode.
+- `#cap <capability> [<capability>...]` declares required capabilities. It does not grant them unless the CLI is run with `--trust-script-directives`.
 - `#include "relative/path.wapi"`
 - `#strict`
-- `#allow-injection`
+- `#allow-injection` declares injection helper usage. It is not an injection grant unless directives are trusted.
 - `#name "..."`
 - `#version "..."`
 - `#author "..."`
@@ -197,7 +197,7 @@ mem.free(handle, address)
 handle.close(handle)
 ```
 
-Injection helpers additionally need `#allow-injection` unless the script runs in `unsafe` mode.
+Injection helpers additionally need an injection grant outside `unsafe` mode. Use `--allow-injection`, IDE project settings, or `--trust-script-directives` for trusted scripts that declare `#allow-injection`.
 
 ## CLI Flow
 
@@ -205,8 +205,8 @@ Use this order when checking scripts manually:
 
 ```powershell
 wapi lint script.wapi --mode safe
-wapi check script.wapi --mode safe --strict-permissions
-wapi run script.wapi
+wapi check script.wapi --mode safe --strict-permissions --cap runtime.print
+wapi run script.wapi --trust-script-directives
 ```
 
 `lint` reads directives, parses the program, emits `[LINT]` warnings for missing or unused `#cap` declarations, and exits without running the evaluator.
