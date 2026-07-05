@@ -44,6 +44,12 @@ self.MonacoEnvironment = {
   getWorker: () => new editorWorker()
 };
 
+const exampleSources = import.meta.glob("../examples/*.wapi", {
+  query: "?raw",
+  import: "default",
+  eager: true
+});
+
 function attrsString(attrs = {}) {
   return Object.entries(attrs)
     .filter(([, value]) => value !== undefined && value !== null)
@@ -223,6 +229,118 @@ const directiveDefinitions = [
 const directiveDocs = new Map(directiveDefinitions.map((directive) => [directive.name, directive.detail]));
 const modeLevel = { safe: 0, dev: 1, unsafe: 2 };
 
+const capabilityDescriptions = new Map([
+  ["runtime.print", "Allows scripts to write visible output to the console and IDE output panel."],
+  ["language.core", "Enables core language helpers used by control-flow-heavy scripts, including length and assertions."],
+  ["language.string", "Enables string conversion, search, formatting, and parsing helpers."],
+  ["language.math", "Enables numeric utility helpers such as abs, min, and max."],
+  ["language.array", "Enables array helper calls for mutation, ordering, and item access."],
+  ["proc.list", "Allows process enumeration and name-to-PID lookup without opening a process handle."],
+  ["proc.open.all_access", "Allows opening target processes with broad access rights for inspection or memory work."],
+  ["proc.close", "Allows closing process handles returned by runtime helpers."],
+  ["proc.handle.close", "Allows closing generic runtime handles after process, token, or helper operations."],
+  ["proc.terminate", "Allows terminating a target process."],
+  ["proc.suspend", "Allows suspending a target process."],
+  ["proc.resume", "Allows resuming a suspended target process."],
+  ["proc.modules", "Allows listing modules and resolving module base addresses or image sizes."],
+  ["mem.read", "Allows reading values from a target process address."],
+  ["mem.write", "Allows writing values into a target process address."],
+  ["mem.alloc", "Allows allocating memory inside a target process."],
+  ["mem.free", "Allows freeing memory allocated through the runtime."],
+  ["mem.protect", "Allows changing memory page protection flags in a target process."],
+  ["mem.query", "Allows querying memory region metadata for a target process."],
+  ["thread.list", "Allows listing threads owned by a target process."],
+  ["thread.open", "Allows opening target thread handles."],
+  ["thread.suspend", "Allows suspending individual threads."],
+  ["thread.resume", "Allows resuming individual threads."],
+  ["thread.context.write", "Allows writing thread context state."],
+  ["debug.attach", "Allows attaching to and continuing debug sessions."],
+  ["debug.registers", "Allows reading debug register and thread context state."],
+  ["token.open", "Allows opening a process token for privilege inspection or changes."],
+  ["token.privilege", "Allows enabling privileges on an opened token."],
+  ["window.find", "Allows resolving top-level windows by title."],
+  ["window.pid", "Allows listing and resolving windows owned by a process."],
+  ["window.message", "Allows sending a Windows message to a target window handle."],
+  ["inject.dll", "Allows DLL injection helpers. Requires an injection grant outside unsafe mode."],
+  ["inject.shellcode", "Allows shellcode and remote-thread injection helpers. Requires an injection grant outside unsafe mode."]
+]);
+
+function capabilityDescription(capability) {
+  return capabilityDescriptions.get(capability) ?? `Runtime grant used by ${capability.split(".")[0]} helpers.`;
+}
+
+function functionDescription(fn) {
+  const byName = {
+    print: "Writes a value to stdout and the IDE output stream.",
+    len: "Returns the length of a string or array.",
+    substr: "Returns a slice from a string.",
+    contains: "Checks whether text or an array contains a value.",
+    replace: "Replaces matching text.",
+    toLower: "Converts text to lowercase.",
+    toInt: "Converts text or a number into an integer.",
+    abs: "Returns an absolute numeric value.",
+    min: "Returns the smaller numeric value.",
+    max: "Returns the larger numeric value.",
+    push: "Appends a value to an array.",
+    pop: "Removes and returns the last array item.",
+    typeof: "Returns a value type name.",
+    assert: "Fails the script when a condition is false.",
+    toHex: "Formats a number as hexadecimal text.",
+    fromHex: "Parses hexadecimal text into a number.",
+    split: "Splits text by a delimiter.",
+    trim: "Trims leading and trailing whitespace.",
+    padLeft: "Pads text on the left to a target width.",
+    padRight: "Pads text on the right to a target width.",
+    sort: "Sorts an array."
+  };
+  if (byName[fn.name]) return byName[fn.name];
+  if (fn.name.includes("find") && fn.name.startsWith("proc.")) return "Finds a process identifier from a process name.";
+  if (fn.name.includes("list") || fn.name.endsWith(".list")) return "Lists runtime objects for inspection.";
+  if (fn.name.includes("module")) return "Inspects loaded modules for a target process.";
+  if (fn.name.startsWith("mem.read")) return "Reads a value from a target process address.";
+  if (fn.name.startsWith("mem.write")) return "Writes a value into a target process address.";
+  if (fn.name.startsWith("mem.alloc")) return "Allocates memory inside a target process.";
+  if (fn.name.startsWith("mem.free")) return "Frees memory allocated in a target process.";
+  if (fn.name.startsWith("window.")) return "Finds, lists, or interacts with Windows UI handles.";
+  if (fn.name.startsWith("thread.")) return "Inspects or controls target process threads.";
+  if (fn.name.startsWith("debug.")) return "Works with debugger attach, event, or register state.";
+  if (fn.name.startsWith("token.")) return "Works with process token and privilege state.";
+  if (fn.name.startsWith("inject.")) return "Runs an injection helper against a target process.";
+  if (fn.name.includes("close")) return "Closes a runtime-owned handle.";
+  return capabilityDescription(fn.capability);
+}
+
+function examplePathFromModulePath(path) {
+  return normalizePath(path).replace(/^\.\.\//, "");
+}
+
+function codePreview(source = "", maxLines = 8) {
+  return source.replace(/\r\n/g, "\n").split("\n").slice(0, maxLines).join("\n").trim();
+}
+
+function parseExampleScripts() {
+  return Object.entries(exampleSources)
+    .map(([modulePath, source]) => {
+      const directives = parseScriptDirectives(String(source));
+      const path = examplePathFromModulePath(modulePath);
+      const fallbackName = fileName(path).replace(/\.wapi$/i, "").replace(/[_-]+/g, " ");
+      return {
+        path,
+        fileName: fileName(path),
+        name: directives.name || fallbackName,
+        description: directives.description || "Shared Wapi example script.",
+        mode: directives.mode || "safe",
+        strict: directives.strict,
+        allowInjection: directives.allowInjection,
+        capabilities: directives.capabilities,
+        source: String(source),
+        preview: codePreview(String(source)),
+        runnable: directives.capabilities.length > 0 || Boolean(directives.name)
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function directiveValue(value = "") {
   const trimmed = value.trim();
   const quoted = trimmed.match(/^(["'])(.*)\1$/);
@@ -265,6 +383,91 @@ function parseScriptDirectives(source = "") {
   });
   directives.capabilities = [...caps].sort();
   return directives;
+}
+
+const wapiExamples = parseExampleScripts();
+
+function examplesForCapability(capability) {
+  return wapiExamples.filter((example) => example.capabilities.includes(capability));
+}
+
+function examplesForFunction(fn) {
+  const escaped = escapeRegExp(fn.name);
+  const usagePattern = new RegExp(`(^|[^\\w.])${escaped}\\s*\\(`);
+  return wapiExamples.filter((example) => example.capabilities.includes(fn.capability) && usagePattern.test(example.source));
+}
+
+function capabilityFunctions(capability) {
+  return wapiRuntimeFunctions.filter((fn) => fn.capability === capability);
+}
+
+function ensureExampleRuntimeConfig(example) {
+  const mode = modeLevel[example.mode] > modeLevel[ideState.projectConfig.defaultMode]
+    ? example.mode
+    : ideState.projectConfig.defaultMode;
+  ideState.projectConfig = normalizeProjectConfig({
+    ...ideState.projectConfig,
+    defaultMode: mode,
+    strictPermissions: ideState.projectConfig.strictPermissions || example.strict,
+    allowInjection: ideState.projectConfig.allowInjection || example.allowInjection,
+    capabilities: [...new Set([...ideState.projectConfig.capabilities, ...example.capabilities])].sort()
+  }, ideState.projectConfig.name);
+  persistProjectConfig();
+}
+
+function openExampleScript(path) {
+  const example = wapiExamples.find((item) => item.path === path);
+  if (!example) return;
+  let file = ideState.files.find((item) => normalizePath(item.relativePath) === example.path);
+  if (!file) {
+    file = normalizeProjectFile({
+      name: example.fileName,
+      relativePath: example.path,
+      source: example.source,
+      originalSource: example.source,
+      dirty: false
+    });
+    ideState.files = mergeProjectFiles(ideState.files, [file]);
+  }
+  ensureExampleRuntimeConfig(example);
+  openFileInEditor(file.id, false);
+  renderAll();
+  setEditorModel(file, true);
+  setStatus(`${example.name} opened with required runtime grants`);
+}
+
+function insertExampleSnippet(path) {
+  const example = wapiExamples.find((item) => item.path === path);
+  if (!example || !editorState.editor || !editorState.model) return;
+  const selection = editorState.editor.getSelection();
+  editorState.editor.executeEdits("wapi-example", [{ range: selection, text: example.source, forceMoveMarkers: true }]);
+  editorState.editor.focus();
+  setStatus(`${example.name} inserted`);
+}
+
+function renderExampleLinks(parent, examples, limit = 3) {
+  const runnable = examples.filter((example) => example.runnable).slice(0, limit);
+  if (runnable.length === 0) return;
+  const list = document.createElement("div");
+  list.className = "example-link-list";
+  for (const example of runnable) {
+    const row = document.createElement("div");
+    row.className = "example-link-row";
+    row.innerHTML = `
+      <div class="example-link-copy">
+        <strong></strong>
+        <span></span>
+      </div>
+      <div class="example-link-actions">
+        <button type="button" data-open-example="${escapeHtml(example.path)}">Open</button>
+        <button type="button" data-insert-example="${escapeHtml(example.path)}">Insert</button>
+      </div>
+    `;
+    row.querySelector("strong").textContent = example.name;
+    row.querySelector("span").textContent = `${example.mode}${example.allowInjection ? " + injection" : ""} - ${example.description}`;
+    list.appendChild(row);
+  }
+  parent.appendChild(list);
 }
 
 function activeScriptDirectives() {
@@ -1350,7 +1553,12 @@ async function maybeAutoSaveActiveFile() {
   const file = activeFile();
   if (!file || !ideState.editorPreferences.autoSave || !file.filePath || !isDirty(file)) return;
   await saveFile(file, false);
-  if (ideState.editorPreferences.runOnSave && languageForFile(file) === "wapi") await runWapiCommand("lint", { silent: true });
+  await maybeRunOnSave(file);
+}
+
+async function maybeRunOnSave(file) {
+  if (!file || !ideState.editorPreferences.runOnSave || languageForFile(file) !== "wapi") return null;
+  return runWapiCommand("lint", { silent: true });
 }
 
 function scheduleAutoSave() {
@@ -1568,11 +1776,12 @@ function renderSidePanel() {
     const placeholders = {
       search: "Search project contents",
       processes: "Filter processes",
+      functions: "Filter functions or capabilities",
       capabilities: "Filter capabilities"
     };
     searchInput.placeholder = placeholders[ideState.activePanel] ?? "Filter files";
   }
-  searchbar?.classList.toggle("is-hidden", !["explorer", "search", "processes", "capabilities"].includes(ideState.activePanel));
+  searchbar?.classList.toggle("is-hidden", !["explorer", "search", "functions", "processes", "capabilities"].includes(ideState.activePanel));
   actions?.classList.toggle("is-hidden", ideState.activePanel !== "explorer");
   document.getElementById("sideActionMenu")?.classList.toggle("is-open", ideState.menuOpen);
 
@@ -1625,35 +1834,54 @@ function renderSidePanel() {
   }
 
   if (ideState.activePanel === "functions") {
-    if (meta) meta.textContent = `${wapiRuntimeFunctions.length} runtime functions`;
+    const functionQuery = ideState.searchQuery.trim().toLowerCase();
+    const filteredFunctions = functionQuery
+      ? wapiRuntimeFunctions.filter((fn) => `${fn.name} ${fn.capability} ${wapiFunctionSignature(fn)} ${functionDescription(fn)}`.toLowerCase().includes(functionQuery))
+      : wapiRuntimeFunctions;
+    if (meta) {
+      meta.textContent = functionQuery
+        ? `${filteredFunctions.length}/${wapiRuntimeFunctions.length} runtime functions - ${wapiExamples.filter((example) => example.runnable).length} examples`
+        : `${wapiRuntimeFunctions.length} runtime functions - ${wapiExamples.filter((example) => example.runnable).length} examples`;
+    }
+    if (filteredFunctions.length === 0) {
+      renderPanelEmpty(content, "FUNCTION", "No matching functions or capabilities.");
+      return;
+    }
     const grouped = Map.groupBy
-      ? Map.groupBy(wapiRuntimeFunctions, (fn) => fn.capability)
-      : wapiRuntimeFunctions.reduce((map, fn) => map.set(fn.capability, [...(map.get(fn.capability) ?? []), fn]), new Map());
+      ? Map.groupBy(filteredFunctions, (fn) => fn.capability)
+      : filteredFunctions.reduce((map, fn) => map.set(fn.capability, [...(map.get(fn.capability) ?? []), fn]), new Map());
     for (const [capability, functions] of grouped) {
       const section = document.createElement("section");
-      section.className = "side-section";
+      section.className = "side-section capability-function-section";
       const heading = document.createElement("div");
-      heading.className = "side-section-title";
-      heading.textContent = capability;
+      heading.className = "side-section-title side-section-title-with-copy";
+      heading.innerHTML = "<strong></strong><span></span>";
+      heading.querySelector("strong").textContent = capability;
+      heading.querySelector("span").textContent = capabilityDescription(capability);
       section.appendChild(heading);
       for (const fn of functions) {
         const button = document.createElement("button");
-        button.className = "function-row";
+        button.className = "function-row function-doc-row";
         button.type = "button";
         button.dataset.insertFunction = fn.name;
+        const examples = examplesForFunction(fn);
         button.innerHTML = `
           <strong></strong>
-          <span></span>
+          <span class="function-signature"></span>
+          <small></small>
+          <em></em>
         `;
         button.querySelector("strong").textContent = fn.name;
-        button.querySelector("span").textContent = wapiFunctionSignature(fn);
+        button.querySelector(".function-signature").textContent = wapiFunctionSignature(fn);
+        button.querySelector("small").textContent = functionDescription(fn);
+        button.querySelector("em").textContent = examples.length ? `${examples.length} example${examples.length === 1 ? "" : "s"}` : "No example yet";
         section.appendChild(button);
       }
+      renderExampleLinks(section, examplesForCapability(capability), 2);
       content.appendChild(section);
     }
     return;
   }
-
   if (ideState.activePanel === "processes") {
     const processQuery = ideState.searchQuery.trim().toLowerCase();
     const filteredProcesses = processQuery
@@ -1760,12 +1988,12 @@ function renderSidePanel() {
   if (ideState.activePanel === "capabilities") {
     const capabilityQuery = ideState.searchQuery.trim().toLowerCase();
     const filteredCapabilities = capabilityQuery
-      ? runtimeCapabilities.filter((capability) => capability.toLowerCase().includes(capabilityQuery))
+      ? runtimeCapabilities.filter((capability) => capability.toLowerCase().includes(capabilityQuery) || capabilityDescription(capability).toLowerCase().includes(capabilityQuery))
       : runtimeCapabilities;
     if (meta) {
       meta.textContent = capabilityQuery
         ? `${filteredCapabilities.length}/${runtimeCapabilities.length} capabilities - ${ideState.projectConfig.capabilities.length} enabled`
-        : `${ideState.projectConfig.capabilities.length} enabled`;
+        : `${ideState.projectConfig.capabilities.length} enabled - ${wapiExamples.filter((example) => example.runnable).length} examples`;
     }
     const section = document.createElement("section");
     section.className = "side-section";
@@ -1779,19 +2007,34 @@ function renderSidePanel() {
       return;
     }
     for (const capability of filteredCapabilities) {
-      const button = document.createElement("button");
-      button.className = `function-row capability-row${ideState.projectConfig.capabilities.includes(capability) ? " is-active" : ""}`;
-      button.type = "button";
-      button.dataset.toggleCapability = capability;
-      button.innerHTML = "<strong></strong><span></span>";
-      button.querySelector("strong").textContent = capability;
-      button.querySelector("span").textContent = ideState.projectConfig.capabilities.includes(capability) ? "Enabled" : "Disabled";
-      section.appendChild(button);
+      const card = document.createElement("article");
+      card.className = `capability-doc-card${ideState.projectConfig.capabilities.includes(capability) ? " is-active" : ""}`;
+      const functions = capabilityFunctions(capability);
+      const examples = examplesForCapability(capability);
+      card.innerHTML = `
+        <div class="capability-doc-header">
+          <button class="capability-toggle" type="button" data-toggle-capability="${escapeHtml(capability)}">
+            <strong></strong>
+            <span></span>
+          </button>
+          <small></small>
+        </div>
+        <p></p>
+        <div class="capability-function-list"></div>
+      `;
+      card.querySelector("strong").textContent = capability;
+      card.querySelector(".capability-toggle span").textContent = ideState.projectConfig.capabilities.includes(capability) ? "Enabled" : "Disabled";
+      card.querySelector("small").textContent = `${functions.length} function${functions.length === 1 ? "" : "s"}`;
+      card.querySelector("p").textContent = capabilityDescription(capability);
+      const functionList = card.querySelector(".capability-function-list");
+      functionList.textContent = functions.slice(0, 6).map((fn) => fn.name).join(", ");
+      if (functions.length > 6) functionList.textContent += `, +${functions.length - 6} more`;
+      renderExampleLinks(card, examples, 3);
+      section.appendChild(card);
     }
     content.appendChild(section);
     return;
   }
-
   if (ideState.activePanel === "shortcuts") {
     if (meta) meta.textContent = "Editor commands";
     const shortcuts = [
@@ -2414,7 +2657,8 @@ async function saveFile(file, forceSaveAs = false) {
 }
 
 async function saveActiveFile(forceSaveAs = false) {
-  await saveFile(activeFile(), forceSaveAs);
+  const file = await saveFile(activeFile(), forceSaveAs);
+  await maybeRunOnSave(file);
 }
 
 async function createFileInExplorer() {
@@ -3213,6 +3457,17 @@ function bindEvents() {
     const template = event.target.closest("[data-insert-template]");
     if (template) {
       insertTemplateSnippet(template.dataset.insertTemplate);
+      return;
+    }
+    const openExample = event.target.closest("[data-open-example]");
+    if (openExample) {
+      openExampleScript(openExample.dataset.openExample);
+      return;
+    }
+
+    const insertExample = event.target.closest("[data-insert-example]");
+    if (insertExample) {
+      insertExampleSnippet(insertExample.dataset.insertExample);
       return;
     }
 
