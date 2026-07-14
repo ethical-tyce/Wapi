@@ -4,32 +4,28 @@ import evaluatorSource from "../native/src/evaluator.cpp?raw";
 import bridge from "./tauri-bridge.js";
 import "./styles.css";
 import "./forge-ops.css";
+import "./focused-shell.css";
 import {
   Activity,
-  ArrowRight,
-  Syringe,
   ChevronDown,
   ChevronRight,
   Cpu,
   Database,
   Ellipsis,
+  Eraser,
   FileCode,
   FileText,
   Folder,
   FolderOpen,
-  FolderTree,
   Globe,
-  ListTree,
   Maximize2,
   Minus,
   Play,
   Plus,
   Save,
-  SaveAll,
   Search,
   Settings,
   ShieldCheck,
-  SquareCheck,
   Terminal,
   Upload,
   X
@@ -677,6 +673,7 @@ const ideState = {
   recentProjects: [],
   activePanel: "explorer",
   activeTool: "output",
+  toolCollapsed: false,
   outputFilter: "all",
   editorPreferences: { ...editorPreferenceDefaults },
   menuOpen: false,
@@ -687,6 +684,7 @@ const ideState = {
   auditLines: [],
   problems: [],
   executionHistory: [],
+  commandInFlight: null,
   processExplorer: { loading: false, error: "", processes: [] },
   variableWatch: [],
   terminalTabs: [],
@@ -702,6 +700,7 @@ const ideState = {
 const terminalRuntimes = new Map();
 let terminalSequence = 0;
 let autoSaveTimer = null;
+let projectDialogReturnFocus = null;
 
 const editorState = {
   editor: null,
@@ -989,6 +988,39 @@ function setStatus(message, timeout = 1800) {
   }, timeout);
 }
 
+function renderCommandState() {
+  const activeCommand = ideState.commandInFlight;
+  const hasRunnableFile = Boolean(commandTargetFile("run"));
+  const commandButtons = {
+    check: { id: "toolbarCheck", idleLabel: "Check", busyLabel: "Checking" },
+    run: { id: "toolbarRun", idleLabel: "Run", busyLabel: "Running" }
+  };
+
+  for (const [command, config] of Object.entries(commandButtons)) {
+    const button = document.getElementById(config.id);
+    if (!button) continue;
+    const isBusy = activeCommand === command;
+    button.disabled = Boolean(activeCommand) || !hasRunnableFile;
+    button.classList.toggle("is-busy", isBusy);
+    button.setAttribute("aria-busy", String(isBusy));
+    const label = button.querySelector("span");
+    if (label) label.textContent = isBusy ? `${config.busyLabel}...` : config.idleLabel;
+  }
+
+  const hasEditableFile = Boolean(activeFile());
+  const editorMenuCommands = ["undo", "redo", "editor-find", "editor-replace", "editor-rename", "editor-comment", "editor-fold-all", "editor-format", "select-all"];
+  for (const command of editorMenuCommands) {
+    const button = document.querySelector(`[data-app-command="${command}"]`);
+    if (!button) continue;
+    button.disabled = !hasEditableFile;
+    button.setAttribute("aria-disabled", String(!hasEditableFile));
+  }
+  const saveButton = document.getElementById("toolbarSave");
+  if (saveButton) saveButton.disabled = !hasEditableFile;
+  const clearButton = document.getElementById("toolbarClearOutput");
+  if (clearButton) clearButton.disabled = ideState.outputLines.length === 0;
+}
+
 function updateCursorStatus() {
   const cursor = document.getElementById("statusCursor");
   if (!cursor || !editorState.editor) return;
@@ -1169,6 +1201,11 @@ function sourceForCommandFile(file) {
 }
 
 async function runWapiCommand(command, { silent = false } = {}) {
+  if (!silent && ideState.commandInFlight) {
+    setStatus(`${ideState.commandInFlight === "check" ? "Check" : "Run"} already in progress`);
+    return null;
+  }
+
   const active = activeFile();
   const file = silent && active && languageForFile(active) === "wapi"
     ? active
@@ -1178,6 +1215,7 @@ async function runWapiCommand(command, { silent = false } = {}) {
       ideState.activeTool = "output";
       appendLines(ideState.outputLines, ["No Wapi entry file found. Create or open a .wapi file first."], "error");
       renderToolWindow();
+      renderCommandState();
     }
     setStatus("No Wapi entry file");
     return null;
@@ -1205,8 +1243,20 @@ async function runWapiCommand(command, { silent = false } = {}) {
     renderToolWindow();
   }
 
-  if (!silent) recordRuntimeEvent(`${command === "check" ? "Check" : command === "lint" ? "Lint" : "Run"} started for ${file.relativePath}`, "pending");
-  const result = await bridge.execute({ command, source, options: runOptions });
+  if (!silent) {
+    ideState.commandInFlight = command;
+    renderCommandState();
+    recordRuntimeEvent(`${command === "check" ? "Check" : command === "lint" ? "Lint" : "Run"} started for ${file.relativePath}`, "pending");
+  }
+  let result;
+  try {
+    result = await bridge.execute({ command, source, options: runOptions });
+  } finally {
+    if (!silent) {
+      ideState.commandInFlight = null;
+      renderCommandState();
+    }
+  }
   if (!silent) {
     recordRuntimeResult(command, result, file);
     recordExecutionHistory(command, result, file);
@@ -1649,8 +1699,6 @@ function updateStatusLine() {
     statusFile.title = file?.relativePath ?? (isSettingsActive() ? "Settings" : "Welcome");
   }
   if (statusLanguage) statusLanguage.textContent = displayLanguage;
-  const statusEditorPrefs = document.getElementById("statusEditorPrefs");
-  if (statusEditorPrefs) statusEditorPrefs.textContent = `${ideState.editorPreferences.fontSize}px ${ideState.editorPreferences.wordWrap === "on" ? "Wrap" : "No wrap"}`;
   const projectTitle = document.getElementById("windowProjectTitle");
   if (projectTitle) projectTitle.textContent = projectDisplayName();
   if (editorStatus) editorStatus.textContent = file ? `${displayLanguage}${isDirty(file) ? " - unsaved" : ""}` : isSettingsActive() ? "Settings" : "Start";
@@ -1716,6 +1764,7 @@ function renderProjectTreeNode(parent, node, depth = 0) {
     button.className = `tree-row tree-folder${collapsed ? " is-collapsed" : ""}${folderDirty ? " is-dirty" : ""}`;
     button.type = "button";
     button.dataset.folderPath = folder.path;
+    button.setAttribute("aria-expanded", String(!collapsed));
     button.style.setProperty("--depth", depth);
     button.innerHTML = `
       ${iconSvg(collapsed ? ChevronRight : ChevronDown, "ui-icon chevron")}
@@ -1757,7 +1806,7 @@ function renderSidePanel() {
   if (!content) return;
 
   const panelLabels = {
-    explorer: "SOLUTION EXPLORER",
+    explorer: "EXPLORER",
     search: "SEARCH",
     functions: "FUNCTIONS",
     processes: "PROCESSES",
@@ -1770,7 +1819,7 @@ function renderSidePanel() {
     outline: "OUTLINE",
     settings: "SETTINGS"
   };
-  if (title) title.textContent = panelLabels[ideState.activePanel] ?? "SOLUTION EXPLORER";
+  if (title) title.textContent = panelLabels[ideState.activePanel] ?? "EXPLORER";
   if (searchInput && searchInput.value !== ideState.searchQuery) searchInput.value = ideState.searchQuery;
   if (searchInput) {
     const placeholders = {
@@ -1785,10 +1834,6 @@ function renderSidePanel() {
   actions?.classList.toggle("is-hidden", ideState.activePanel !== "explorer");
   document.getElementById("sideActionMenu")?.classList.toggle("is-open", ideState.menuOpen);
 
-  document.querySelectorAll(".activity-button[data-panel]").forEach((button) => {
-    const panel = button.dataset.panel;
-    button.classList.toggle("is-active", panel === ideState.activePanel || (panel === "settings" && isSettingsActive()));
-  });
 
   content.replaceChildren();
 
@@ -2253,14 +2298,49 @@ async function exportActiveToolLog() {
   await bridge.saveFile({ filePath: null, source });
   setStatus("Log exported");
 }
+
+function clearOutput() {
+  ideState.outputLines = [];
+  ideState.activeTool = "output";
+  ideState.toolCollapsed = false;
+  renderToolWindow();
+  renderCommandState();
+  setStatus("Output cleared");
+}
+
+function syncToolWindowState() {
+  const panel = document.querySelector(".tool-window");
+  const body = document.getElementById("toolBody");
+  const toggle = document.querySelector("[data-toggle-tool]");
+  const expanded = !ideState.toolCollapsed;
+  document.body.classList.toggle("tool-collapsed", !expanded);
+  panel?.classList.toggle("is-collapsed", !expanded);
+  panel?.classList.toggle("is-forced-open", expanded && ideState.activeTool === "terminal");
+  body?.setAttribute("aria-hidden", String(!expanded));
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.setAttribute("aria-label", expanded ? "Collapse output panel" : "Expand output panel");
+    toggle.title = expanded ? "Collapse panel" : "Expand panel";
+    toggle.innerHTML = iconSvg(expanded ? ChevronDown : ChevronRight);
+  }
+}
+
+function setToolWindowCollapsed(collapsed) {
+  ideState.toolCollapsed = Boolean(collapsed);
+  syncToolWindowState();
+  window.requestAnimationFrame(() => editorState.editor?.layout());
+}
+
 function renderToolWindow() {
   const tabs = document.getElementById("toolTabs");
   const body = document.getElementById("toolBody");
   const headerControls = document.getElementById("toolHeaderControls");
   if (!tabs || !body) return;
-  body.closest(".tool-window")?.classList.toggle("is-forced-open", ideState.activeTool === "terminal");
+  syncToolWindowState();
   tabs.querySelectorAll("[data-tool]").forEach((tab) => {
-    tab.classList.toggle("is-active", tab.dataset.tool === ideState.activeTool);
+    const isActive = tab.dataset.tool === ideState.activeTool;
+    tab.classList.toggle("is-active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
   });
   body.replaceChildren();
   headerControls?.replaceChildren();
@@ -2506,15 +2586,8 @@ function renderToolbarState() {
   if (strict) strict.checked = ideState.projectConfig.strictPermissions;
   if (injection) injection.checked = ideState.projectConfig.allowInjection;
   if (caps) caps.value = ideState.projectConfig.capabilities.join(", ");
+  renderCommandState();
 
-  const statusMode = document.getElementById("statusRuntimeMode");
-  const statusStrict = document.getElementById("statusStrict");
-  const statusInjection = document.getElementById("statusInjection");
-  const statusCaps = document.getElementById("statusCaps");
-  if (statusMode) statusMode.textContent = ideState.projectConfig.defaultMode;
-  if (statusStrict) statusStrict.textContent = ideState.projectConfig.strictPermissions ? "On" : "Off";
-  if (statusInjection) statusInjection.textContent = ideState.projectConfig.allowInjection ? "Allow" : "Block";
-  if (statusCaps) statusCaps.textContent = String(ideState.projectConfig.capabilities.length);
   renderRuntimeInspector();
   syncEditorPreferenceControls();
 }
@@ -2548,7 +2621,7 @@ function setActivePanel(panel) {
 }
 
 function setActiveTool(tool) {
-  document.body.classList.remove("tool-collapsed");
+  ideState.toolCollapsed = false;
   ideState.activeTool = tool;
   if (tool === "terminal" && ideState.terminalTabs.length === 0) {
     createTerminalSession("powershell");
@@ -2561,6 +2634,7 @@ function setProjectDialogOpen(open) {
   ideState.projectDialogOpen = open;
   const dialog = document.getElementById("newProjectDialog");
   const input = document.getElementById("newProjectName");
+  if (open) projectDialogReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   dialog?.classList.toggle("is-open", open);
   dialog?.setAttribute("aria-hidden", String(!open));
   if (open && input) {
@@ -2569,6 +2643,9 @@ function setProjectDialogOpen(open) {
     renderTemplatePicker();
     input.focus();
     input.select();
+  } else if (!open) {
+    window.requestAnimationFrame(() => projectDialogReturnFocus?.focus());
+    projectDialogReturnFocus = null;
   }
 }
 
@@ -2958,6 +3035,7 @@ function createTerminalSession(shell = "powershell") {
   ideState.terminalTabs.push(session);
   ideState.activeTerminalId = session.id;
   ideState.activeTool = "terminal";
+  ideState.toolCollapsed = false;
   renderToolWindow();
 }
 
@@ -3038,6 +3116,11 @@ function renderWindowBar() {
               <button class="window-menu-item" type="button" role="menuitem" data-app-command="redo"><span>Redo</span><kbd>Ctrl+Y</kbd></button>
               <div class="window-menu-separator" role="separator"></div>
               <button class="window-menu-item" type="button" role="menuitem" data-app-command="editor-find"><span>Find in Editor</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="editor-replace"><span>Replace in Editor</span><kbd>Ctrl+H</kbd></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="editor-rename"><span>Rename Symbol</span><kbd>F2</kbd></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="editor-comment"><span>Toggle Line Comment</span><kbd>Ctrl+/</kbd></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="editor-fold-all"><span>Fold All</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="editor-format"><span>Format Document</span><kbd>Ctrl+Shift+F</kbd></button>
               <button class="window-menu-item" type="button" role="menuitem" data-app-command="select-all"><span>Select All</span><kbd>Ctrl+A</kbd></button>
             </div>
           </div>
@@ -3045,8 +3128,16 @@ function renderWindowBar() {
             <button class="window-menu-trigger" type="button" data-window-menu="view" aria-haspopup="menu" aria-expanded="false">View</button>
             <div class="window-menu-popover" role="menu">
               <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-explorer"><span>Explorer</span></button>
-              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-search"><span>Search</span></button>
-              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-functions"><span>Knowledge</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-search"><span>Project Search</span></button>
+              <div class="window-menu-separator" role="separator"></div>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-functions"><span>Runtime Knowledge</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-processes"><span>Processes</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-templates"><span>Templates</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-history"><span>Execution History</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-watch"><span>Variable Watch</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-docs"><span>Documentation</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-capabilities"><span>Capabilities</span></button>
+              <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-shortcuts"><span>Keyboard Shortcuts</span></button>
               <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-outline"><span>Outline</span></button>
               <button class="window-menu-item" type="button" role="menuitem" data-app-command="panel-settings"><span>Settings</span></button>
               <div class="window-menu-separator" role="separator"></div>
@@ -3077,45 +3168,6 @@ function renderWindowBar() {
       </header>
 
       <section class="workspace" aria-label="Wapi IDE workspace">
-        <nav class="activity-bar" aria-label="Primary navigation">
-          <button class="activity-button is-active" type="button" title="Explorer" data-panel="explorer">
-            ${iconSvg(FolderTree)}<span>Explorer</span>
-          </button>
-          <button class="activity-button" type="button" title="Search" data-panel="search">
-            ${iconSvg(Search)}<span>Search</span>
-          </button>
-          <button class="activity-button" type="button" title="Runtime knowledge" data-panel="functions">
-            ${iconSvg(Database)}<span>Knowledge</span>
-          </button>
-          <button class="activity-button" type="button" title="Process explorer" data-panel="processes">
-            ${iconSvg(Cpu)}<span>Processes</span>
-          </button>
-          <button class="activity-button" type="button" title="Script templates" data-panel="templates">
-            ${iconSvg(FileCode)}<span>Templates</span>
-          </button>
-          <button class="activity-button" type="button" title="Execution history" data-panel="history">
-            ${iconSvg(Activity)}<span>History</span>
-          </button>
-          <button class="activity-button" type="button" title="Variable watch" data-panel="watch">
-            ${iconSvg(SquareCheck)}<span>Watch</span>
-          </button>
-          <button class="activity-button" type="button" title="Documentation" data-panel="docs">
-            ${iconSvg(FileText)}<span>Docs</span>
-          </button>
-          <button class="activity-button" type="button" title="Capabilities" data-panel="capabilities">
-            ${iconSvg(ShieldCheck)}<span>Caps</span>
-          </button>
-          <button class="activity-button" type="button" title="Shortcuts" data-panel="shortcuts">
-            ${iconSvg(Terminal)}<span>Keys</span>
-          </button>
-          <button class="activity-button" type="button" title="Outline" data-panel="outline">
-            ${iconSvg(ListTree)}<span>Outline</span>
-          </button>
-          <div class="activity-spacer" aria-hidden="true"></div>
-          <button class="activity-button" type="button" title="Project settings" data-panel="settings">
-            ${iconSvg(Settings)}<span>Settings</span>
-          </button>
-        </nav>
 
         <aside class="side-panel" aria-label="Side panel">
           <div class="side-topbar">
@@ -3124,9 +3176,9 @@ function renderWindowBar() {
               <div id="sideMeta" class="side-meta">No project loaded</div>
             </div>
             <div id="sideActions" class="side-actions">
-              <button id="sideCreateProject" class="icon-button" type="button" title="Create project">${iconSvg(Plus)}</button>
-              <button id="sideUploadProject" class="icon-button" type="button" title="Load project">${iconSvg(Upload)}</button>
-              <button id="sideMoreActions" class="icon-button" type="button" title="More actions">${iconSvg(Ellipsis)}</button>
+              <button id="sideCreateProject" class="icon-button" type="button" title="Create project" aria-label="Create project">${iconSvg(Plus)}</button>
+              <button id="sideUploadProject" class="icon-button" type="button" title="Load project" aria-label="Load project">${iconSvg(Upload)}</button>
+              <button id="sideMoreActions" class="icon-button" type="button" title="More actions" aria-label="More explorer actions">${iconSvg(Ellipsis)}</button>
             </div>
             <div id="sideActionMenu" class="side-action-menu" role="menu">
               <button class="menu-item" type="button" data-menu-action="create-project">Create new project</button>
@@ -3150,24 +3202,8 @@ function renderWindowBar() {
         </aside>
 
         <section class="editor-surface" aria-label="Editor">
-          <div class="menu-strip" role="toolbar" aria-label="Execution toolbar">
+          <div class="menu-strip" role="toolbar" aria-label="Open files">
             <div id="documentTabs" class="document-tabs"></div>
-            <div class="toolbar-actions toolbar-actions-compact">
-              <button id="toolbarFind" class="icon-button" type="button" title="Find">${iconSvg(Search)}</button>
-              <button id="toolbarReplace" class="icon-button" type="button" title="Replace">${iconSvg(FileText)}</button>
-              <button id="toolbarRename" class="icon-button" type="button" title="Rename symbol">${iconSvg(FileCode)}</button>
-              <button id="toolbarComment" class="icon-button" type="button" title="Toggle comment">${iconSvg(ListTree)}</button>
-              <button id="toolbarFold" class="icon-button" type="button" title="Fold all">${iconSvg(ChevronRight)}</button>
-              <button id="toolbarFormat" class="icon-button" type="button" title="Format document">${iconSvg(Save)}</button>
-
-              <button id="toolbarSettings" class="icon-button" type="button" title="Settings">${iconSvg(Settings)}</button>
-              <button id="toolbarCheck" class="toolbar-button toolbar-button-check" type="button" title="Check project">
-                ${iconSvg(ShieldCheck)}<span>Check</span>
-              </button>
-              <button id="toolbarRun" class="toolbar-button toolbar-button-run toolbar-button-primary" type="button" title="Run project">
-                ${iconSvg(Play)}<span>Run</span>
-              </button>
-            </div>
           </div>
 
           <aside id="runtimeInspectorDrawer" class="runtime-inspector-drawer" aria-hidden="true">
@@ -3198,23 +3234,21 @@ function renderWindowBar() {
             <section id="startSurface" class="start-surface" aria-label="Start">
               <div class="start-shell">
                 <div class="start-identity">
-                  <div class="start-mark" aria-hidden="true">WAPI</div>
-                  <h1 class="start-title">Precision access to Windows internals.</h1>
-                  <p class="start-subtitle">Create or load a Wapi project. Check is the primary action; runtime permissions stay explicit.</p>
-                  <div class="recent-title">Recent Projects</div>
-                  <div id="recentProjects" class="recent-list"></div>
+                  <img class="start-logo" src="${wapiIconUrl}" alt="">
+                  <h1 class="start-title">Wapi</h1>
+                  <p class="start-subtitle">A focused workspace for writing, checking, and running Wapi scripts.</p>
                 </div>
-                <div class="start-actions-panel">
+                <div class="start-actions-panel" aria-label="Project actions">
                   <button id="startCreateProject" class="start-action start-action-primary" type="button">
-                    <span class="start-action-index">01</span>
-                    <span><span class="start-action-title">Create project</span><span class="start-action-note">Empty, Process Inspector, or Memory Sandbox</span></span>
-                    ${iconSvg(ArrowRight, "ui-icon start-action-arrow")}
+                    ${iconSvg(Plus)}<span class="start-action-title">Create project</span>
                   </button>
                   <button id="startUploadProject" class="start-action" type="button">
-                    <span class="start-action-index">02</span>
-                    <span><span class="start-action-title">Load project</span><span class="start-action-note">Open an existing Wapi workspace</span></span>
-                    ${iconSvg(ArrowRight, "ui-icon start-action-arrow")}
+                    ${iconSvg(FolderOpen)}<span class="start-action-title">Open project</span>
                   </button>
+                </div>
+                <div class="start-recents">
+                  <div class="recent-title">Recent projects</div>
+                  <div id="recentProjects" class="recent-list"></div>
                 </div>
               </div>
             </section>
@@ -3225,16 +3259,33 @@ function renderWindowBar() {
             <div id="monacoEditor"></div>
           </div>
 
+          <div class="editor-command-bar" role="toolbar" aria-label="Editor commands">
+            <div class="editor-command-primary">
+              <button id="toolbarRun" class="toolbar-button toolbar-button-run toolbar-button-primary" type="button" title="Run project">
+                ${iconSvg(Play)}<span>Run</span>
+              </button>
+              <button id="toolbarCheck" class="toolbar-button toolbar-button-check" type="button" title="Check project">
+                ${iconSvg(ShieldCheck)}<span>Check</span>
+              </button>
+            </div>
+            <div class="editor-command-actions">
+              <button id="toolbarClearOutput" class="toolbar-button" type="button" title="Clear output">${iconSvg(Eraser)}<span>Clear output</span></button>
+              <button id="toolbarAddFiles" class="toolbar-button" type="button" title="Open or add files">${iconSvg(FolderOpen)}<span>Open</span></button>
+              <button id="toolbarSave" class="toolbar-button" type="button" title="Save active file">${iconSvg(Save)}<span>Save</span></button>
+              <button id="toolbarSettings" class="toolbar-button" type="button" title="Project settings">${iconSvg(Settings)}<span>Settings</span></button>
+            </div>
+          </div>
+
           <section class="tool-window" aria-label="Tool windows">
-            <div id="toolTabs" class="tool-tabs">
-              <button class="tool-tab" type="button" data-tool="problems">Problems</button>
-              <button class="tool-tab is-active" type="button" data-tool="output">Output</button>
-              <button class="tool-tab" type="button" data-tool="terminal">Terminal</button>
-              <button class="tool-tab" type="button" data-tool="audit">Audit</button>
+            <div id="toolTabs" class="tool-tabs" role="tablist" aria-label="Tool windows">
+              <button class="tool-tab is-active" type="button" role="tab" aria-selected="true" data-tool="output">Output</button>
+              <button class="tool-tab" type="button" role="tab" aria-selected="false" data-tool="problems">Problems</button>
+              <button class="tool-tab" type="button" role="tab" aria-selected="false" data-tool="terminal">Terminal</button>
+              <button class="tool-tab" type="button" role="tab" aria-selected="false" data-tool="audit">Audit</button>
               <span class="tool-tabs-spacer"></span>
               <div id="toolHeaderControls" class="tool-header-controls"></div>
-              <button class="tool-utility" type="button" title="New terminal" data-new-terminal>${iconSvg(Plus)}</button>
-              <button class="tool-utility" type="button" title="Close panel" data-close-tool>${iconSvg(X)}</button>
+              <button class="tool-utility" type="button" title="New terminal" aria-label="New terminal" data-new-terminal>${iconSvg(Plus)}</button>
+              <button class="tool-utility" type="button" title="Collapse panel" aria-label="Collapse output panel" aria-expanded="true" data-toggle-tool>${iconSvg(ChevronDown)}</button>
             </div>
             <div id="toolBody" class="tool-body"></div>
           </section>
@@ -3243,30 +3294,23 @@ function renderWindowBar() {
 
       <footer class="status-bar">
         <div class="status-left">
-          <span class="status-mode">${iconSvg(ShieldCheck)}<b id="statusRuntimeMode">Safe</b></span>
-          <span>Strict: <b id="statusStrict">On</b></span>
-          <span>Injection: <b id="statusInjection">Block</b></span>
-          <span>Caps: <b id="statusCaps">0</b></span>
           <span id="statusFile" class="status-file">Welcome</span>
           <span id="statusDirty">Saved</span>
         </div>
         <div class="status-right">
           <span id="statusCursor">Ln 1, Col 1</span>
-          <span id="statusEditorPrefs">13px No wrap</span>
-          <span>Spaces: 4</span>
-          <span>UTF-8</span>
           <span id="statusLanguage">Wapi</span>
           <button id="statusTerminal" class="status-button" type="button">${iconSvg(Terminal)}<span>Terminal</span></button>
           <span class="status-dot" aria-hidden="true"></span>
-          <span id="statusInstance">Ready</span>
+          <span id="statusInstance" role="status" aria-live="polite" aria-atomic="true">Ready</span>
         </div>
       </footer>
 
-      <div id="newProjectDialog" class="project-dialog" aria-hidden="true">
+      <div id="newProjectDialog" class="project-dialog" role="dialog" aria-modal="true" aria-labelledby="newProjectTitle" aria-hidden="true">
         <form id="newProjectForm" class="project-dialog-card">
           <div class="dialog-heading">
             <span>New workspace</span>
-            <h2>Create a Wapi project</h2>
+            <h2 id="newProjectTitle">Create a Wapi project</h2>
           </div>
           <label class="project-field">
             <span>Project name</span>
@@ -3319,6 +3363,11 @@ async function executeWindowMenuCommand(command) {
     undo: "undo",
     redo: "redo",
     "editor-find": "actions.find",
+    "editor-replace": "editor.action.startFindReplaceAction",
+    "editor-rename": "editor.action.rename",
+    "editor-comment": "editor.action.commentLine",
+    "editor-fold-all": "editor.foldAll",
+    "editor-format": "editor.action.formatDocument",
     "select-all": "editor.action.selectAll"
   };
   const editorCommand = editorCommands[command];
@@ -3375,19 +3424,11 @@ function bindEvents() {
   });
   document.getElementById("toolbarCheck")?.addEventListener("click", () => runWapiCommand("check"));
   document.getElementById("toolbarRun")?.addEventListener("click", () => runWapiCommand("run"));
+  document.getElementById("toolbarClearOutput")?.addEventListener("click", clearOutput);
+  document.getElementById("toolbarAddFiles")?.addEventListener("click", () => addFilesToExplorer());
+  document.getElementById("toolbarSave")?.addEventListener("click", () => saveActiveFile(false));
   document.getElementById("toolbarSettings")?.addEventListener("click", openSettingsTab);
-  document.getElementById("toolbarFind")?.addEventListener("click", () => runEditorAction("actions.find"));
-  document.getElementById("toolbarReplace")?.addEventListener("click", () => runEditorAction("editor.action.startFindReplaceAction"));
-  document.getElementById("toolbarRename")?.addEventListener("click", () => runEditorAction("editor.action.rename"));
-  document.getElementById("toolbarComment")?.addEventListener("click", () => runEditorAction("editor.action.commentLine"));
-  document.getElementById("toolbarFold")?.addEventListener("click", () => runEditorAction("editor.foldAll"));
-  document.getElementById("toolbarFormat")?.addEventListener("click", () => runEditorAction("editor.action.formatDocument"));
   document.getElementById("statusTerminal")?.addEventListener("click", () => setActiveTool("terminal"));
-
-
-  document.querySelectorAll(".activity-button[data-panel]").forEach((button) => {
-    button.addEventListener("click", () => setActivePanel(button.dataset.panel));
-  });
 
   document.getElementById("sideSearch")?.addEventListener("input", (event) => {
     ideState.searchQuery = event.target.value;
@@ -3545,6 +3586,15 @@ function bindEvents() {
   });
 
   document.getElementById("toolTabs")?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-new-terminal]")) {
+      const shell = document.getElementById("terminalShellChoice")?.value || "powershell";
+      createTerminalSession(shell);
+      return;
+    }
+    if (event.target.closest("[data-toggle-tool]")) {
+      setToolWindowCollapsed(!ideState.toolCollapsed);
+      return;
+    }
     if (event.target.closest("[data-export-log]")) {
       exportActiveToolLog();
       return;
@@ -3615,6 +3665,10 @@ function bindEvents() {
     const modifier = event.ctrlKey || event.metaKey;
     if (modifier && ["+", "-", "=", "0"].includes(event.key)) {
       event.preventDefault();
+      return;
+    }
+    if (event.key === "Escape" && ideState.projectDialogOpen) {
+      setProjectDialogOpen(false);
       return;
     }
     if (event.key === "Escape" && document.querySelector(".window-menu.is-open")) {
