@@ -20,7 +20,8 @@ struct WapiStructInstance { std::string typeName; std::unordered_map<std::string
 enum class WapiMode {
     Safe,
     Dev,
-    Unsafe
+    Unsafe,
+    Dangerous
 };
 
 struct WapiRuntimeOptions {
@@ -157,5 +158,6 @@ private:
     WapiValue wapi_injectShellcode(int pid, const std::string& hexBytes);
     WapiValue wapi_createRemoteThread(int pid, long long startAddress, long long parameter);
     WapiValue wapi_injectDLL(int pid, const std::string& dllPath);
+    WapiValue wapi_injectManualMap(int pid, const std::string& dllPath);
     WapiValue wapi_testInjectDLL(int pid);
 };

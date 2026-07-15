@@ -27,6 +27,7 @@ import {
   Settings,
   ShieldCheck,
   Terminal,
+  TriangleAlert,
   Upload,
   X
 } from "lucide";
@@ -223,7 +224,7 @@ const directiveDefinitions = [
   { name: "allow-injection", snippet: "#allow-injection", detail: "Declare injection API usage" }
 ];
 const directiveDocs = new Map(directiveDefinitions.map((directive) => [directive.name, directive.detail]));
-const modeLevel = { safe: 0, dev: 1, unsafe: 2 };
+const modeLevel = { safe: 0, dev: 1, unsafe: 2, dangerous: 3 };
 
 const capabilityDescriptions = new Map([
   ["runtime.print", "Allows scripts to write visible output to the console and IDE output panel."],
@@ -257,8 +258,9 @@ const capabilityDescriptions = new Map([
   ["window.find", "Allows resolving top-level windows by title."],
   ["window.pid", "Allows listing and resolving windows owned by a process."],
   ["window.message", "Allows sending a Windows message to a target window handle."],
-  ["inject.dll", "Allows DLL injection helpers. Requires an injection grant outside unsafe mode."],
-  ["inject.shellcode", "Allows shellcode and remote-thread injection helpers. Requires an injection grant outside unsafe mode."]
+  ["inject.dll", "Allows standard LoadLibrary DLL injection. Below unsafe mode, an explicit injection grant is required."],
+  ["inject.shellcode", "Allows shellcode and remote-thread injection. Below unsafe mode, an explicit injection grant is required."],
+  ["inject.manualmap", "Allows bounded native PE manual mapping. Requires externally granted dangerous mode and this explicit capability."]
 ]);
 
 function capabilityDescription(capability) {
@@ -367,7 +369,7 @@ function parseScriptDirectives(source = "") {
       return;
     }
     if (key === "mode") {
-      if (["safe", "dev", "unsafe"].includes(value)) directives.mode = value;
+      if (["safe", "dev", "unsafe", "dangerous"].includes(value)) directives.mode = value;
       else directives.warnings.push({ line: index + 1, message: `Unknown #mode value '${value}'` });
     } else if (key === "cap") {
       value.split(/\s+/).map((cap) => cap.trim()).filter(Boolean).forEach((cap) => caps.add(cap));
@@ -532,10 +534,15 @@ function wapiFunctionSnippet(fn) {
 }
 
 function wapiFunctionDocs(fn) {
+  const policyNote = fn.capability === "inject.manualmap"
+    ? "Requires externally granted dangerous mode and the inject.manualmap capability."
+    : fn.requiresInjectionFlag
+      ? "Requires an injection grant below unsafe mode."
+      : "No injection flag required.";
   return [
     `Capability: ${fn.capability}`,
     `Arguments: ${fn.argCount}`,
-    fn.requiresInjectionFlag ? "Requires allow injection outside unsafe mode." : "No injection flag required."
+    policyNote
   ].join("\n");
 }
 
@@ -556,7 +563,7 @@ function normalizeProjectConfig(config = {}, fallbackName = "WapiProject") {
   next.name = String(next.name || fallbackName).trim() || fallbackName;
   next.entryFile = normalizePath(next.entryFile || "main.wapi").replace(/^\/+/, "") || "main.wapi";
   if (next.defaultMode === "audit") next.defaultMode = "dev";
-  next.defaultMode = ["safe", "dev", "unsafe"].includes(next.defaultMode) ? next.defaultMode : "safe";
+  next.defaultMode = ["safe", "dev", "unsafe", "dangerous"].includes(next.defaultMode) ? next.defaultMode : "safe";
   next.strictPermissions = Boolean(next.strictPermissions);
   next.allowInjection = Boolean(next.allowInjection);
   next.jsonOutput = next.jsonOutput !== false;
@@ -685,6 +692,7 @@ const ideState = {
   problems: [],
   executionHistory: [],
   commandInFlight: null,
+  dangerousArmed: false,
   processExplorer: { loading: false, error: "", processes: [] },
   variableWatch: [],
   terminalTabs: [],
@@ -988,6 +996,47 @@ function setStatus(message, timeout = 1800) {
   }, timeout);
 }
 
+function applyDangerousModeChrome() {
+  const mode = ideState.projectConfig.defaultMode;
+  const dangerous = mode === "dangerous";
+  if (!dangerous) ideState.dangerousArmed = false;
+
+  document.body.dataset.wapiMode = mode;
+  document.body.classList.toggle("is-dangerous-mode", dangerous);
+
+  const indicator = document.getElementById("dangerModeIndicator");
+  if (indicator) {
+    indicator.hidden = !dangerous;
+    indicator.setAttribute("aria-hidden", String(!dangerous));
+    indicator.classList.toggle("is-armed", dangerous && ideState.dangerousArmed);
+    indicator.title = ideState.dangerousArmed
+      ? "Dangerous mode is armed for this project session."
+      : "Dangerous mode will require confirmation before Run.";
+  }
+
+  const statusMode = document.getElementById("statusMode");
+  if (statusMode) {
+    statusMode.classList.toggle("is-dangerous", dangerous);
+    const label = statusMode.querySelector("span");
+    if (label) label.textContent = mode.toUpperCase();
+  }
+}
+
+function ensureDangerousRunArmed() {
+  if (ideState.projectConfig.defaultMode !== "dangerous") return true;
+  if (ideState.dangerousArmed) return true;
+
+  const confirmed = window.confirm(
+    "Dangerous mode can execute manual mapping and other high-risk process operations. " +
+    "Only continue against software and systems you are authorized to test. Arm dangerous mode for this project session?"
+  );
+  if (!confirmed) return false;
+
+  ideState.dangerousArmed = true;
+  applyDangerousModeChrome();
+  return true;
+}
+
 function renderCommandState() {
   const activeCommand = ideState.commandInFlight;
   const hasRunnableFile = Boolean(commandTargetFile("run"));
@@ -1068,6 +1117,7 @@ async function replaceProject(project, message = "Project loaded") {
   ideState.files = visibleProjectFiles(project.files ?? []);
   ideState.projectRoot = project.rootPath ?? null;
   ideState.projectConfig = config;
+  ideState.dangerousArmed = false;
   ideState.openFileIds = [];
   ideState.activeFileId = ideState.welcomeTabOpen ? welcomeTabId : null;
   ideState.searchQuery = "";
@@ -1225,6 +1275,10 @@ async function runWapiCommand(command, { silent = false } = {}) {
   const source = sourceForCommandFile(file);
   file.source = source;
   const runOptions = runtimeOptions(source);
+  if (!silent && command === "run" && !ensureDangerousRunArmed()) {
+    setStatus("Dangerous run cancelled");
+    return null;
+  }
   if (!silent) {
     ideState.activeTool = "output";
     if (command === "run") ideState.outputLines = [];
@@ -1237,7 +1291,8 @@ async function runWapiCommand(command, { silent = false } = {}) {
     if (missingProjectCaps.length) {
       appendLines(ideState.outputLines, [`Script declares capabilities not enabled in project settings: ${missingProjectCaps.join(", ")}`], "warning");
     }
-    if (runOptions.directives.allowInjection && !runOptions.allowInjection) {
+    const modeGrantsInjection = modeLevel[runOptions.mode] >= modeLevel.unsafe;
+    if (runOptions.directives.allowInjection && !runOptions.allowInjection && !modeGrantsInjection) {
       appendLines(ideState.outputLines, ["Script declares #allow-injection, but project settings still block injection helpers."], "warning");
     }
     renderToolWindow();
@@ -1336,7 +1391,7 @@ function installMonacoLanguage() {
       ],
       directiveLine: [
         [/"([^"\\]|\\.)*"/, "string"],
-        [/\b(?:safe|dev|unsafe)\b/, "keyword"],
+        [/\b(?:safe|dev|unsafe|dangerous)\b/, "keyword"],
         [/[a-zA-Z_][\w.]*/, "type.identifier"],
         [/$/, "", "@pop"]
       ]
@@ -1382,7 +1437,7 @@ function installMonacoLanguage() {
         })) };
       }
       if (/^#mode\s+\w*$/.test(trimmedPrefix)) {
-        return { suggestions: ["safe", "dev", "unsafe"].map((mode) => ({ label: mode, kind: monaco.languages.CompletionItemKind.Value, insertText: mode, range })) };
+        return { suggestions: ["safe", "dev", "unsafe", "dangerous"].map((mode) => ({ label: mode, kind: monaco.languages.CompletionItemKind.Value, insertText: mode, range })) };
       }
       if (/^#cap\s+[\w.]*$/.test(trimmedPrefix)) {
         return { suggestions: runtimeCapabilities.map((capability) => ({ label: capability, kind: monaco.languages.CompletionItemKind.EnumMember, insertText: capability, range })) };
@@ -2194,7 +2249,8 @@ function renderScriptInfo(parent) {
   const grantWarning = missingProjectCaps.length
     ? `<div class="script-warning">Not granted in project settings: ${missingProjectCaps.map(escapeHtml).join(", ")}</div>`
     : "";
-  const injectionWarning = directives.allowInjection && !ideState.projectConfig.allowInjection
+  const projectModeGrantsInjection = modeLevel[projectMode] >= modeLevel.unsafe;
+  const injectionWarning = directives.allowInjection && !ideState.projectConfig.allowInjection && !projectModeGrantsInjection
     ? `<div class="script-warning">#allow-injection is declared, but project settings block injection helpers.</div>`
     : "";
   section.innerHTML = `
@@ -2230,6 +2286,7 @@ function renderProjectSettings(parent) {
         <option value="safe">Safe</option>
         <option value="dev">Dev</option>
         <option value="unsafe">Unsafe</option>
+        <option value="dangerous">Dangerous</option>
       </select>
     </label>
     <label class="settings-toggle">
@@ -2459,6 +2516,7 @@ function renderSettingsSurface() {
               <option value="safe">Safe</option>
               <option value="dev">Dev</option>
               <option value="unsafe">Unsafe</option>
+        <option value="dangerous">Dangerous</option>
             </select>
           </label>
           <label class="settings-toggle"><input id="settingsTabStrict" type="checkbox"><span>Strict permissions</span></label>
@@ -2586,6 +2644,7 @@ function renderToolbarState() {
   if (strict) strict.checked = ideState.projectConfig.strictPermissions;
   if (injection) injection.checked = ideState.projectConfig.allowInjection;
   if (caps) caps.value = ideState.projectConfig.capabilities.join(", ");
+  applyDangerousModeChrome();
   renderCommandState();
 
   renderRuntimeInspector();
@@ -3298,6 +3357,7 @@ function renderWindowBar() {
           <span id="statusDirty">Saved</span>
         </div>
         <div class="status-right">
+          <span id="statusMode" class="status-mode">${iconSvg(ShieldCheck)}<span>SAFE</span></span>
           <span id="statusCursor">Ln 1, Col 1</span>
           <span id="statusLanguage">Wapi</span>
           <button id="statusTerminal" class="status-button" type="button">${iconSvg(Terminal)}<span>Terminal</span></button>
@@ -3324,6 +3384,9 @@ function renderWindowBar() {
         </form>
       </div>
     </main>
+    <div id="dangerModeIndicator" class="danger-mode-indicator" role="status" aria-live="polite" aria-hidden="true" hidden>
+      ${iconSvg(TriangleAlert)}<span>Dangerous mode</span>
+    </div>
   `;
 }
 

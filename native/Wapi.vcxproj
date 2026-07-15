@@ -201,12 +201,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\evaluator.cpp" />
+    <ClCompile Include="src\manual_mapper.cpp" />
     <ClCompile Include="src\lexer.cpp" />
     <ClCompile Include="src\parser.cpp" />
     <ClCompile Include="src\Wapi.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\evaluator.h" />
+    <ClInclude Include="src\manual_mapper.h" />
     <ClInclude Include="src\lexer.h" />
     <ClInclude Include="src\parser.h" />
   </ItemGroup>

@@ -1,0 +1,21 @@
+#name "Manual-map native DLL"
+#version "1.0.0"
+#author "Wapi examples"
+#description "Maps an x64 native DLL into an authorized x64 test host. Requires dangerous mode."
+// These directives document the requirements; grant both through the CLI or project settings.
+#mode dangerous
+#strict
+#cap proc.list inject.manualmap runtime.print
+
+// Replace both values with a test host and DLL you own or are authorized to inspect.
+// Example CLI: wapi run examples/manual_map_native_dll.wapi --mode dangerous --cap proc.list --cap inject.manualmap --cap runtime.print
+let target = "your-test-host"
+let dllPath = "C:\\path\\plugin.dll"
+var pid = proc.find(target)
+
+if pid == 0 {
+    print("{target} is not running")
+} else {
+    var base = inject.manualMap(pid, dllPath)
+    print("mapped {dllPath} into pid={pid} at base={base}")
+}

@@ -70,7 +70,10 @@ fn normalize_project_config(mut config: ProjectConfig, fallback_name: &str) -> P
     if config.default_mode == "audit" {
         config.default_mode = "dev".into();
     }
-    if !matches!(config.default_mode.as_str(), "safe" | "dev" | "unsafe") {
+    if !matches!(
+        config.default_mode.as_str(),
+        "safe" | "dev" | "unsafe" | "dangerous"
+    ) {
         config.default_mode = "safe".into();
     }
     config.capabilities = config

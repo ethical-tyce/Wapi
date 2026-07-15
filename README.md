@@ -21,7 +21,7 @@ PowerShell can call into the Windows API, but the P/Invoke syntax is painful and
 
 - a real lexer -> parser -> evaluator pipeline, not a wrapper script,
 - a capability system where scripts declare what they need (`#cap proc.read memory.write`) and the runtime enforces it per function call,
-- three enforced modes - `safe`, `dev`, `unsafe` - with a hard floor a script can't silently exceed,
+- four enforced modes - `safe`, `dev`, `unsafe`, `dangerous` - with a hard floor a script can't silently exceed,
 - full audit logging of every privileged call,
 - a desktop IDE with Monaco editing, inline diagnostics, a process explorer, and a live capability inspector.
 
@@ -51,10 +51,10 @@ Every `.wapi` file can open with a directive block. Directives are read before t
 #strict
 ```
 
-- `#mode safe|dev|unsafe` - the minimum mode this script requires. Running it under a lower externally granted mode is a hard error.
+- `#mode safe|dev|unsafe|dangerous` - the minimum mode this script requires. Running it under a lower externally granted mode is a hard error; `dangerous` must be granted externally.
 - `#cap <name> [<name>...]` - capabilities this script uses. These are requirements, not grants, unless you explicitly pass `--trust-script-directives` for a trusted script.
 - `#strict` - missing runtime capability grants become hard errors instead of warnings.
-- `#allow-injection` - declares injection helper usage; `--allow-injection`, `unsafe` mode, or trusted directives are still required to grant it.
+- `#allow-injection` - declares injection helper usage; `--allow-injection`, `unsafe`/`dangerous` mode, or trusted directives are still required to grant ordinary injection.
 - `#include "file.wapi"` - include another `.wapi` file relative to the source root (cannot be absolute or escape the root).
 - `#name`, `#version`, `#author`, `#description` - script metadata, surfaced in the IDE and `wapi doc`.
 
@@ -64,7 +64,7 @@ Run someone else's script with a tighter cap set than it declares and the runtim
 wapi run untrusted.wapi --mode safe --cap proc.list --strict-permissions
 ```
 
-For trusted local scripts, `--trust-script-directives` intentionally promotes `#mode`, `#cap`, and `#allow-injection` into runtime grants. Do not use it for scripts you would not already trust to run with those permissions.
+For trusted local scripts, `--trust-script-directives` promotes ordinary `#mode`, `#cap`, and `#allow-injection` declarations into runtime grants. It deliberately cannot grant `dangerous` mode or `inject.manualmap`; those must come from explicit CLI flags or IDE project settings. Do not use trusted directives for scripts you would not already trust to run with those permissions.
 
 `wapi lint` cross-checks every function call against your `#cap` block and tells you what's declared-but-unused and what's used-but-undeclared.
 
@@ -136,13 +136,19 @@ Every function below has a global name and a dotted alias, and is gated behind a
 
 **Modules** - `listModules` / `proc.modules`, `getModuleBase`, `getModuleBaseAddress` / `proc.module.base`, `getModuleSize` / `proc.module.size`
 
-**Memory** - `readMemory` / `mem.read`, `writeMemory` / `mem.write`, `allocMemory` / `mem.alloc`, `freeMemory` / `mem.free`, `protectMemory` / `mem.protect`, `queryMemory` / `mem.query`
+**Memory** - `readMemory` / `mem.read`, `scanPattern` / `mem.scan`, `writeMemory` / `mem.write`, `allocMemory` / `mem.alloc`, `freeMemory` / `mem.free`, `protectMemory` / `mem.protect`, `queryMemory` / `mem.query`
 
 **Threads** - `listThreads` / `thread.list`, `openThread` / `thread.open`, `suspendThread` / `thread.suspend`, `resumeThread` / `thread.resume`, `getThreadContext` / `thread.context`, `setThreadContext` / `thread.context.set`
 
 **Window** - `findWindow` / `window.find`, `listWindowsByPID` / `window.listByPid`, `findWindowByPID` / `window.findByPid`, `sendWindowMessage` / `window.message`
 
-**Injection** *(requires an injection grant outside `unsafe` mode)* - `injectDLL` / `inject.dll`, `testInjectDLL` / `inject.test`, `injectShellcode` / `inject.shellcode`, `createRemoteThread` / `inject.thread`
+**Injection** - standard loading uses `injectDLL` / `inject.dll` (also `inject.loadLibrary`), with `testInjectDLL` / `inject.test` for the fixture DLL. Shellcode and remote-thread helpers remain `injectShellcode` / `inject.shellcode` and `createRemoteThread` / `inject.thread`. Ordinary injection needs `--allow-injection` below `unsafe` mode.
+
+Manual mapping uses `manualMapDLL` / `inject.manualMap`. It always requires externally granted `dangerous` mode and the explicit `inject.manualmap` capability. The bounded first version is x64-only and deliberately does not erase PE headers, unlink loader records, hide threads, or bypass security products. It refuses critical processes and targets with CFG or enforced dynamic-code, binary-signature, or image-load mitigation policies.
+
+Both DLL loaders are source-language independent for native PE DLLs: C, C++, Rust, Zig, and similar toolchains work when Wapi, the target, and DLL architecture match. Managed C# assemblies and Python, Java, or JavaScript payloads require a dedicated runtime/bootstrap and are not treated as native DLLs.
+
+The bounded manual mapper rejects TLS callbacks/static TLS, CLR images, delay imports, and writable-executable sections. Imported dependencies must already be loaded or discoverable through the target process's normal DLL search path; the mapped DLL's directory is not automatically added.
 
 **Debug / token** - `debugAttach` / `debug.attach`, `debugWaitEvent` / `debug.wait`, `debugReadRegisters` / `debug.registers`, `debugContinue` / `debug.continue`, `openProcessToken` / `token.open`, `enablePrivilege` / `token.privilege`
 

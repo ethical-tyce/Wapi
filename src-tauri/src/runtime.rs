@@ -110,6 +110,7 @@ fn build_args(
     let mode = match options.mode.as_deref() {
         Some("dev") => "dev",
         Some("unsafe") => "unsafe",
+        Some("dangerous") => "dangerous",
         _ => "safe",
     };
     let mut args = vec![
@@ -363,6 +364,23 @@ mod tests {
         );
 
         assert!(args.windows(2).any(|pair| pair == ["--timeout", "1250"]));
+    }
+
+    #[test]
+    fn build_args_forwards_dangerous_mode() {
+        let options = ExecuteOptions {
+            mode: Some("dangerous".into()),
+            ..Default::default()
+        };
+
+        let args = build_args(
+            "check",
+            "print(1)",
+            &options,
+            effective_timeout_ms("check", &options),
+        );
+
+        assert!(args.windows(2).any(|pair| pair == ["--mode", "dangerous"]));
     }
 
     #[test]

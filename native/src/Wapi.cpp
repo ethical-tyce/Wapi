@@ -47,11 +47,12 @@ void printUsage() {
         << "  wapi --version\n"
         << "\n"
         << "Options:\n"
-        << "  --mode safe|dev|unsafe   Runtime safety mode; WAPI_MODE is used when omitted.\n"
+        << "  --mode safe|dev|unsafe|dangerous\n"
+        << "                           Runtime safety mode; WAPI_MODE is used when omitted.\n"
         << "  --cap <name>             Add a capability grant.\n"
         << "  --trust-script-directives\n"
         << "                           Grant #mode/#cap/#allow-injection from trusted scripts.\n"
-        << "  --allow-injection        Permit injection helpers outside unsafe mode.\n"
+        << "  --allow-injection        Permit injection helpers outside unsafe/dangerous mode.\n"
         << "  --strict-permissions     Turn missing capabilities into errors.\n"
         << "  --json|--output json     Emit JSON runtime events.\n"
         << "  --output csv             Accepted for tooling compatibility.\n"
@@ -66,7 +67,8 @@ void printUsage() {
         << "  --watch                  Accepted by run/check for editor integrations.\n"
         << "\n"
         << "File directives (top of any .wapi file, before any code):\n"
-        << "  #mode safe|dev|unsafe        Minimum mode this script requires.\n"
+        << "  #mode safe|dev|unsafe|dangerous\n"
+        << "                               Minimum mode. Dangerous must be granted externally.\n"
         << "  #cap <name> [<name>...]      Declared capability requirements, not grants.\n"
         << "  #include \"path/to/file.wapi\" Include a relative .wapi file inside the source root.\n"
         << "  #strict                      Treat missing capabilities as errors.\n"
@@ -90,12 +92,14 @@ WapiMode parseMode(const std::string& value) {
     if (value == "safe") return WapiMode::Safe;
     if (value == "dev") return WapiMode::Dev;
     if (value == "unsafe") return WapiMode::Unsafe;
-    throw std::runtime_error("Invalid mode: " + value + " (expected safe|dev|unsafe)");
+    if (value == "dangerous") return WapiMode::Dangerous;
+    throw std::runtime_error("Invalid mode: " + value + " (expected safe|dev|unsafe|dangerous)");
 }
 
 std::string modeToDirectiveString(WapiMode mode) {
     if (mode == WapiMode::Dev) return "dev";
     if (mode == WapiMode::Unsafe) return "unsafe";
+    if (mode == WapiMode::Dangerous) return "dangerous";
     return "safe";
 }
 
@@ -123,7 +127,8 @@ struct ResolvedSource {
 };
 
 void mergeDirectives(ScriptDirectives& target, const ScriptDirectives& incoming) {
-    if (incoming.hasMode) {
+    if (incoming.hasMode &&
+        (!target.hasMode || static_cast<int>(incoming.mode) > static_cast<int>(target.mode))) {
         target.hasMode = true;
         target.mode = incoming.mode;
     }
@@ -603,7 +608,7 @@ const std::unordered_map<std::string, std::string>& functionCapabilities() {
         {"injectShellcode", "inject.shellcode"}, {"createRemoteThread", "inject.shellcode"}, {"listWindowsByPID", "window.pid"}, {"findWindowByPID", "window.pid"},
         {"sendWindowMessage", "window.message"}, {"debugAttach", "debug.attach"}, {"debugWaitEvent", "debug.attach"}, {"debugReadRegisters", "debug.registers"},
         {"debugContinue", "debug.attach"}, {"openProcessToken", "token.open"}, {"enablePrivilege", "token.privilege"}, {"closeHandle", "proc.handle.close"},
-        {"findWindow", "window.find"}, {"injectDLL", "inject.dll"}, {"testInjectDLL", "inject.dll"},
+        {"findWindow", "window.find"}, {"injectDLL", "inject.dll"}, {"manualMapDLL", "inject.manualmap"}, {"testInjectDLL", "inject.dll"},
         {"proc.find", "proc.list"}, {"proc.list", "proc.list"}, {"proc.open", "proc.open.all_access"}, {"proc.terminate", "proc.terminate"},
         {"proc.suspend", "proc.suspend"}, {"proc.resume", "proc.resume"}, {"proc.close", "proc.close"}, {"proc.modules", "proc.modules"},
         {"proc.moduleBase", "proc.modules"}, {"proc.module.base", "proc.modules"}, {"proc.module.size", "proc.modules"},
@@ -613,7 +618,9 @@ const std::unordered_map<std::string, std::string>& functionCapabilities() {
         {"window.listByPid", "window.pid"}, {"window.findByPid", "window.pid"}, {"window.message", "window.message"},
         {"inject.shellcode", "inject.shellcode"}, {"inject.thread", "inject.shellcode"}, {"debug.attach", "debug.attach"}, {"debug.wait", "debug.attach"},
         {"debug.registers", "debug.registers"}, {"debug.continue", "debug.attach"}, {"token.open", "token.open"}, {"token.privilege", "token.privilege"},
-        {"handle.close", "proc.handle.close"}, {"window.find", "window.find"}, {"inject.dll", "inject.dll"}, {"inject.testDll", "inject.dll"},
+        {"handle.close", "proc.handle.close"}, {"window.find", "window.find"}, {"inject.dll", "inject.dll"}, {"inject.loadLibrary", "inject.dll"},
+        {"inject.manualMap", "inject.manualmap"},
+        {"inject.manualmap", "inject.manualmap"}, {"inject.testDll", "inject.dll"},
         {"inject.test", "inject.dll"}, {"testInjectDll", "inject.dll"},
         {"len", "language.core"}, {"substr", "language.string"}, {"contains", "language.string"}, {"replace", "language.string"}, {"toLower", "language.string"},
         {"toInt", "language.string"}, {"abs", "language.math"}, {"min", "language.math"}, {"max", "language.math"}, {"push", "language.array"},
@@ -694,6 +701,11 @@ void emitLintWarnings(const std::shared_ptr<Program>& program, const ScriptDirec
 
 void applyDirectivesToOptions(const ScriptDirectives& dir, WapiRuntimeOptions& options) {
     if (dir.hasMode) {
+        if (dir.mode == WapiMode::Dangerous && options.mode != WapiMode::Dangerous) {
+            throw std::runtime_error(
+                "E_DIRECTIVE: script requires mode 'dangerous'. Dangerous mode must be granted explicitly with --mode dangerous"
+            );
+        }
         if (static_cast<int>(dir.mode) > static_cast<int>(options.mode)) {
             if (options.cliModeExplicit) {
                 throw std::runtime_error(
@@ -716,7 +728,10 @@ void applyDirectivesToOptions(const ScriptDirectives& dir, WapiRuntimeOptions& o
         }
     }
     if (options.trustScriptDirectives) {
-        for (const auto& cap : dir.capabilities) options.capabilities.insert(cap);
+        for (const auto& cap : dir.capabilities) {
+            // Manual mapping always needs an external capability grant, even for trusted scripts.
+            if (cap != "inject.manualmap") options.capabilities.insert(cap);
+        }
         if (dir.allowInjection && !options.cliInjectionExplicit) options.allowInjection = true;
     }
     if (dir.strict && !options.cliStrictExplicit) options.strictPermissions = true;
@@ -852,7 +867,7 @@ void runStandardizedTests() {
     test("runtime.print soft compatibility", "print(\"ok\")", policyOptions);
     testFailure("missing sensitive capability denies process listing", "proc.list()", policyOptions, "E_PERMISSION");
     policyOptions.capabilities.insert("proc.open.all_access");
-    testFailure("safe mode denies all-access process handles", "proc.open(1234)", policyOptions, "requires --mode dev|unsafe");
+    testFailure("safe mode denies all-access process handles", "proc.open(1234)", policyOptions, "requires --mode dev|unsafe|dangerous");
 
     ScriptDirectives devDirective;
     devDirective.hasMode = true;
@@ -878,6 +893,11 @@ void runStandardizedTests() {
     applyDirectivesToOptions(trustedPrivilegeDirective, trustedDirectiveOptions);
     test("trusted directives can grant token privilege in check mode", "token.privilege(\"SeDebugPrivilege\")", trustedDirectiveOptions);
 
+    ScriptDirectives dangerousDirective;
+    dangerousDirective.hasMode = true;
+    dangerousDirective.mode = WapiMode::Dangerous;
+    testDirectiveFailure("trusted directives cannot self-grant dangerous mode", dangerousDirective, trustedDirectiveOptions, "must be granted explicitly");
+
     WapiRuntimeOptions untrustedInjectionOptions;
     untrustedInjectionOptions.mode = WapiMode::Dev;
     untrustedInjectionOptions.checkOnly = true;
@@ -886,6 +906,33 @@ void runStandardizedTests() {
     injectionDirective.allowInjection = true;
     applyDirectivesToOptions(injectionDirective, untrustedInjectionOptions);
     testFailure("untrusted #allow-injection cannot grant injection flag", "inject.shellcode(1, \"90\")", untrustedInjectionOptions, "requires --allow-injection");
+
+    WapiRuntimeOptions unsafeManualMapOptions;
+    unsafeManualMapOptions.mode = WapiMode::Unsafe;
+    unsafeManualMapOptions.checkOnly = true;
+    unsafeManualMapOptions.capabilities.insert("inject.manualmap");
+    testFailure("manual mapping requires dangerous mode", "inject.manualMap(1, \"C:\\\\missing.dll\")", unsafeManualMapOptions, "requires --mode dangerous");
+
+    WapiRuntimeOptions dangerousMissingCapOptions;
+    dangerousMissingCapOptions.mode = WapiMode::Dangerous;
+    dangerousMissingCapOptions.checkOnly = true;
+    testFailure("dangerous mode still requires manual-map capability", "inject.manualMap(1, \"C:\\\\missing.dll\")", dangerousMissingCapOptions, "missing capability=inject.manualmap");
+
+    WapiRuntimeOptions dangerousInjectionOptions;
+    dangerousInjectionOptions.mode = WapiMode::Dangerous;
+    dangerousInjectionOptions.checkOnly = true;
+    dangerousInjectionOptions.capabilities.insert("inject.shellcode");
+    test("dangerous mode includes ordinary injection grant", "inject.shellcode(1, \"90\")", dangerousInjectionOptions);
+
+    WapiRuntimeOptions trustedManualMapOptions;
+    trustedManualMapOptions.mode = WapiMode::Dangerous;
+    trustedManualMapOptions.cliModeExplicit = true;
+    trustedManualMapOptions.checkOnly = true;
+    trustedManualMapOptions.trustScriptDirectives = true;
+    ScriptDirectives trustedManualMapDirective;
+    trustedManualMapDirective.capabilities.insert("inject.manualmap");
+    applyDirectivesToOptions(trustedManualMapDirective, trustedManualMapOptions);
+    testFailure("trusted directives cannot grant manual-map capability", "inject.manualMap(1, \"C:\\\\missing.dll\")", trustedManualMapOptions, "missing capability=inject.manualmap");
 
     WapiRuntimeOptions sleepTimeoutOptions;
     sleepTimeoutOptions.timeoutMs = 1;

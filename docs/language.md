@@ -21,7 +21,7 @@ print("ready")
 
 Supported directives:
 
-- `#mode safe|dev|unsafe` declares the minimum runtime mode.
+- `#mode safe|dev|unsafe|dangerous` declares the minimum runtime mode. `dangerous` must be granted externally.
 - `#cap <capability> [<capability>...]` declares required capabilities. It does not grant them unless the CLI is run with `--trust-script-directives`.
 - `#include "relative/path.wapi"`
 - `#strict`
@@ -197,7 +197,13 @@ mem.free(handle, address)
 handle.close(handle)
 ```
 
-Injection helpers additionally need an injection grant outside `unsafe` mode. Use `--allow-injection`, IDE project settings, or `--trust-script-directives` for trusted scripts that declare `#allow-injection`.
+Ordinary injection helpers additionally need an injection grant below `unsafe` mode. Use `--allow-injection`, IDE project settings, or `--trust-script-directives` for trusted scripts that declare `#allow-injection`.
+
+`manualMapDLL` / `inject.manualMap` is separate: it requires externally granted `dangerous` mode and the explicit `inject.manualmap` capability. `--trust-script-directives` cannot grant either boundary. The bounded mapper accepts a validated subset of x64 native PE DLLs, resolves relocations and imports, invokes `DllMain`, registers validated x64 unwind data, and applies final non-RWX section protections. It rejects CLR/mixed-mode images, delay imports, TLS callbacks/static TLS, CFG images/targets, writable-executable sections, critical Windows targets, and targets with enforced dynamic-code, signature, or image-load policies.
+
+Standard and manual-map loading are source-language independent for native DLLs produced by C, C++, Rust, Zig, and similar toolchains. Managed C#, Python, Java, and JavaScript payloads need an explicit runtime/bootstrap and are not loaded as native DLLs.
+
+Manual-map dependencies must already be loaded or discoverable through the target's normal DLL search path. Wapi does not add the selected DLL's directory to that search path.
 
 ## CLI Flow
 

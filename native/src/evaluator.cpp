@@ -1,4 +1,5 @@
 #include "evaluator.h"
+#include "manual_mapper.h"
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <vector>
@@ -634,6 +635,7 @@ std::string Evaluator::modeToString() const {
     case WapiMode::Safe: return "safe";
     case WapiMode::Dev: return "dev";
     case WapiMode::Unsafe: return "unsafe";
+    case WapiMode::Dangerous: return "dangerous";
     }
     return "safe";
 }
@@ -678,15 +680,23 @@ void Evaluator::enforcePolicy(const std::string& functionName, const std::string
         "debug.attach", "debug.registers", "token.open", "token.privilege",
         "window.message", "inject.dll", "inject.shellcode"
     };
+    static const std::unordered_set<std::string> dangerousOnlyCapabilities = {
+        "inject.manualmap"
+    };
     static const std::unordered_set<std::string> softMissingCapabilities = {
         "runtime.print", "language.core", "language.string", "language.math", "language.array", "runtime.sleep"
     };
     if (devOnlyCapabilities.count(capability) && options.mode == WapiMode::Safe) {
-        emitAudit(functionName, capability, "deny", "capability requires dev or unsafe mode");
-        throw std::runtime_error("E_PERMISSION:" + functionName + " requires --mode dev|unsafe for capability=" + capability);
+        emitAudit(functionName, capability, "deny", "capability requires dev, unsafe, or dangerous mode");
+        throw std::runtime_error("E_PERMISSION:" + functionName + " requires --mode dev|unsafe|dangerous for capability=" + capability);
     }
-    if (requiresInjectionFlag && options.mode != WapiMode::Unsafe && !options.allowInjection) {
-        emitAudit(functionName, capability, "deny", "--allow-injection is required outside unsafe mode");
+    if (dangerousOnlyCapabilities.count(capability) && options.mode != WapiMode::Dangerous) {
+        emitAudit(functionName, capability, "deny", "capability requires explicit dangerous mode");
+        throw std::runtime_error("E_PERMISSION:" + functionName + " requires --mode dangerous for capability=" + capability);
+    }
+    const bool injectionGrantedByMode = static_cast<int>(options.mode) >= static_cast<int>(WapiMode::Unsafe);
+    if (requiresInjectionFlag && !injectionGrantedByMode && !options.allowInjection) {
+        emitAudit(functionName, capability, "deny", "--allow-injection is required outside unsafe or dangerous mode");
         throw std::runtime_error("E_PERMISSION:" + functionName + " requires --allow-injection");
     }
     if (hasCapability) {
@@ -1206,6 +1216,15 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
             }}
         },
         {
+            "manualMapDLL",
+            {2, "inject.manualmap", true, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_injectManualMap(
+                    evaluator.asInt(call->args[0], call->name, 0),
+                    evaluator.asString(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
             "testInjectDLL",
             {1, "inject.dll", true, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
                 return evaluator.wapi_testInjectDLL(evaluator.asInt(call->args[0], call->name, 0));
@@ -1257,6 +1276,9 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         {"mem.free", "freeMemory"},
         {"window.find", "findWindow"},
         {"inject.dll", "injectDLL"},
+        {"inject.loadLibrary", "injectDLL"},
+        {"inject.manualMap", "manualMapDLL"},
+        {"inject.manualmap", "manualMapDLL"},
         {"inject.testDll", "testInjectDLL"},
         {"inject.test", "testInjectDLL"},
         {"testInjectDll", "testInjectDLL"}
@@ -1993,6 +2015,58 @@ WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
     }
     std::cout << "DLL injected successfully\n";
     return 0;
+}
+
+WapiValue Evaluator::wapi_injectManualMap(int pid, const std::string& dllPath) {
+    if (pid <= 0) throw WapiUnstableException("Invalid pid");
+    wapi::injection::ManualMapOptions mapOptions;
+    if (timeoutEnabled) {
+        const auto remaining = timeoutDeadline - std::chrono::steady_clock::now();
+        if (remaining <= std::chrono::steady_clock::duration::zero()) enforceTimeout();
+        const long long remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count();
+        const long long boundedRemaining = (std::max)(
+            1LL,
+            (std::min)(remainingMs, static_cast<long long>((std::numeric_limits<std::uint32_t>::max)()))
+        );
+        mapOptions.timeoutMs = static_cast<std::uint32_t>(boundedRemaining);
+    } else {
+        mapOptions.timeoutMs = 15000u;
+    }
+    mapOptions.validateOnly = options.checkOnly;
+    const std::filesystem::path requestedPath(dllPath);
+    std::error_code pathError;
+    std::filesystem::path resolvedPath = std::filesystem::weakly_canonical(requestedPath, pathError);
+    if (pathError) {
+        pathError.clear();
+        resolvedPath = std::filesystem::absolute(requestedPath, pathError);
+        if (pathError) resolvedPath = requestedPath;
+    }
+    const std::string auditContext =
+        "pid=" + std::to_string(pid) + " path=" + resolvedPath.string();
+    emitAudit("manualMapDLL", "inject.manualmap", "start", auditContext);
+    try {
+        const std::uintptr_t remoteBase = wapi::injection::manualMapDll(
+            static_cast<std::uint32_t>(pid),
+            resolvedPath,
+            mapOptions
+        );
+        if (options.checkOnly) {
+            emitAudit(
+                "manualMapDLL", "inject.manualmap", "validated",
+                auditContext + " x64 native PE; query-only target access; no allocations or threads"
+            );
+            return 0;
+        }
+        emitAudit(
+            "manualMapDLL", "inject.manualmap", "success",
+            auditContext + " remoteBase=" + std::to_string(remoteBase)
+        );
+        std::cout << "DLL manually mapped at " << remoteBase << "\n";
+        return static_cast<long long>(remoteBase);
+    } catch (const std::exception& error) {
+        emitAudit("manualMapDLL", "inject.manualmap", "failure", auditContext + " error=" + error.what());
+        throw;
+    }
 }
 
 WapiValue Evaluator::wapi_testInjectDLL(int pid) {
