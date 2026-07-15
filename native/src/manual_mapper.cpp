@@ -232,7 +232,7 @@ void validateTarget(std::uint32_t pid, HANDLE process) {
     fail("manual mapping requires the x64 Wapi build");
 #else
     if (pid == 0 || pid == 4 || pid == GetCurrentProcessId()) fail("invalid, system, or self target PID");
-    std::array<wchar_t, 32768> pathBuffer{};
+    std::vector<wchar_t> pathBuffer(32768);
     DWORD pathLength = static_cast<DWORD>(pathBuffer.size());
     if (!QueryFullProcessImageNameW(process, 0, pathBuffer.data(), &pathLength)) failWin32("could not identify target process");
     const std::filesystem::path targetPath(std::wstring(pathBuffer.data(), pathLength));
@@ -326,7 +326,7 @@ std::uintptr_t remoteAddressForLocalFunction(std::uint32_t pid, FARPROC localFun
             &containingModule)) {
         failWin32("could not identify the module containing a loader function");
     }
-    std::array<wchar_t, 32768> modulePath{};
+    std::vector<wchar_t> modulePath(32768);
     const DWORD length = GetModuleFileNameW(containingModule, modulePath.data(), static_cast<DWORD>(modulePath.size()));
     if (length == 0 || length == modulePath.size()) failWin32("could not identify loader module path");
     const std::wstring moduleName = std::filesystem::path(std::wstring(modulePath.data(), length)).filename().wstring();
