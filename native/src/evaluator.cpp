@@ -1014,6 +1014,17 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
             }}
         },
         {
+            "scanPattern",
+            {4, "mem.read", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_scanPattern(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1),
+                    evaluator.asLongLong(call->args[2], call->name, 2),
+                    evaluator.asString(call->args[3], call->name, 3)
+                );
+            }}
+        },
+        {
             "writeMemory",
             {3, "mem.write", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
                 return evaluator.wapi_writeMemory(
@@ -1240,6 +1251,7 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         {"token.privilege", "enablePrivilege"},
         {"handle.close", "closeHandle"},
         {"mem.read", "readMemory"},
+        {"mem.scan", "scanPattern"},
         {"mem.write", "writeMemory"},
         {"mem.alloc", "allocMemory"},
         {"mem.free", "freeMemory"},
@@ -1392,6 +1404,102 @@ WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
     }
     std::cout << "Read " << bytesRead << " bytes from address 0x" << std::hex << address << ": " << std::dec << buffer << "\n";
     return buffer;
+}
+
+WapiValue Evaluator::wapi_scanPattern(long long handle, long long startAddress, long long size, const std::string& patternText) {
+    HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "scanPattern"));
+    if (startAddress <= 0 || size <= 0) throw WapiUnstableException("Invalid scan range");
+
+    std::istringstream patternStream(patternText);
+    std::vector<int> pattern;
+    std::string token;
+    while (patternStream >> token) {
+        if (token == "?" || token == "??") {
+            pattern.push_back(-1);
+            continue;
+        }
+        if (token.size() != 2 ||
+            !std::isxdigit(static_cast<unsigned char>(token[0])) ||
+            !std::isxdigit(static_cast<unsigned char>(token[1]))) {
+            throw WapiUnstableException("Invalid AOB token: " + token);
+        }
+        pattern.push_back(std::stoi(token, nullptr, 16));
+    }
+    if (pattern.empty()) throw WapiUnstableException("AOB pattern is empty");
+    if (static_cast<unsigned long long>(size) < pattern.size()) return static_cast<long long>(0);
+
+    if (options.checkOnly) {
+        emitAudit("scanPattern", "mem.read", "allow", "checkOnly no side-effects");
+        return static_cast<long long>(0);
+    }
+
+    const uintptr_t scanStart = static_cast<uintptr_t>(startAddress);
+    const uintptr_t scanSize = static_cast<uintptr_t>(size);
+    if (scanSize > (std::numeric_limits<uintptr_t>::max)() - scanStart) {
+        throw WapiUnstableException("Scan range overflow");
+    }
+    const uintptr_t scanEnd = scanStart + scanSize;
+    constexpr SIZE_T chunkSize = 1024 * 1024;
+    uintptr_t current = scanStart;
+
+    while (current < scanEnd) {
+        enforceTimeout();
+        MEMORY_BASIC_INFORMATION region{};
+        if (VirtualQueryEx(hProcess, reinterpret_cast<LPCVOID>(current), &region, sizeof(region)) == 0) break;
+
+        const uintptr_t regionStart = reinterpret_cast<uintptr_t>(region.BaseAddress);
+        if (region.RegionSize > (std::numeric_limits<uintptr_t>::max)() - regionStart) break;
+        const uintptr_t regionEnd = regionStart + region.RegionSize;
+        if (regionEnd <= current) break;
+
+        const bool readable = region.State == MEM_COMMIT &&
+            !(region.Protect & PAGE_GUARD) && !(region.Protect & PAGE_NOACCESS);
+        if (!readable) {
+            current = regionEnd;
+            continue;
+        }
+
+        const uintptr_t readableStart = (std::max)(current, regionStart);
+        const uintptr_t readableEnd = (std::min)(scanEnd, regionEnd);
+        uintptr_t chunkAddress = readableStart;
+
+        while (chunkAddress < readableEnd) {
+            enforceTimeout();
+            const SIZE_T remaining = static_cast<SIZE_T>(readableEnd - chunkAddress);
+            const SIZE_T bytesToRead = (std::min)(chunkSize, remaining);
+            std::vector<unsigned char> buffer(bytesToRead);
+            SIZE_T bytesRead = 0;
+            const BOOL success = ReadProcessMemory(
+                hProcess, reinterpret_cast<LPCVOID>(chunkAddress), buffer.data(), bytesToRead, &bytesRead);
+
+            if (success || bytesRead > 0) {
+                for (SIZE_T offset = 0; offset + pattern.size() <= bytesRead; ++offset) {
+                    bool matches = true;
+                    for (SIZE_T index = 0; index < pattern.size(); ++index) {
+                        if (pattern[index] != -1 &&
+                            buffer[offset + index] != static_cast<unsigned char>(pattern[index])) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (matches) {
+                        const long long address = static_cast<long long>(chunkAddress + offset);
+                        emitAudit("scanPattern", "mem.read", "success", "pattern found at " + std::to_string(address));
+                        return address;
+                    }
+                }
+            }
+
+            if (bytesToRead == remaining) break;
+            const SIZE_T overlap = pattern.size() - 1;
+            if (bytesToRead <= overlap) break;
+            chunkAddress += bytesToRead - overlap;
+        }
+        current = regionEnd;
+    }
+
+    emitAudit("scanPattern", "mem.read", "success", "pattern not found");
+    return static_cast<long long>(0);
 }
 
 WapiValue Evaluator::wapi_writeMemory(long long handle, long long address, int value) {
