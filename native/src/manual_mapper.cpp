@@ -28,6 +28,15 @@ constexpr std::size_t kMaxImports = 16384;
 constexpr std::size_t kMaxExceptionEntries = 1u << 20;
 constexpr std::uint32_t kCleanupTimeoutMs = 2000;
 
+
+// RUNTIME_FUNCTION follows the host architecture selected by the Windows SDK.
+// The mapper always parses an x64 PE image, so keep its on-disk layout explicit.
+struct X64RuntimeFunctionEntry {
+    DWORD BeginAddress;
+    DWORD EndAddress;
+    DWORD UnwindData;
+};
+static_assert(sizeof(X64RuntimeFunctionEntry) == 12);
 [[noreturn]] void fail(const std::string& message) {
     throw std::runtime_error("Manual map: " + message);
 }
@@ -706,14 +715,14 @@ void validateExceptionDirectory(const ParsedImage& image) {
         if (directory.Size != 0) fail("exception directory has a size without an RVA");
         return;
     }
-    if (directory.Size == 0 || directory.Size % sizeof(RUNTIME_FUNCTION) != 0) {
+    if (directory.Size == 0 || directory.Size % sizeof(X64RuntimeFunctionEntry) != 0) {
         fail("invalid x64 exception directory size");
     }
-    const std::size_t functionCount = directory.Size / sizeof(RUNTIME_FUNCTION);
+    const std::size_t functionCount = directory.Size / sizeof(X64RuntimeFunctionEntry);
     if (functionCount == 0 || functionCount > kMaxExceptionEntries) {
         fail("x64 exception directory exceeds the entry limit");
     }
-    const auto* functions = image.at<RUNTIME_FUNCTION>(directory.VirtualAddress, functionCount);
+    const auto* functions = image.at<X64RuntimeFunctionEntry>(directory.VirtualAddress, functionCount);
     DWORD previousEnd = 0;
     for (std::size_t index = 0; index < functionCount; ++index) {
         const auto& function = functions[index];
@@ -931,7 +940,7 @@ std::uintptr_t manualMapDll(
     std::unique_ptr<FunctionTableRollback> functionTableRollback;
     const auto exceptionDirectory = image.directory(IMAGE_DIRECTORY_ENTRY_EXCEPTION);
     if (exceptionDirectory.VirtualAddress != 0) {
-        const std::size_t functionCount = exceptionDirectory.Size / sizeof(RUNTIME_FUNCTION);
+        const std::size_t functionCount = exceptionDirectory.Size / sizeof(X64RuntimeFunctionEntry);
         const std::uintptr_t remoteAddFunctionTable = remoteAddressForLocalFunction(
             pid, requiredProc(L"ntdll.dll", "RtlAddFunctionTable")
         );
