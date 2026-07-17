@@ -26,8 +26,51 @@
 #include "evaluator.h"
 #include "lexer.h"
 #include "parser.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
 
 namespace {
+void printBanner() {
+    static const std::wstring banner = LR"WAPI(
+€€€                           ≤≤≤
+€€€€€€                     ≤≤≤≤≤≤
+€€€€€€€≤                 ≤≤≤≤≤≤≤≤
+≤≤≤≤≤≤≤≤        ≤        ≤≤≤≤≤≤≤≤
+≤≤≤≤≤≤≤≤      ≤≤≤±≤      ≤≤≤≤≤≤≤≤
+≤≤≤≤≤≤≤≤    ≤≤≤≤≤±±≤≤    ≤≤≤≤≤≤≤≤          €€€€€€          €€€€€€€€€€€€€€€       €€€€€€€
+≤≤≤≤≤≤≤≤  ≤≤≤≤≤≤≤±±≤≤≤≤  ≤≤≤≤≤≤≤≤        €€€€€€€€€         €€€€€€€€€€€€€€€€€€€   €€€€€€€
+≤≤≤≤≤≤≤≤±±≤≤≤≤≤≤≤±±±≤≤±±±≤≤≤≤≤≤≤≤       €€€€€€€€€€€€       €€€€€€€     €€€€€€€€  €€€€€€€
+≤≤≤≤≤≤≤≤±±≤≤≤≤≤   ±±±±±±±≤≤≤≤≤≤≤≤      €€€€€€ €€€€€€€      €€€€€€€      €€€€€€€  €€€€€€€
+≤≤≤≤≤≤≤≤±±±≤≤≤     ±±±±±±≤≤≤≤≤≤≤≤     €€€€€€    €€€€€€     €€€€€€€€€€€€€€€€€€€   €€€€€€€
+≤≤≤≤≤≤≤≤±±±≤         ±±±±≤≤≤≤≤≤≤    €€€€€€€€€€€€€€€€€€€    €€€€€€€€€€€€€€€€€     €€€€€€€
+   ≤±±≤≤±±±           ±±±≤≤±±≤     €€€€€€€€€€€€€€€€€€€€€€  €€€€€€€               €€€€€€€
+      ±±±               ±±±       €€€€€€€          €€€€€€€ €€€€€€€               €€€€€€€
+)WAPI";
+
+    SetConsoleTitleW(L"Wapi Terminal");
+    HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD consoleMode = 0;
+    if (output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &consoleMode)) {
+        CONSOLE_SCREEN_BUFFER_INFO original{};
+        const bool hasOriginal = GetConsoleScreenBufferInfo(output, &original) != FALSE;
+        SetConsoleTextAttribute(
+            output,
+            static_cast<WORD>(FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+        );
+        DWORD written = 0;
+        WriteConsoleW(output, banner.data(), static_cast<DWORD>(banner.size()), &written, nullptr);
+        if (hasOriginal) SetConsoleTextAttribute(output, original.wAttributes);
+    } else {
+        std::cout << "\nWAPI TERMINAL\n";
+    }
+    std::cout
+        << "\n  Native Windows automation runtime"
+        << "\n  Drop a .wapi script below, or type 'quit' to close."
+        << "\n\n";
+}
+
 
 void printUsage() {
     std::cout
@@ -602,6 +645,18 @@ const std::unordered_map<std::string, std::string>& functionCapabilities() {
         {"print", "runtime.print"}, {"findProcessPID", "proc.list"}, {"listProcesses", "proc.list"}, {"openProcess", "proc.open.all_access"},
         {"terminateProcess", "proc.terminate"}, {"suspendProcess", "proc.suspend"}, {"resumeProcess", "proc.resume"}, {"closeProcess", "proc.close"},
         {"readMemory", "mem.read"}, {"writeMemory", "mem.write"}, {"allocMemory", "mem.alloc"}, {"freeMemory", "mem.free"},
+        {"scanPattern", "mem.read"}, {"readInt64", "mem.read"}, {"readFloat", "mem.read"}, {"readDouble", "mem.read"},
+        {"readPointer", "mem.read"}, {"readPtr", "mem.read"}, {"followPointer", "mem.read"},
+        {"writeInt64", "mem.write"}, {"writeFloat", "mem.write"}, {"writeDouble", "mem.write"},
+        {"writePointer", "mem.write"}, {"writePtr", "mem.write"},
+        {"readInt8", "mem.read"}, {"readUInt8", "mem.read"}, {"readByte", "mem.read"},
+        {"readInt16", "mem.read"}, {"readUInt16", "mem.read"}, {"readUInt32", "mem.read"}, {"readUInt64", "mem.read"},
+        {"readBytes", "mem.read"}, {"readString", "mem.read"},
+        {"writeInt8", "mem.write"}, {"writeUInt8", "mem.write"}, {"writeByte", "mem.write"},
+        {"writeInt16", "mem.write"}, {"writeUInt16", "mem.write"}, {"writeUInt32", "mem.write"}, {"writeUInt64", "mem.write"},
+        {"writeBytes", "mem.write"}, {"writeString", "mem.write"},
+        {"isMemoryReadable", "mem.query"}, {"isMemoryWritable", "mem.query"},
+
         {"listModules", "proc.modules"}, {"getModuleBase", "proc.modules"}, {"getModuleBaseAddress", "proc.modules"}, {"getModuleSize", "proc.modules"},
         {"protectMemory", "mem.protect"}, {"queryMemory", "mem.query"}, {"listThreads", "thread.list"}, {"openThread", "thread.open"},
         {"suspendThread", "thread.suspend"}, {"resumeThread", "thread.resume"}, {"getThreadContext", "debug.registers"}, {"setThreadContext", "thread.context.write"},
@@ -613,6 +668,19 @@ const std::unordered_map<std::string, std::string>& functionCapabilities() {
         {"proc.suspend", "proc.suspend"}, {"proc.resume", "proc.resume"}, {"proc.close", "proc.close"}, {"proc.modules", "proc.modules"},
         {"proc.moduleBase", "proc.modules"}, {"proc.module.base", "proc.modules"}, {"proc.module.size", "proc.modules"},
         {"mem.read", "mem.read"}, {"mem.write", "mem.write"}, {"mem.alloc", "mem.alloc"}, {"mem.free", "mem.free"},
+        {"mem.readInt32", "mem.read"}, {"mem.readInt64", "mem.read"}, {"mem.readFloat", "mem.read"},
+        {"mem.readDouble", "mem.read"}, {"mem.readPtr", "mem.read"}, {"mem.scan", "mem.read"}, {"mem.follow", "mem.read"},
+        {"mem.writeInt32", "mem.write"}, {"mem.writeInt64", "mem.write"}, {"mem.writeFloat", "mem.write"},
+        {"mem.writeDouble", "mem.write"}, {"mem.writePtr", "mem.write"},
+        {"mem.readInt8", "mem.read"}, {"mem.readUInt8", "mem.read"}, {"mem.readByte", "mem.read"},
+        {"mem.readInt16", "mem.read"}, {"mem.readUInt16", "mem.read"}, {"mem.readUInt32", "mem.read"}, {"mem.readUInt64", "mem.read"},
+        {"mem.readBytes", "mem.read"}, {"mem.readString", "mem.read"},
+        {"mem.writeInt8", "mem.write"}, {"mem.writeUInt8", "mem.write"}, {"mem.writeByte", "mem.write"},
+        {"mem.writeInt16", "mem.write"}, {"mem.writeUInt16", "mem.write"}, {"mem.writeUInt32", "mem.write"}, {"mem.writeUInt64", "mem.write"},
+        {"mem.writeBytes", "mem.write"}, {"mem.writeString", "mem.write"},
+        {"mem.isReadable", "mem.query"}, {"mem.isWritable", "mem.query"},
+
+
         {"mem.protect", "mem.protect"}, {"mem.query", "mem.query"}, {"thread.list", "thread.list"}, {"thread.open", "thread.open"},
         {"thread.suspend", "thread.suspend"}, {"thread.resume", "thread.resume"}, {"thread.context", "debug.registers"}, {"thread.context.set", "thread.context.write"},
         {"window.listByPid", "window.pid"}, {"window.findByPid", "window.pid"}, {"window.message", "window.message"},
@@ -948,6 +1016,25 @@ void runStandardizedTests() {
     std::cout << "\n[Memory] --------------------------------------------\n";
     test("mem.read", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) int val = mem.read(handle, 0x1000)", options);
     test("mem.write", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) mem.write(handle, 0x1000, 42)", options);
+    test("mem.readInt32", "int pid = proc.find(\"notepad\") long handle = proc.open(pid) int val = mem.readInt32(handle, 0x1000)", options);
+    test("mem.readInt64", "int pid = proc.find(\"notepad\") long handle = proc.open(pid) long val = mem.readInt64(handle, 0x1000)", options);
+    test("mem.readFloat", "int pid = proc.find(\"notepad\") long handle = proc.open(pid) float val = mem.readFloat(handle, 0x1000)", options);
+    test("mem.readDouble", "int pid = proc.find(\"notepad\") long handle = proc.open(pid) double val = mem.readDouble(handle, 0x1000)", options);
+    test("mem.readPtr", "int pid = proc.find(\"notepad\") long handle = proc.open(pid) long ptr = mem.readPtr(handle, 0x1000)", options);
+    test("mem.writeInt64", "int pid = proc.find(\"notepad\") long handle = proc.open(pid) mem.writeInt64(handle, 0x1000, 42)", options);
+    test("mem.writeFloat", "int pid = proc.find(\"notepad\") long handle = proc.open(pid) mem.writeFloat(handle, 0x1000, 12.5)", options);
+    test("mem.writeDouble", "int pid = proc.find(\"notepad\") long handle = proc.open(pid) mem.writeDouble(handle, 0x1000, 12.5)", options);
+    test("mem.follow", "int pid = proc.find(\"notepad\") long handle = proc.open(pid) long resolved = mem.follow(handle, 0x1000, [0x20, 0x100])", options);
+    test("mem.small integers", "long h = proc.open(1) int a = mem.readInt8(h, 0x1000) int b = mem.readUInt8(h, 0x1000) int c = mem.readInt16(h, 0x1000) int d = mem.readUInt16(h, 0x1000) long e = mem.readUInt32(h, 0x1000) long f = mem.readUInt64(h, 0x1000)", options);
+    test("mem.small integer writes", "long h = proc.open(1) mem.writeInt8(h, 0x1000, -1) mem.writeUInt8(h, 0x1000, 255) mem.writeInt16(h, 0x1000, -2) mem.writeUInt16(h, 0x1000, 65535) mem.writeUInt32(h, 0x1000, 42) mem.writeUInt64(h, 0x1000, 42)", options);
+    test("mem.readBytes", "long h = proc.open(1) var bytes = mem.readBytes(h, 0x1000, 4)", options);
+    test("mem.writeBytes", "long h = proc.open(1) mem.writeBytes(h, 0x1000, [87, 65, 80, 73])", options);
+    test("mem.readString", "long h = proc.open(1) string text = mem.readString(h, 0x1000, 32, \"utf8\")", options);
+    test("mem.writeString", "long h = proc.open(1) mem.writeString(h, 0x1000, \"hello\", \"utf16le\")", options);
+    test("mem.isReadable", "long h = proc.open(1) bool readable = mem.isReadable(h, 0x1000, 4)", options);
+    test("mem.isWritable", "long h = proc.open(1) bool writable = mem.isWritable(h, 0x1000, 4)", options);
+    testFailure("mem.writeBytes validates byte range", "long h = proc.open(1) mem.writeBytes(h, 0x1000, [256])", options, "outside 0..255");
+    testFailure("mem.writeUInt8 validates range", "long h = proc.open(1) mem.writeUInt8(h, 0x1000, -1)", options, "outside the target integer range");
     test("mem.alloc", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) int addr = mem.alloc(handle, 1024)", options);
     test("mem.free", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) int addr = mem.alloc(handle, 1024) mem.free(handle, addr)", options);
 
@@ -1006,16 +1093,194 @@ void runStandardizedTests() {
 
 }
 
+int errorExitCode(const std::string& message) {
+    if (message.rfind("E_LEX", 0) == 0 || message.rfind("E_PARSE", 0) == 0) return 65;
+    if (message.rfind("E_TYPE", 0) == 0 || message.rfind("E_ARG", 0) == 0) return 66;
+    if (message.rfind("E_PERMISSION", 0) == 0 || message.rfind("E_DIRECTIVE", 0) == 0) return 77;
+    if (message.rfind("E_TIMEOUT", 0) == 0) return 124;
+    return 1;
+}
+
+int executeScriptCommand(
+    const std::string& command,
+    const std::vector<std::string>& sourceArgs,
+    const std::vector<std::string>& optionArgs,
+    bool lintMode
+) {
+    WapiRuntimeOptions options = parseOptions(optionArgs, command == "check");
+    if (options.verbose && options.timeoutMs > 0 && !options.quiet) {
+        std::cout << "[WAPI_INFO] timeout set to " << options.timeoutMs << "ms\n";
+    }
+    if (options.trace && !options.quiet) {
+        std::cout << "[WAPI_TRACE] command=" << command << " sources=" << sourceArgs.size()
+                  << " mode=" << (options.checkOnly ? "check" : "run") << "\n";
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    ResolvedSource resolved = resolveSourceArgumentsWithDirectives(sourceArgs);
+    applyDirectivesToOptions(resolved.directives, options);
+    auto program = parseProgram(resolved.source);
+    if (lintMode) {
+        emitLintWarnings(program, resolved.directives);
+        if (!options.quiet) std::cout << "[WAPI_LINT] Completed without execution\n";
+        return 0;
+    }
+    Evaluator evaluator(options);
+    evaluator.run(program);
+
+    if (options.checkOnly && !options.quiet) {
+        std::cout << "[WAPI_CHECK] Preflight completed without execution side effects\n";
+    }
+    if (options.profile && !options.quiet) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started
+        ).count();
+        std::cout << "[WAPI_PROFILE] elapsedMs=" << elapsed << "\n";
+    }
+    return 0;
+}
+
+bool hasConsoleInput() {
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    return input != INVALID_HANDLE_VALUE && GetConsoleMode(input, &mode) != FALSE;
+}
+
+std::string normalizeDroppedPath(std::string value) {
+    value = trimCopy(value);
+    if (value.size() >= 2 &&
+        ((value.front() == '"' && value.back() == '"') ||
+         (value.front() == '\'' && value.back() == '\''))) {
+        value = value.substr(1, value.size() - 2);
+    }
+    return trimCopy(value);
+}
+
+std::filesystem::path promptForScriptPath() {
+    for (;;) {
+        std::cout << "  Script > ";
+        std::string input;
+        if (!std::getline(std::cin, input)) return {};
+        input = normalizeDroppedPath(std::move(input));
+        const std::string lowered = lowerAsciiCopy(input);
+        if (lowered == "quit" || lowered == "exit" || lowered == "q") return {};
+        if (input.empty()) continue;
+
+        std::error_code ec;
+        std::filesystem::path path(input);
+        if (!std::filesystem::is_regular_file(path, ec)) {
+            std::cout << "  [!] File not found. Drop a complete .wapi path.\n\n";
+            continue;
+        }
+        if (lowerAsciiCopy(path.extension().string()) != ".wapi") {
+            std::cout << "  [!] Wapi terminal only accepts .wapi scripts.\n\n";
+            continue;
+        }
+        return std::filesystem::weakly_canonical(path, ec);
+    }
+}
+
+void pauseInteractiveTerminal() {
+    if (!hasConsoleInput()) return;
+    std::cout << "\n  Press Enter to close...";
+    std::string ignored;
+    std::getline(std::cin, ignored);
+}
+
+int runInteractiveLauncher(std::filesystem::path initialPath = {}) {
+    printBanner();
+    SetConsoleCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
+
+    std::error_code ec;
+    std::filesystem::path scriptPath = std::move(initialPath);
+    if (scriptPath.empty()) scriptPath = promptForScriptPath();
+    if (scriptPath.empty()) return 0;
+    if (!std::filesystem::is_regular_file(scriptPath, ec) ||
+        lowerAsciiCopy(scriptPath.extension().string()) != ".wapi") {
+        std::cout << "  [!] The dropped item is not a readable .wapi script.\n";
+        pauseInteractiveTerminal();
+        return 64;
+    }
+    scriptPath = std::filesystem::weakly_canonical(scriptPath, ec);
+
+    try {
+        ResolvedSource preview = resolveSourceArgumentsWithDirectives({scriptPath.string()});
+        std::vector<std::string> capabilities(
+            preview.directives.capabilities.begin(),
+            preview.directives.capabilities.end()
+        );
+        std::sort(capabilities.begin(), capabilities.end());
+
+        std::cout << "  File         " << scriptPath.string() << "\n";
+        std::cout << "  Mode         "
+                  << (preview.directives.hasMode ? modeToDirectiveString(preview.directives.mode) : "safe")
+                  << "\n";
+        std::cout << "  Capabilities ";
+        if (capabilities.empty()) std::cout << "none";
+        else {
+            for (std::size_t index = 0; index < capabilities.size(); ++index) {
+                if (index != 0) std::cout << ", ";
+                std::cout << capabilities[index];
+            }
+        }
+        std::cout << "\n\n";
+
+        if ((preview.directives.hasMode && preview.directives.mode == WapiMode::Dangerous) ||
+            preview.directives.capabilities.count("inject.manualmap") != 0) {
+            std::cout
+                << "  [!] Dangerous/manual-map scripts require an explicit CLI launch.\n"
+                << "      Wapi.exe run \"" << scriptPath.string()
+                << "\" --mode dangerous --cap inject.manualmap\n";
+            pauseInteractiveTerminal();
+            return 77;
+        }
+
+        std::cout << "  [Enter/R] Run with declared ordinary permissions\n"
+                  << "  [C]       Check only\n"
+                  << "  [Q]       Cancel\n"
+                  << "  Choice > ";
+        std::string choice;
+        std::getline(std::cin, choice);
+        choice = lowerAsciiCopy(trimCopy(choice));
+        if (choice == "q" || choice == "quit") return 0;
+
+        const std::string command = choice == "c" || choice == "check" ? "check" : "run";
+        const int result = executeScriptCommand(
+            command,
+            {scriptPath.string()},
+            {"--trust-script-directives"},
+            false
+        );
+        std::cout << "\n  [OK] Script " << (command == "check" ? "check" : "run") << " completed.\n";
+        pauseInteractiveTerminal();
+        return result;
+    } catch (const std::exception& error) {
+        std::cerr << "\n  [ERROR] " << error.what() << "\n";
+        pauseInteractiveTerminal();
+        return errorExitCode(error.what());
+    }
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
     try {
         if (argc < 2) {
+            if (hasConsoleInput()) return runInteractiveLauncher();
             printUsage();
             return 64;
         }
 
         std::string command = argv[1];
+        if (argc == 2) {
+            std::error_code ec;
+            const std::filesystem::path droppedScript(command);
+            if (std::filesystem::is_regular_file(droppedScript, ec) &&
+                lowerAsciiCopy(droppedScript.extension().string()) == ".wapi") {
+                return runInteractiveLauncher(droppedScript);
+            }
+        }
 
         if (command == "--version" || command == "-v") {
             std::cout << "wapi 0.2\n";
@@ -1133,43 +1398,11 @@ int main(int argc, char* argv[]) {
 
         if (sourceArgs.empty()) throw std::runtime_error("Missing script source or file argument");
 
-        WapiRuntimeOptions options = parseOptions(optionArgs, command == "check");
-        if (options.verbose && options.timeoutMs > 0 && !options.quiet) {
-            std::cout << "[WAPI_INFO] timeout set to " << options.timeoutMs << "ms\n";
-        }
-        if (options.trace && !options.quiet) {
-            std::cout << "[WAPI_TRACE] command=" << command << " sources=" << sourceArgs.size() << " mode=" << (options.checkOnly ? "check" : "run") << "\n";
-        }
-
-        const auto started = std::chrono::steady_clock::now();
-        ResolvedSource resolved = resolveSourceArgumentsWithDirectives(sourceArgs);
-        applyDirectivesToOptions(resolved.directives, options);
-        auto program = parseProgram(resolved.source);
-        if (lintMode) {
-            emitLintWarnings(program, resolved.directives);
-            if (!options.quiet) std::cout << "[WAPI_LINT] Completed without execution\n";
-            return 0;
-        }
-        Evaluator evaluator(options);
-        evaluator.run(program);
-
-        if (options.checkOnly && !options.quiet) {
-            std::cout << "[WAPI_CHECK] Preflight completed without execution side effects\n";
-        }
-        if (options.profile && !options.quiet) {
-            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
-            std::cout << "[WAPI_PROFILE] elapsedMs=" << elapsed << "\n";
-        }
-
-        return 0;
+        return executeScriptCommand(command, sourceArgs, optionArgs, lintMode);
     }
     catch (const std::exception& e) {
         const std::string message = e.what();
         std::cerr << "Wapi error: " << message << "\n";
-        if (message.rfind("E_LEX", 0) == 0 || message.rfind("E_PARSE", 0) == 0) return 65;
-        if (message.rfind("E_TYPE", 0) == 0 || message.rfind("E_ARG", 0) == 0) return 66;
-        if (message.rfind("E_PERMISSION", 0) == 0) return 77;
-        if (message.rfind("E_TIMEOUT", 0) == 0) return 124;
-        return 1;
+        return errorExitCode(message);
     }
 }

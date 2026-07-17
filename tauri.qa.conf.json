@@ -1,6 +1,0 @@
-{
-  "build": {
-    "beforeDevCommand": "npm run dev:web -- --port 5174 --strictPort",
-    "devUrl": "http://127.0.0.1:5174"
-  }
-}

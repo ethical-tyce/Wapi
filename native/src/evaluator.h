@@ -101,6 +101,7 @@ private:
     std::string asString(const std::shared_ptr<ASTNode>& node, const std::string& functionName, int argIndex);
     int asInt(const std::shared_ptr<ASTNode>& node, const std::string& functionName, int argIndex);
     long long asLongLong(const std::shared_ptr<ASTNode>& node, const std::string& functionName, int argIndex);
+    double asDouble(const std::shared_ptr<ASTNode>& node, const std::string& functionName, int argIndex);
 
     void* requireTrackedHandle(long long handleValue, const std::string& functionName);
     void cleanupTrackedResources() noexcept;
@@ -119,6 +120,23 @@ private:
     WapiValue wapi_readMemory(long long handle, long long address);
     WapiValue wapi_scanPattern(long long handle, long long startAddress, long long size, const std::string& pattern);
     WapiValue wapi_writeMemory(long long handle, long long address, int value);
+    WapiValue wapi_readInt64(long long handle, long long address);
+    WapiValue wapi_readFloat(long long handle, long long address);
+    WapiValue wapi_readDouble(long long handle, long long address);
+    WapiValue wapi_readPointer(long long handle, long long address);
+    WapiValue wapi_writeInt64(long long handle, long long address, long long value);
+    WapiValue wapi_writeFloat(long long handle, long long address, double value);
+    WapiValue wapi_writeDouble(long long handle, long long address, double value);
+    WapiValue wapi_writePointer(long long handle, long long address, long long value);
+    WapiValue wapi_followPointer(long long handle, long long baseAddress, const WapiArrayPtr& offsets);
+    WapiValue wapi_readInteger(long long handle, long long address, int bits, bool signedValue, const std::string& functionName);
+    WapiValue wapi_writeInteger(long long handle, long long address, long long value, int bits, bool signedValue, const std::string& functionName);
+    WapiValue wapi_readBytes(long long handle, long long address, int count);
+    WapiValue wapi_writeBytes(long long handle, long long address, const WapiArrayPtr& bytes);
+    WapiValue wapi_readString(long long handle, long long address, int maxLength, const std::string& encoding);
+    WapiValue wapi_writeString(long long handle, long long address, const std::string& value, const std::string& encoding);
+    WapiValue wapi_isMemoryReadable(long long handle, long long address, int size);
+    WapiValue wapi_isMemoryWritable(long long handle, long long address, int size);
     WapiValue wapi_allocMemory(long long handle, int size);
     WapiValue wapi_freeMemory(long long handle, long long address);
     WapiValue wapi_protectMemory(long long handle, long long address, int size, int protection);

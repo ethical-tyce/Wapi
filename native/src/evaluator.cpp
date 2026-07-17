@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cctype>
 #include <optional>
 #include <cwctype>
@@ -123,6 +124,181 @@ std::string wideToUtf8(const std::wstring& value) {
         nullptr
     );
     return result;
+}
+
+template <typename T>
+T readRemoteScalar(HANDLE process, long long address, const std::string& functionName) {
+    T value{};
+    SIZE_T bytesRead = 0;
+    const BOOL success = ReadProcessMemory(
+        process,
+        reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(address)),
+        &value,
+        sizeof(value),
+        &bytesRead
+    );
+    if (!success || bytesRead != sizeof(value)) {
+        throw WapiUnstableException(functionName + " failed to read a complete value");
+    }
+    return value;
+}
+
+template <typename T>
+void writeRemoteScalar(HANDLE process, long long address, const T& value, const std::string& functionName) {
+    SIZE_T bytesWritten = 0;
+    const BOOL success = WriteProcessMemory(
+        process,
+        reinterpret_cast<LPVOID>(static_cast<uintptr_t>(address)),
+        &value,
+        sizeof(value),
+        &bytesWritten
+    );
+    if (!success || bytesWritten != sizeof(value)) {
+        throw WapiUnstableException(functionName + " failed to write a complete value");
+    }
+}
+
+std::size_t targetPointerSize(HANDLE process) {
+    using IsWow64Process2Fn = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    auto isWow64Process2 = kernel32
+        ? reinterpret_cast<IsWow64Process2Fn>(GetProcAddress(kernel32, "IsWow64Process2"))
+        : nullptr;
+    if (isWow64Process2) {
+        USHORT processMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+        USHORT nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+        if (isWow64Process2(process, &processMachine, &nativeMachine)) {
+            if (processMachine == IMAGE_FILE_MACHINE_I386) return sizeof(std::uint32_t);
+            if (processMachine == IMAGE_FILE_MACHINE_AMD64 || processMachine == IMAGE_FILE_MACHINE_ARM64) {
+                return sizeof(std::uint64_t);
+            }
+            if (processMachine == IMAGE_FILE_MACHINE_UNKNOWN) {
+                return nativeMachine == IMAGE_FILE_MACHINE_I386
+                    ? sizeof(std::uint32_t)
+                    : sizeof(std::uint64_t);
+            }
+        }
+    }
+    BOOL isWow64 = FALSE;
+    if (IsWow64Process(process, &isWow64) && isWow64) return sizeof(std::uint32_t);
+    return sizeof(uintptr_t);
+}
+
+long long checkedAddressAdd(long long base, long long offset, const std::string& functionName) {
+    if (base <= 0) throw WapiUnstableException(functionName + " received an invalid base address");
+    if (offset >= 0) {
+        if (base > (std::numeric_limits<long long>::max)() - offset) {
+            throw WapiUnstableException(functionName + " address overflow");
+        }
+        return base + offset;
+    }
+    const std::uint64_t magnitude = static_cast<std::uint64_t>(-(offset + 1)) + 1;
+    if (magnitude >= static_cast<std::uint64_t>(base)) {
+        throw WapiUnstableException(functionName + " address underflow");
+    }
+    return base - static_cast<long long>(magnitude);
+}
+
+void readRemoteBuffer(HANDLE process, long long address, void* buffer, std::size_t size, const std::string& functionName) {
+    SIZE_T bytesRead = 0;
+    const BOOL success = ReadProcessMemory(
+        process,
+        reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(address)),
+        buffer,
+        size,
+        &bytesRead
+    );
+    if (!success || bytesRead != size) {
+        throw WapiUnstableException(functionName + " failed to read the complete buffer");
+    }
+}
+
+void writeRemoteBuffer(HANDLE process, long long address, const void* buffer, std::size_t size, const std::string& functionName) {
+    SIZE_T bytesWritten = 0;
+    const BOOL success = WriteProcessMemory(
+        process,
+        reinterpret_cast<LPVOID>(static_cast<uintptr_t>(address)),
+        buffer,
+        size,
+        &bytesWritten
+    );
+    if (!success || bytesWritten != size) {
+        throw WapiUnstableException(functionName + " failed to write the complete buffer");
+    }
+}
+
+std::wstring utf8ToWide(const std::string& value, const std::string& functionName) {
+    if (value.empty()) return L"";
+    const int length = MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        value.data(),
+        static_cast<int>(value.size()),
+        nullptr,
+        0
+    );
+    if (length <= 0) throw WapiUnstableException(functionName + " received invalid UTF-8");
+    std::wstring result(static_cast<std::size_t>(length), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8,
+            MB_ERR_INVALID_CHARS,
+            value.data(),
+            static_cast<int>(value.size()),
+            result.data(),
+            length) != length) {
+        throw WapiUnstableException(functionName + " failed to convert UTF-8");
+    }
+    return result;
+}
+
+std::string normalizeMemoryEncoding(std::string encoding, const std::string& functionName) {
+    encoding = toLowerAscii(trimAscii(std::move(encoding)));
+    if (encoding == "ascii") return "ascii";
+    if (encoding == "utf8" || encoding == "utf-8") return "utf8";
+    if (encoding == "utf16" || encoding == "utf-16" ||
+        encoding == "utf16le" || encoding == "utf-16le" || encoding == "unicode") {
+        return "utf16le";
+    }
+    throw WapiUnstableException(functionName + " encoding must be ascii, utf8, or utf16le");
+}
+
+bool protectionAllowsRead(DWORD protection) {
+    if ((protection & PAGE_GUARD) != 0 || (protection & PAGE_NOACCESS) != 0) return false;
+    const DWORD base = protection & 0xFF;
+    return base == PAGE_READONLY || base == PAGE_READWRITE || base == PAGE_WRITECOPY ||
+        base == PAGE_EXECUTE_READ || base == PAGE_EXECUTE_READWRITE || base == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool protectionAllowsWrite(DWORD protection) {
+    if ((protection & PAGE_GUARD) != 0 || (protection & PAGE_NOACCESS) != 0) return false;
+    const DWORD base = protection & 0xFF;
+    return base == PAGE_READWRITE || base == PAGE_WRITECOPY ||
+        base == PAGE_EXECUTE_READWRITE || base == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool isRemoteRangeAccessible(HANDLE process, long long address, int size, bool writable) {
+    if (address <= 0 || size <= 0) return false;
+    const std::uint64_t start = static_cast<std::uint64_t>(address);
+    const std::uint64_t length = static_cast<std::uint64_t>(size);
+    if (start > (std::numeric_limits<std::uint64_t>::max)() - length) return false;
+    const std::uint64_t end = start + length;
+    std::uint64_t current = start;
+
+    while (current < end) {
+        MEMORY_BASIC_INFORMATION region{};
+        if (VirtualQueryEx(
+                process,
+                reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(current)),
+                &region,
+                sizeof(region)) == 0) return false;
+        const std::uint64_t regionStart = reinterpret_cast<std::uint64_t>(region.BaseAddress);
+        if (region.RegionSize > (std::numeric_limits<std::uint64_t>::max)() - regionStart) return false;
+        const std::uint64_t regionEnd = regionStart + region.RegionSize;
+        const bool allowed = writable ? protectionAllowsWrite(region.Protect) : protectionAllowsRead(region.Protect);
+        if (region.State != MEM_COMMIT || !allowed || current < regionStart || regionEnd <= current) return false;
+        current = (std::min)(end, regionEnd);
+    }
+    return true;
 }
 
 } // namespace
@@ -739,6 +915,14 @@ long long Evaluator::asLongLong(const std::shared_ptr<ASTNode>& node, const std:
     if (auto pInt = std::get_if<int>(&v)) return static_cast<long long>(*pInt);
     throwArgType(functionName, argIndex, "long|int");
 }
+double Evaluator::asDouble(const std::shared_ptr<ASTNode>& node, const std::string& functionName, int argIndex) {
+    WapiValue value = evalNode(node);
+    if (auto p = std::get_if<double>(&value)) return *p;
+    if (auto p = std::get_if<long long>(&value)) return static_cast<double>(*p);
+    if (auto p = std::get_if<int>(&value)) return static_cast<double>(*p);
+    throwArgType(functionName, argIndex, "double|long|int");
+}
+
 
 void* Evaluator::requireTrackedHandle(long long handleValue, const std::string& functionName) {
     if (handleValue == 0) {
@@ -1024,6 +1208,202 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
             }}
         },
         {
+            "readInt8",
+            {2, "mem.read", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_readInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), 8, true, "readInt8");
+            }}
+        },
+        {
+            "readUInt8",
+            {2, "mem.read", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_readInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), 8, false, "readUInt8");
+            }}
+        },
+        {
+            "readInt16",
+            {2, "mem.read", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_readInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), 16, true, "readInt16");
+            }}
+        },
+        {
+            "readUInt16",
+            {2, "mem.read", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_readInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), 16, false, "readUInt16");
+            }}
+        },
+        {
+            "readUInt32",
+            {2, "mem.read", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_readInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), 32, false, "readUInt32");
+            }}
+        },
+        {
+            "readUInt64",
+            {2, "mem.read", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_readInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), 64, false, "readUInt64");
+            }}
+        },
+        {
+            "writeInt8",
+            {3, "mem.write", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_writeInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asLongLong(c->args[2], c->name, 2), 8, true, "writeInt8");
+            }}
+        },
+        {
+            "writeUInt8",
+            {3, "mem.write", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_writeInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asLongLong(c->args[2], c->name, 2), 8, false, "writeUInt8");
+            }}
+        },
+        {
+            "writeInt16",
+            {3, "mem.write", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_writeInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asLongLong(c->args[2], c->name, 2), 16, true, "writeInt16");
+            }}
+        },
+        {
+            "writeUInt16",
+            {3, "mem.write", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_writeInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asLongLong(c->args[2], c->name, 2), 16, false, "writeUInt16");
+            }}
+        },
+        {
+            "writeUInt32",
+            {3, "mem.write", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_writeInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asLongLong(c->args[2], c->name, 2), 32, false, "writeUInt32");
+            }}
+        },
+        {
+            "writeUInt64",
+            {3, "mem.write", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_writeInteger(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asLongLong(c->args[2], c->name, 2), 64, false, "writeUInt64");
+            }}
+        },
+        {
+            "readBytes",
+            {3, "mem.read", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_readBytes(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asInt(c->args[2], c->name, 2));
+            }}
+        },
+        {
+            "writeBytes",
+            {3, "mem.write", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                WapiValue bytes = e.evalNode(c->args[2]);
+                return e.wapi_writeBytes(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asArrayValue(bytes, c->name + " arg=2"));
+            }}
+        },
+        {
+            "readString",
+            {4, "mem.read", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_readString(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asInt(c->args[2], c->name, 2), e.asString(c->args[3], c->name, 3));
+            }}
+        },
+        {
+            "writeString",
+            {4, "mem.write", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_writeString(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asString(c->args[2], c->name, 2), e.asString(c->args[3], c->name, 3));
+            }}
+        },
+        {
+            "isMemoryReadable",
+            {3, "mem.query", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_isMemoryReadable(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asInt(c->args[2], c->name, 2));
+            }}
+        },
+        {
+            "isMemoryWritable",
+            {3, "mem.query", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_isMemoryWritable(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1), e.asInt(c->args[2], c->name, 2));
+            }}
+        },
+        {
+            "readInt64",
+            {2, "mem.read", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_readInt64(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
+            "readFloat",
+            {2, "mem.read", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_readFloat(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
+            "readDouble",
+            {2, "mem.read", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_readDouble(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
+            "readPointer",
+            {2, "mem.read", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_readPointer(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
+            "writeInt64",
+            {3, "mem.write", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_writeInt64(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1),
+                    evaluator.asLongLong(call->args[2], call->name, 2)
+                );
+            }}
+        },
+        {
+            "writeFloat",
+            {3, "mem.write", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_writeFloat(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1),
+                    evaluator.asDouble(call->args[2], call->name, 2)
+                );
+            }}
+        },
+        {
+            "writeDouble",
+            {3, "mem.write", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_writeDouble(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1),
+                    evaluator.asDouble(call->args[2], call->name, 2)
+                );
+            }}
+        },
+        {
+            "writePointer",
+            {3, "mem.write", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_writePointer(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1),
+                    evaluator.asLongLong(call->args[2], call->name, 2)
+                );
+            }}
+        },
+        {
+            "followPointer",
+            {3, "mem.read", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                WapiValue offsets = evaluator.evalNode(call->args[2]);
+                return evaluator.wapi_followPointer(
+                    evaluator.asLongLong(call->args[0], call->name, 0),
+                    evaluator.asLongLong(call->args[1], call->name, 1),
+                    evaluator.asArrayValue(offsets, call->name + " arg=2")
+                );
+            }}
+        },
+        {
             "scanPattern",
             {4, "mem.read", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
                 return evaluator.wapi_scanPattern(
@@ -1273,9 +1653,44 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         {"mem.scan", "scanPattern"},
         {"mem.write", "writeMemory"},
         {"mem.alloc", "allocMemory"},
+        {"mem.readInt32", "readMemory"},
+        {"mem.readInt64", "readInt64"},
+        {"mem.readFloat", "readFloat"},
+        {"mem.readDouble", "readDouble"},
+        {"mem.readPtr", "readPointer"},
+        {"readPtr", "readPointer"},
+        {"mem.readInt8", "readInt8"},
+        {"mem.readUInt8", "readUInt8"},
+        {"mem.readInt16", "readInt16"},
+        {"mem.readUInt16", "readUInt16"},
+        {"mem.readUInt32", "readUInt32"},
+        {"mem.readUInt64", "readUInt64"},
+        {"mem.writeInt8", "writeInt8"},
+        {"mem.writeUInt8", "writeUInt8"},
+        {"mem.writeInt16", "writeInt16"},
+        {"mem.writeUInt16", "writeUInt16"},
+        {"mem.writeUInt32", "writeUInt32"},
+        {"mem.writeUInt64", "writeUInt64"},
+        {"mem.readBytes", "readBytes"},
+        {"mem.writeBytes", "writeBytes"},
+        {"mem.readString", "readString"},
+        {"mem.writeString", "writeString"},
+        {"mem.isReadable", "isMemoryReadable"},
+        {"mem.isWritable", "isMemoryWritable"},
+        {"readByte", "readUInt8"},
+        {"writeByte", "writeUInt8"},
+        {"mem.readByte", "readUInt8"},
+        {"mem.writeByte", "writeUInt8"},
         {"mem.free", "freeMemory"},
         {"window.find", "findWindow"},
         {"inject.dll", "injectDLL"},
+        {"mem.writeInt32", "writeMemory"},
+        {"mem.writeInt64", "writeInt64"},
+        {"mem.writeFloat", "writeFloat"},
+        {"mem.writeDouble", "writeDouble"},
+        {"mem.writePtr", "writePointer"},
+        {"writePtr", "writePointer"},
+        {"mem.follow", "followPointer"},
         {"inject.loadLibrary", "injectDLL"},
         {"inject.manualMap", "manualMapDLL"},
         {"inject.manualmap", "manualMapDLL"},
@@ -1428,6 +1843,316 @@ WapiValue Evaluator::wapi_readMemory(long long handle, long long address) {
     return buffer;
 }
 
+WapiValue Evaluator::wapi_readInteger(
+    long long handle,
+    long long address,
+    int bits,
+    bool signedValue,
+    const std::string& functionName
+) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, functionName));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (options.checkOnly) {
+        emitAudit(functionName, "mem.read", "allow", "checkOnly no side-effects");
+        return bits <= 16 ? WapiValue(0) : WapiValue(static_cast<long long>(0));
+    }
+
+    if (bits == 8 && signedValue) return static_cast<int>(readRemoteScalar<std::int8_t>(process, address, functionName));
+    if (bits == 8) return static_cast<int>(readRemoteScalar<std::uint8_t>(process, address, functionName));
+    if (bits == 16 && signedValue) return static_cast<int>(readRemoteScalar<std::int16_t>(process, address, functionName));
+    if (bits == 16) return static_cast<int>(readRemoteScalar<std::uint16_t>(process, address, functionName));
+    if (bits == 32 && signedValue) return static_cast<int>(readRemoteScalar<std::int32_t>(process, address, functionName));
+    if (bits == 32) return static_cast<long long>(readRemoteScalar<std::uint32_t>(process, address, functionName));
+    if (bits == 64 && signedValue) return static_cast<long long>(readRemoteScalar<std::int64_t>(process, address, functionName));
+    if (bits == 64) {
+        const std::uint64_t value = readRemoteScalar<std::uint64_t>(process, address, functionName);
+        if (value > static_cast<std::uint64_t>((std::numeric_limits<long long>::max)())) {
+            throw WapiUnstableException(functionName + " value exceeds Wapi's signed long range");
+        }
+        return static_cast<long long>(value);
+    }
+    throw WapiUnstableException(functionName + " has an unsupported integer width");
+}
+
+WapiValue Evaluator::wapi_writeInteger(
+    long long handle,
+    long long address,
+    long long value,
+    int bits,
+    bool signedValue,
+    const std::string& functionName
+) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, functionName));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+
+    auto requireSignedRange = [&](long long minimum, long long maximum) {
+        if (value < minimum || value > maximum) {
+            throw WapiUnstableException(functionName + " value is outside the target integer range");
+        }
+    };
+    auto requireUnsignedRange = [&](unsigned long long maximum) {
+        if (value < 0 || static_cast<unsigned long long>(value) > maximum) {
+            throw WapiUnstableException(functionName + " value is outside the target integer range");
+        }
+    };
+    if (signedValue) {
+        if (bits == 8) requireSignedRange((std::numeric_limits<std::int8_t>::min)(), (std::numeric_limits<std::int8_t>::max)());
+        else if (bits == 16) requireSignedRange((std::numeric_limits<std::int16_t>::min)(), (std::numeric_limits<std::int16_t>::max)());
+        else if (bits == 32) requireSignedRange((std::numeric_limits<std::int32_t>::min)(), (std::numeric_limits<std::int32_t>::max)());
+        else if (bits != 64) throw WapiUnstableException(functionName + " has an unsupported integer width");
+    } else {
+        if (bits == 8) requireUnsignedRange((std::numeric_limits<std::uint8_t>::max)());
+        else if (bits == 16) requireUnsignedRange((std::numeric_limits<std::uint16_t>::max)());
+        else if (bits == 32) requireUnsignedRange((std::numeric_limits<std::uint32_t>::max)());
+        else if (bits == 64) requireUnsignedRange((std::numeric_limits<unsigned long long>::max)());
+        else if (bits != 64) throw WapiUnstableException(functionName + " has an unsupported integer width");
+    }
+
+    if (options.checkOnly) {
+        emitAudit(functionName, "mem.write", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+    if (bits == 8 && signedValue) writeRemoteScalar(process, address, static_cast<std::int8_t>(value), functionName);
+    else if (bits == 8) writeRemoteScalar(process, address, static_cast<std::uint8_t>(value), functionName);
+    else if (bits == 16 && signedValue) writeRemoteScalar(process, address, static_cast<std::int16_t>(value), functionName);
+    else if (bits == 16) writeRemoteScalar(process, address, static_cast<std::uint16_t>(value), functionName);
+    else if (bits == 32 && signedValue) writeRemoteScalar(process, address, static_cast<std::int32_t>(value), functionName);
+    else if (bits == 32) writeRemoteScalar(process, address, static_cast<std::uint32_t>(value), functionName);
+    else if (signedValue) writeRemoteScalar(process, address, static_cast<std::int64_t>(value), functionName);
+    else writeRemoteScalar(process, address, static_cast<std::uint64_t>(value), functionName);
+    return 0;
+}
+
+WapiValue Evaluator::wapi_readBytes(long long handle, long long address, int count) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "readBytes"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (count <= 0 || count > 1024 * 1024) {
+        throw WapiUnstableException("readBytes count must be between 1 and 1048576");
+    }
+    auto result = std::make_shared<WapiArray>();
+    if (options.checkOnly) {
+        emitAudit("readBytes", "mem.read", "allow", "checkOnly no side-effects");
+        return result;
+    }
+    std::vector<std::uint8_t> buffer(static_cast<std::size_t>(count));
+    readRemoteBuffer(process, address, buffer.data(), buffer.size(), "readBytes");
+    result->values.reserve(buffer.size());
+    for (std::uint8_t byte : buffer) result->values.emplace_back(static_cast<int>(byte));
+    return result;
+}
+
+WapiValue Evaluator::wapi_writeBytes(long long handle, long long address, const WapiArrayPtr& bytes) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "writeBytes"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (!bytes || bytes->values.empty() || bytes->values.size() > 1024 * 1024) {
+        throw WapiUnstableException("writeBytes requires between 1 and 1048576 bytes");
+    }
+    std::vector<std::uint8_t> buffer;
+    buffer.reserve(bytes->values.size());
+    for (std::size_t index = 0; index < bytes->values.size(); ++index) {
+        const WapiValue& item = bytes->values[index];
+        long long value = 0;
+        if (auto p = std::get_if<int>(&item)) value = *p;
+        else if (auto p = std::get_if<long long>(&item)) value = *p;
+        else throw std::runtime_error("E_ARG_TYPE:writeBytes arg=2 index=" + std::to_string(index) + " expected=int|long");
+        if (value < 0 || value > 255) {
+            throw WapiUnstableException("writeBytes item " + std::to_string(index) + " is outside 0..255");
+        }
+        buffer.push_back(static_cast<std::uint8_t>(value));
+    }
+    if (options.checkOnly) {
+        emitAudit("writeBytes", "mem.write", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+    writeRemoteBuffer(process, address, buffer.data(), buffer.size(), "writeBytes");
+    return 0;
+}
+
+WapiValue Evaluator::wapi_readString(long long handle, long long address, int maxLength, const std::string& encoding) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "readString"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (maxLength <= 0 || maxLength > 1024 * 1024) {
+        throw WapiUnstableException("readString maxLength must be between 1 and 1048576");
+    }
+    const std::string normalized = normalizeMemoryEncoding(encoding, "readString");
+    if (options.checkOnly) {
+        emitAudit("readString", "mem.read", "allow", "checkOnly no side-effects");
+        return std::string();
+    }
+
+    if (normalized == "utf16le") {
+        std::wstring value;
+        value.reserve(static_cast<std::size_t>(maxLength));
+        for (int index = 0; index < maxLength; ++index) {
+            const long long current = checkedAddressAdd(address, static_cast<long long>(index) * 2, "readString");
+            const std::uint16_t unit = readRemoteScalar<std::uint16_t>(process, current, "readString");
+            if (unit == 0) break;
+            value.push_back(static_cast<wchar_t>(unit));
+        }
+        return wideToUtf8(value);
+    }
+
+    std::string value;
+    value.reserve(static_cast<std::size_t>(maxLength));
+    for (int index = 0; index < maxLength; ++index) {
+        const long long current = checkedAddressAdd(address, index, "readString");
+        const std::uint8_t byte = readRemoteScalar<std::uint8_t>(process, current, "readString");
+        if (byte == 0) break;
+        if (normalized == "ascii" && byte > 0x7F) {
+            throw WapiUnstableException("readString encountered a non-ASCII byte");
+        }
+        value.push_back(static_cast<char>(byte));
+    }
+    if (normalized == "utf8") (void)utf8ToWide(value, "readString");
+    return value;
+}
+
+WapiValue Evaluator::wapi_writeString(long long handle, long long address, const std::string& value, const std::string& encoding) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "writeString"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    const std::string normalized = normalizeMemoryEncoding(encoding, "writeString");
+    std::vector<std::uint8_t> buffer;
+    if (normalized == "utf16le") {
+        const std::wstring wide = utf8ToWide(value, "writeString");
+        if (wide.size() > (1024 * 1024 - 2) / 2) throw WapiUnstableException("writeString value is too large");
+        buffer.resize((wide.size() + 1) * sizeof(std::uint16_t), 0);
+        for (std::size_t index = 0; index < wide.size(); ++index) {
+            const std::uint16_t unit = static_cast<std::uint16_t>(wide[index]);
+            buffer[index * 2] = static_cast<std::uint8_t>(unit & 0xFF);
+            buffer[index * 2 + 1] = static_cast<std::uint8_t>(unit >> 8);
+        }
+    } else {
+        if (value.size() >= 1024 * 1024) throw WapiUnstableException("writeString value is too large");
+        if (normalized == "ascii" &&
+            std::any_of(value.begin(), value.end(), [](unsigned char byte) { return byte > 0x7F; })) {
+            throw WapiUnstableException("writeString ASCII value contains non-ASCII characters");
+        }
+        if (normalized == "utf8") (void)utf8ToWide(value, "writeString");
+        buffer.assign(value.begin(), value.end());
+        buffer.push_back(0);
+    }
+    if (options.checkOnly) {
+        emitAudit("writeString", "mem.write", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+    writeRemoteBuffer(process, address, buffer.data(), buffer.size(), "writeString");
+    return 0;
+}
+
+WapiValue Evaluator::wapi_isMemoryReadable(long long handle, long long address, int size) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "isMemoryReadable"));
+    if (address <= 0 || size <= 0) {
+        throw WapiUnstableException("Invalid memory range");
+    }
+    if (options.checkOnly) {
+        emitAudit("isMemoryReadable", "mem.query", "allow", "checkOnly no side-effects");
+        return true;
+    }
+    return isRemoteRangeAccessible(process, address, size, false);
+}
+
+WapiValue Evaluator::wapi_isMemoryWritable(long long handle, long long address, int size) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "isMemoryWritable"));
+    if (address <= 0 || size <= 0) {
+        throw WapiUnstableException("Invalid memory range");
+    }
+    if (options.checkOnly) {
+        emitAudit("isMemoryWritable", "mem.query", "allow", "checkOnly no side-effects");
+        return true;
+    }
+    return isRemoteRangeAccessible(process, address, size, true);
+}
+
+WapiValue Evaluator::wapi_readInt64(long long handle, long long address) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "readInt64"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (options.checkOnly) {
+        emitAudit("readInt64", "mem.read", "allow", "checkOnly no side-effects");
+        return static_cast<long long>(0);
+    }
+    return static_cast<long long>(readRemoteScalar<std::int64_t>(process, address, "readInt64"));
+}
+
+WapiValue Evaluator::wapi_readFloat(long long handle, long long address) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "readFloat"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (options.checkOnly) {
+        emitAudit("readFloat", "mem.read", "allow", "checkOnly no side-effects");
+        return 0.0;
+    }
+    return static_cast<double>(readRemoteScalar<float>(process, address, "readFloat"));
+}
+
+WapiValue Evaluator::wapi_readDouble(long long handle, long long address) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "readDouble"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (options.checkOnly) {
+        emitAudit("readDouble", "mem.read", "allow", "checkOnly no side-effects");
+        return 0.0;
+    }
+    return readRemoteScalar<double>(process, address, "readDouble");
+}
+
+WapiValue Evaluator::wapi_readPointer(long long handle, long long address) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "readPointer"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (options.checkOnly) {
+        emitAudit("readPointer", "mem.read", "allow", "checkOnly no side-effects");
+        return static_cast<long long>(0);
+    }
+    const std::uint64_t value = targetPointerSize(process) == sizeof(std::uint32_t)
+        ? static_cast<std::uint64_t>(readRemoteScalar<std::uint32_t>(process, address, "readPointer"))
+        : readRemoteScalar<std::uint64_t>(process, address, "readPointer");
+    if (value > static_cast<std::uint64_t>((std::numeric_limits<long long>::max)())) {
+        throw WapiUnstableException("readPointer returned an address outside Wapi's signed address range");
+    }
+    return static_cast<long long>(value);
+}
+
+WapiValue Evaluator::wapi_followPointer(long long handle, long long baseAddress, const WapiArrayPtr& offsets) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "followPointer"));
+    if (baseAddress <= 0) throw WapiUnstableException("Invalid base address");
+    if (!offsets || offsets->values.empty() || offsets->values.size() > 32) {
+        throw WapiUnstableException("followPointer requires between 1 and 32 offsets");
+    }
+
+    std::vector<long long> validatedOffsets;
+    validatedOffsets.reserve(offsets->values.size());
+    for (std::size_t index = 0; index < offsets->values.size(); ++index) {
+        const WapiValue& offset = offsets->values[index];
+        if (auto p = std::get_if<int>(&offset)) {
+            validatedOffsets.push_back(static_cast<long long>(*p));
+        } else if (auto p = std::get_if<long long>(&offset)) {
+            validatedOffsets.push_back(*p);
+        } else {
+            throw std::runtime_error(
+                "E_ARG_TYPE:followPointer arg=2 offset=" + std::to_string(index) + " expected=long|int"
+            );
+        }
+    }
+
+    if (options.checkOnly) {
+        emitAudit("followPointer", "mem.read", "allow", "checkOnly no side-effects");
+        return static_cast<long long>(0);
+    }
+
+    long long current = baseAddress;
+    const std::size_t pointerSize = targetPointerSize(process);
+    for (long long offset : validatedOffsets) {
+        enforceTimeout();
+        const std::uint64_t rawPointer = pointerSize == sizeof(std::uint32_t)
+            ? static_cast<std::uint64_t>(readRemoteScalar<std::uint32_t>(process, current, "followPointer"))
+            : readRemoteScalar<std::uint64_t>(process, current, "followPointer");
+        if (rawPointer == 0) throw WapiUnstableException("followPointer encountered a null pointer");
+        if (rawPointer > static_cast<std::uint64_t>((std::numeric_limits<long long>::max)())) {
+            throw WapiUnstableException("followPointer encountered an address outside Wapi's signed address range");
+        }
+        current = checkedAddressAdd(static_cast<long long>(rawPointer), offset, "followPointer");
+    }
+    emitAudit("followPointer", "mem.read", "success", "resolved address " + std::to_string(current));
+    return current;
+}
+
 WapiValue Evaluator::wapi_scanPattern(long long handle, long long startAddress, long long size, const std::string& patternText) {
     HANDLE hProcess = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "scanPattern"));
     if (startAddress <= 0 || size <= 0) throw WapiUnstableException("Invalid scan range");
@@ -1552,6 +2277,64 @@ WapiValue Evaluator::wapi_allocMemory(long long handle, int size) {
     trackedAllocations[handle].insert(trackedAddress);
     std::cout << "Allocated " << size << " bytes\n";
     return trackedAddress;
+}
+
+WapiValue Evaluator::wapi_writeInt64(long long handle, long long address, long long value) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "writeInt64"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (options.checkOnly) {
+        emitAudit("writeInt64", "mem.write", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+    writeRemoteScalar(process, address, static_cast<std::int64_t>(value), "writeInt64");
+    return 0;
+}
+
+WapiValue Evaluator::wapi_writeFloat(long long handle, long long address, double value) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "writeFloat"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (!std::isfinite(value) || std::abs(value) > (std::numeric_limits<float>::max)()) {
+        throw WapiUnstableException("writeFloat value is outside the finite float range");
+    }
+    if (options.checkOnly) {
+        emitAudit("writeFloat", "mem.write", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+    writeRemoteScalar(process, address, static_cast<float>(value), "writeFloat");
+    return 0;
+}
+
+WapiValue Evaluator::wapi_writeDouble(long long handle, long long address, double value) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "writeDouble"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (!std::isfinite(value)) throw WapiUnstableException("writeDouble value must be finite");
+    if (options.checkOnly) {
+        emitAudit("writeDouble", "mem.write", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+    writeRemoteScalar(process, address, value, "writeDouble");
+    return 0;
+}
+
+WapiValue Evaluator::wapi_writePointer(long long handle, long long address, long long value) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "writePointer"));
+    if (address <= 0) throw WapiUnstableException("Invalid memory address");
+    if (value < 0) throw WapiUnstableException("writePointer value cannot be negative");
+    const std::size_t pointerSize = options.checkOnly ? sizeof(uintptr_t) : targetPointerSize(process);
+    if (pointerSize == sizeof(std::uint32_t) &&
+        static_cast<std::uint64_t>(value) > (std::numeric_limits<std::uint32_t>::max)()) {
+        throw WapiUnstableException("writePointer value does not fit the target's 32-bit pointer width");
+    }
+    if (options.checkOnly) {
+        emitAudit("writePointer", "mem.write", "allow", "checkOnly no side-effects");
+        return 0;
+    }
+    if (pointerSize == sizeof(std::uint32_t)) {
+        writeRemoteScalar(process, address, static_cast<std::uint32_t>(value), "writePointer");
+    } else {
+        writeRemoteScalar(process, address, static_cast<std::uint64_t>(value), "writePointer");
+    }
+    return 0;
 }
 
 WapiValue Evaluator::wapi_freeMemory(long long handle, long long address) {

@@ -13,7 +13,7 @@ var pid = proc.find(target)
 print("{target} pid={pid}")
 ```
 
-Reading `proc.find`, `proc.open`, and `mem.write` calls in a Windows API script doesn't tell you the blast radius. Wapi scripts declare requirements up front with `#mode` and `#cap`, then the runtime compares those declarations with explicit CLI, trusted-script, or IDE project grants before any Windows API call executes.
+Reading `proc.find`, `proc.open`, and `mem.write` calls in a Windows API script doesn't tell you the blast radius. Wapi scripts declare requirements up front with `#mode` and `#cap`, then the runtime compares those declarations with explicit CLI or confirmed trusted-script grants before any Windows API call executes.
 
 ## Why Wapi
 
@@ -23,7 +23,7 @@ PowerShell can call into the Windows API, but the P/Invoke syntax is painful and
 - a capability system where scripts declare what they need (`#cap proc.read memory.write`) and the runtime enforces it per function call,
 - four enforced modes - `safe`, `dev`, `unsafe`, `dangerous` - with a hard floor a script can't silently exceed,
 - full audit logging of every privileged call,
-- a desktop IDE with Monaco editing, inline diagnostics, a process explorer, and a live capability inspector.
+- a native drag-and-drop terminal launcher with no web runtime or desktop frontend dependencies.
 
 ## Quick start
 
@@ -38,11 +38,11 @@ cd Wapi
 .\native\x64\Release\Wapi.exe run examples/process_check.wapi --trust-script-directives
 ```
 
-Prebuilt binaries aren't published yet - see [Build native runtime](#build-native-runtime) below for full requirements. A tagged release with a standalone `Wapi.exe` and IDE installer is on the roadmap.
+Prebuilt binaries aren't published yet - see [Build native runtime](#build-native-runtime) below for full requirements. The current application is the standalone native `Wapi.exe`.
 
 ## The capability model
 
-Every `.wapi` file can open with a directive block. Directives are read before the lexer runs, so they're not language statements. They declare what the script requires; CLI flags, trusted-script mode, or IDE project settings decide what is actually granted.
+Every `.wapi` file can open with a directive block. Directives are read before the lexer runs, so they're not language statements. They declare what the script requires; CLI flags or an explicit trusted-script confirmation decide what is actually granted.
 
 ```wapi
 #mode dev
@@ -56,7 +56,7 @@ Every `.wapi` file can open with a directive block. Directives are read before t
 - `#strict` - missing runtime capability grants become hard errors instead of warnings.
 - `#allow-injection` - declares injection helper usage; `--allow-injection`, `unsafe`/`dangerous` mode, or trusted directives are still required to grant ordinary injection.
 - `#include "file.wapi"` - include another `.wapi` file relative to the source root (cannot be absolute or escape the root).
-- `#name`, `#version`, `#author`, `#description` - script metadata, surfaced in the IDE and `wapi doc`.
+- `#name`, `#version`, `#author`, `#description` - script metadata surfaced by the terminal launcher and `wapi doc`.
 
 Run someone else's script with a tighter cap set than it declares and the runtime - not the script - decides what's actually granted:
 
@@ -64,7 +64,7 @@ Run someone else's script with a tighter cap set than it declares and the runtim
 wapi run untrusted.wapi --mode safe --cap proc.list --strict-permissions
 ```
 
-For trusted local scripts, `--trust-script-directives` promotes ordinary `#mode`, `#cap`, and `#allow-injection` declarations into runtime grants. It deliberately cannot grant `dangerous` mode or `inject.manualmap`; those must come from explicit CLI flags or IDE project settings. Do not use trusted directives for scripts you would not already trust to run with those permissions.
+For trusted local scripts, `--trust-script-directives` promotes ordinary `#mode`, `#cap`, and `#allow-injection` declarations into runtime grants. It deliberately cannot grant `dangerous` mode or `inject.manualmap`; those must come from explicit CLI flags. Do not use trusted directives for scripts you would not already trust to run with those permissions.
 
 `wapi lint` cross-checks every function call against your `#cap` block and tells you what's declared-but-unused and what's used-but-undeclared.
 
@@ -75,8 +75,6 @@ For trusted local scripts, `--trust-script-directives` promotes ordinary `#mode`
 | `native/src/` | C++ CLI, lexer, parser, evaluator, Windows API runtime |
 | `native/TestDLL/` | Sample DLL used by `testInjectDLL(pid)` |
 | `native/Wapi.vcxproj` | Main Visual Studio project |
-| `src/` | Vite renderer for the desktop IDE |
-| `src-tauri/` | Tauri host, guarded execution, projects, terminal integration |
 | `docs/language.md` | Full language and directive reference |
 | `Wapi.slnx` | Root Visual Studio solution |
 
@@ -130,13 +128,17 @@ Full syntax reference: [`docs/language.md`](docs/language.md).
 
 ## Runtime bindings
 
-Every function below has a global name and a dotted alias, and is gated behind a runtime capability grant. Scripts should declare matching requirements with `#cap`; operators grant them with `--cap`, trusted directives, or IDE project settings.
+Every function below has a global name and a dotted alias, and is gated behind a runtime capability grant. Scripts should declare matching requirements with `#cap`; operators grant them with `--cap` or trusted directives.
 
 **Process** - `findProcessPID` / `proc.find`, `openProcess` / `proc.open`, `terminateProcess` / `proc.terminate`, `suspendProcess` / `proc.suspend`, `resumeProcess` / `proc.resume`, `closeProcess` / `proc.close`, `closeHandle` / `handle.close`
 
 **Modules** - `listModules` / `proc.modules`, `getModuleBase`, `getModuleBaseAddress` / `proc.module.base`, `getModuleSize` / `proc.module.size`
 
 **Memory** - `readMemory` / `mem.read`, `scanPattern` / `mem.scan`, `writeMemory` / `mem.write`, `allocMemory` / `mem.alloc`, `freeMemory` / `mem.free`, `protectMemory` / `mem.protect`, `queryMemory` / `mem.query`
+Typed memory access is available through `mem.readInt32`, `mem.readInt64`, `mem.readFloat`, `mem.readDouble`, and `mem.readPtr`, with matching write functions. `mem.follow` resolves bounded pointer chains.
+
+Small and unsigned integers use `mem.readInt8`, `mem.readUInt8`, `mem.readInt16`, `mem.readUInt16`, `mem.readUInt32`, and `mem.readUInt64`, with matching writes. Buffer and text helpers are `mem.readBytes`, `mem.writeBytes`, `mem.readString`, and `mem.writeString`. Validate uncertain ranges with `mem.isReadable` and `mem.isWritable`.
+
 
 **Threads** - `listThreads` / `thread.list`, `openThread` / `thread.open`, `suspendThread` / `thread.suspend`, `resumeThread` / `thread.resume`, `getThreadContext` / `thread.context`, `setThreadContext` / `thread.context.set`
 
@@ -167,26 +169,16 @@ wapi repl                interactive shell
 
 Add `--json` to any command for machine-readable event lines.
 
-## IDE
+## Terminal launcher
 
-Desktop app built on Tauri 2 with a vanilla HTML/CSS/JS renderer.
+Run `Wapi.exe` without arguments to open the branded terminal. Drag a `.wapi` file into the window and press Enter, or drag the script directly onto `Wapi.exe`.
 
-- directive-aware Monaco syntax highlighting, completion, hover, and quick fixes
-- directive-first project templates
-- Script Info panel for `#mode`, metadata, includes, and `#cap` directives
-- live `lint` diagnostics while editing
-- guarded native `check`/`run` execution through the Tauri host
-- process explorer, execution history, variable watch, and audit log viewer
-- project dialogs, recent projects, custom window controls, integrated PTY terminal
+- the terminal displays the script's requested mode and capabilities before execution
+- Run explicitly trusts ordinary declarations for that local execution
+- Check performs a side-effect-free preflight
+- dangerous mode and `inject.manualmap` remain unavailable from drag-and-drop and require explicit CLI flags
 
-**Requirements:** Node.js 20+, Rust stable with the MSVC toolchain, Microsoft Edge WebView2 Runtime, Visual Studio Build Tools with Desktop development with C++.
-
-```powershell
-npm install
-npm run dev          # run the desktop app
-npm run build:web    # build the web renderer only
-npm run build         # build the installer + executable
-```
+The old Tauri/Vite frontend is intentionally removed for now. Wapi only requires the native Visual C++ toolchain.
 
 ## Build native runtime
 
@@ -203,7 +195,7 @@ npm run build         # build the installer + executable
 
 - This project uses low-level Windows APIs and can be unstable against invalid targets or addresses.
 - `check` mode is for preflight verification with side effects suppressed.
-- Prefer directive blocks in committed scripts so required capabilities and mode are visible, but grant them explicitly with CLI flags, IDE project settings, or `--trust-script-directives` for trusted local scripts.
+- Prefer directive blocks in committed scripts so required capabilities and mode are visible, but grant them explicitly with CLI flags or `--trust-script-directives` for trusted local scripts.
 - Use `--json` for machine-readable output when integrating with other tools.
 
 ## License

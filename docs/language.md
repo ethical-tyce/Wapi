@@ -1,6 +1,6 @@
 # Wapi Language Reference
 
-This document tracks the language shape implemented by the current native lexer, parser, evaluator, CLI preprocessor, and IDE helpers.
+This document tracks the language shape implemented by the native lexer, parser, evaluator, and CLI preprocessor.
 
 ## File Directives
 
@@ -187,6 +187,7 @@ Higher-risk work should make the policy explicit in the file:
 #mode dev
 #strict
 #cap proc.list proc.open.all_access mem.alloc mem.write mem.read mem.free proc.handle.close runtime.print
+#cap proc.modules
 
 var pid = proc.find("notepad")
 let handle = proc.open(pid)
@@ -196,8 +197,29 @@ print(mem.read(handle, address))
 mem.free(handle, address)
 handle.close(handle)
 ```
+Base-address offsets use normal arithmetic:
 
-Ordinary injection helpers additionally need an injection grant below `unsafe` mode. Use `--allow-injection`, IDE project settings, or `--trust-script-directives` for trusted scripts that declare `#allow-injection`.
+```wapi
+let base = proc.module.base(pid, "notepad.exe")
+let value = mem.readInt32(handle, base + 0x1234)
+
+// Pointer width automatically matches the target process.
+let player = mem.readPtr(handle, base + 0x5678)
+mem.writeFloat(handle, player + 0x20, 100.0)
+
+// Equivalent to: [[base + 0x5678] + 0x20] + 0x100
+let healthAddress = mem.follow(handle, base + 0x5678, [0x20, 0x100])
+print(mem.readFloat(handle, healthAddress))
+```
+
+`mem.read` and `mem.write` remain signed 32-bit integer operations for compatibility. Their explicit aliases are `mem.readInt32` and `mem.writeInt32`. Additional typed pairs are `Int64`, `Float`, `Double`, and `Ptr`.
+
+`mem.follow` accepts 1 to 32 signed integer offsets. It rejects null pointers and address overflow, uses the target process's pointer width, and requires `mem.read`. All typed writes require `mem.write`.
+
+`mem.readBytes` returns an integer array and `mem.writeBytes` accepts values from 0 through 255. `mem.readString(handle, address, maxLength, encoding)` supports `ascii`, `utf8`, and `utf16le`; `mem.writeString` uses the same encodings and writes a null terminator. `mem.isReadable` and `mem.isWritable` validate a complete range across region boundaries.
+
+
+Ordinary injection helpers additionally need an injection grant below `unsafe` mode. Use `--allow-injection` or `--trust-script-directives` for trusted scripts that declare `#allow-injection`.
 
 `manualMapDLL` / `inject.manualMap` is separate: it requires externally granted `dangerous` mode and the explicit `inject.manualmap` capability. `--trust-script-directives` cannot grant either boundary. The bounded mapper accepts a validated subset of x64 native PE DLLs, resolves relocations and imports, invokes `DllMain`, registers validated x64 unwind data, and applies final non-RWX section protections. It rejects CLR/mixed-mode images, delay imports, TLS callbacks/static TLS, CFG images/targets, writable-executable sections, critical Windows targets, and targets with enforced dynamic-code, signature, or image-load policies.
 
