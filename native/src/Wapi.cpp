@@ -57,7 +57,7 @@ void printBanner() {
         const bool hasOriginal = GetConsoleScreenBufferInfo(output, &original) != FALSE;
         SetConsoleTextAttribute(
             output,
-            static_cast<WORD>(FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+            static_cast<WORD>(FOREGROUND_GREEN | FOREGROUND_INTENSITY)
         );
         DWORD written = 0;
         WriteConsoleW(output, banner.data(), static_cast<DWORD>(banner.size()), &written, nullptr);
