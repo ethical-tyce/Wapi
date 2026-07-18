@@ -485,7 +485,10 @@ WORD targetMachine(HANDLE process) {
 }
 
 } // namespace
-Evaluator::Evaluator(const WapiRuntimeOptions& options) : options(options) {
+Evaluator::Evaluator(const WapiRuntimeOptions& options)
+    : options(options),
+      capabilityAllowRules(wapi::policy::parseCapabilityRules(options.capabilities, wapi::policy::RuleKind::Allow)),
+      capabilityDenyRules(wapi::policy::parseCapabilityRules(options.deniedCapabilities, wapi::policy::RuleKind::Deny)) {
     if (options.timeoutMs > 0) {
         timeoutEnabled = true;
         timeoutDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(options.timeoutMs);
@@ -836,6 +839,19 @@ WapiValue Evaluator::evalFieldAssignment(const FieldAssignment& stmt) {
 }
 
 WapiValue Evaluator::evalMethodCall(const MethodCallExpression& expr) {
+    static const std::unordered_map<std::string, const char*> languageMethodCapabilities = {
+        {"len", "language.core"}, {"size", "language.core"},
+        {"trim", "language.string"}, {"toLower", "language.string"},
+        {"toUpper", "language.string"}, {"contains", "language.core"},
+        {"startsWith", "language.string"}, {"endsWith", "language.string"},
+        {"push", "language.array"}, {"pop", "language.array"},
+        {"first", "language.array"}, {"last", "language.array"},
+        {"sort", "language.array"}
+    };
+    if (const auto policy = languageMethodCapabilities.find(expr.method);
+        policy != languageMethodCapabilities.end()) {
+        enforcePolicy(expr.method, policy->second, false);
+    }
     WapiValue target = evalNode(expr.target);
     std::vector<WapiValue> args;
     for (auto& arg : expr.args) args.push_back(evalNode(arg));
@@ -1025,13 +1041,18 @@ void Evaluator::emitAudit(const std::string& functionName, const std::string& ca
         << " capability=" << capability
         << " result=" << result;
     if (!detail.empty()) {
-        std::cout << " detail=\"" << detail << "\"";
+        std::cout << " detail=\"" << jsonEscape(detail) << "\"";
     }
     std::cout << "\n";
 }
 
-void Evaluator::enforcePolicy(const std::string& functionName, const std::string& capability, bool requiresInjectionFlag) const {
-    const bool hasCapability = options.capabilities.count(capability) > 0;
+void Evaluator::enforcePolicy(
+    const std::string& functionName,
+    const std::string& capability,
+    bool requiresInjectionFlag,
+    const std::optional<std::string>& resource,
+    bool resourceRequired
+) const {
     static const std::unordered_set<std::string> devOnlyCapabilities = {
         "proc.open.all_access", "proc.terminate", "proc.suspend", "proc.resume",
         "mem.read", "mem.write", "mem.alloc", "mem.free", "mem.protect", "mem.query",
@@ -1058,10 +1079,37 @@ void Evaluator::enforcePolicy(const std::string& functionName, const std::string
         emitAudit(functionName, capability, "deny", "--allow-injection is required outside unsafe or dangerous mode");
         throw std::runtime_error("E_PERMISSION:" + functionName + " requires --allow-injection");
     }
-    if (hasCapability) {
-        emitAudit(functionName, capability, "allow", "capability_present");
+
+    const auto decision = wapi::policy::evaluateCapability(
+        capabilityAllowRules,
+        capabilityDenyRules,
+        capability,
+        resource,
+        resourceRequired
+    );
+    const std::string resourceDetail = resource.has_value() ? " resource=" + *resource : "";
+    if (decision.kind == wapi::policy::DecisionKind::Deny) {
+        emitAudit(functionName, capability, "deny", "explicit deny rule=" + decision.matchedRule + resourceDetail);
+        throw std::runtime_error(
+            "E_PERMISSION:" + functionName + " denied capability=" + capability + resourceDetail +
+            " by rule=" + decision.matchedRule
+        );
+    }
+    if (decision.kind == wapi::policy::DecisionKind::Allow) {
+        emitAudit(functionName, capability, "allow", "rule=" + decision.matchedRule + resourceDetail);
         return;
     }
+    if (decision.kind == wapi::policy::DecisionKind::Deferred) {
+        emitAudit(functionName, capability, "allow", "resource check deferred rule=" + decision.matchedRule);
+        return;
+    }
+    if (resource.has_value()) {
+        emitAudit(functionName, capability, "deny", "resource not allowed" + resourceDetail);
+        throw std::runtime_error(
+            "E_PERMISSION:" + functionName + " resource not allowed for capability=" + capability + resourceDetail
+        );
+    }
+
     const bool hardMissingCapability = options.strictPermissions || softMissingCapabilities.count(capability) == 0;
     if (hardMissingCapability) {
         const std::string detail = options.strictPermissions ? "missing capability in strict mode" : "missing sensitive capability";
@@ -1187,6 +1235,22 @@ WapiValue Evaluator::evalUserFunction(const std::shared_ptr<FunctionDeclaration>
 WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
     auto userFunction = userFunctions.find(call->name);
     if (userFunction != userFunctions.end()) return evalUserFunction(userFunction->second, call);
+    static const std::unordered_map<std::string, const char*> languageFunctionCapabilities = {
+        {"typeof", "language.core"}, {"assert", "language.core"},
+        {"toHex", "language.string"}, {"fromHex", "language.string"},
+        {"split", "language.string"}, {"trim", "language.string"},
+        {"padLeft", "language.string"}, {"padRight", "language.string"},
+        {"len", "language.core"}, {"substr", "language.string"},
+        {"contains", "language.core"}, {"replace", "language.string"},
+        {"toLower", "language.string"}, {"toInt", "language.string"},
+        {"abs", "language.math"}, {"min", "language.math"},
+        {"max", "language.math"}, {"push", "language.array"},
+        {"pop", "language.array"}, {"sort", "language.array"}
+    };
+    if (const auto policy = languageFunctionCapabilities.find(call->name);
+        policy != languageFunctionCapabilities.end()) {
+        enforcePolicy(call->name, policy->second, false);
+    }
     if (call->name == "typeof") {
         checkArgCount(call, 1);
         return valueTypeName(evalNode(call->args[0]));
@@ -1956,8 +2020,12 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         throw std::runtime_error("E_UNKNOWN_FUNCTION:" + call->name);
     }
     const FunctionBinding& binding = found->second;
+    static const std::unordered_set<std::string> resourceAwareFunctions = {
+        "inspectPeFile", "writePayloadSource", "writeGeneratedPayloadSource"
+    };
     checkArgCount(call, binding.argCount);
-    enforcePolicy(call->name, binding.capability, binding.requiresInjectionFlag);
+    const bool resourceRequired = resourceAwareFunctions.count(found->first) != 0;
+    enforcePolicy(call->name, binding.capability, binding.requiresInjectionFlag, std::nullopt, resourceRequired);
     return binding.invoke(*this, call);
 }
 
@@ -2807,9 +2875,20 @@ WapiValue Evaluator::wapi_detectPeImage(long long handle, long long address) {
 
 WapiValue Evaluator::wapi_inspectPeFile(const std::string& path) {
     if (path.empty()) throw WapiUnstableException("PE path is empty");
+    std::error_code error;
+    const std::filesystem::path requested = std::filesystem::absolute(path, error).lexically_normal();
+    if (error || requested.empty()) throw WapiUnstableException("Could not resolve the requested PE path");
+    enforcePolicy("inspectPeFile", "pe.inspect", false, requested.string(), true);
+
+    const std::filesystem::path resolved = std::filesystem::weakly_canonical(requested, error);
+    if (error || resolved.empty()) throw WapiUnstableException("Could not resolve the PE path: " + path);
+    enforcePolicy("inspectPeFile", "pe.inspect", false, resolved.string(), true);
+    if (!std::filesystem::is_regular_file(resolved, error) || error) {
+        throw WapiUnstableException("PE path is not a readable file: " + path);
+    }
     try {
-        const auto info = wapi::inspection::inspectPeFile(std::filesystem::path(path));
-        emitAudit("inspectPeFile", "pe.inspect", "success", "path=" + path + " valid=" + (info.valid ? "true" : "false"));
+        const auto info = wapi::inspection::inspectPeFile(resolved);
+        emitAudit("inspectPeFile", "pe.inspect", "success", "path=" + resolved.string() + " valid=" + (info.valid ? "true" : "false"));
         return peImageValue(info);
     } catch (const std::exception& error) {
         throw WapiUnstableException(std::string("Failed to inspect PE file: ") + error.what());
@@ -2835,8 +2914,8 @@ std::filesystem::path safePayloadPath(const std::string& requested, const std::s
     std::error_code error;
     const auto root = std::filesystem::weakly_canonical(std::filesystem::current_path(), error);
     if (error) throw WapiUnstableException("Could not resolve the current workspace");
-    const auto output = std::filesystem::absolute(root / relative, error).lexically_normal();
-    if (error) throw WapiUnstableException("Could not resolve the payload source path");
+    const auto output = std::filesystem::weakly_canonical(root / relative, error);
+    if (error || output.empty()) throw WapiUnstableException("Could not resolve the payload source path");
     const auto within = output.lexically_relative(root);
     if (within.empty() || within.is_absolute() || *within.begin() == "..") {
         throw WapiUnstableException("Payload source path escapes the current workspace");
@@ -2852,7 +2931,15 @@ WapiValue Evaluator::wapi_writePayloadSource(const std::string& language, const 
     const auto [normalizedLanguage, extension] = payloadLanguageInfo(language);
     if (source.empty()) throw WapiUnstableException("Payload source is empty");
     if (source.size() > 1024u * 1024u) throw WapiUnstableException("Payload source exceeds the 1 MiB limit");
+    if (path.empty()) throw WapiUnstableException("Payload source path is empty");
+    std::error_code requestedPathError;
+    const std::filesystem::path requestedOutput = std::filesystem::absolute(path, requestedPathError).lexically_normal();
+    if (requestedPathError || requestedOutput.empty()) {
+        throw WapiUnstableException("Could not resolve the requested payload source path");
+    }
+    enforcePolicy("writePayloadSource", "file.write", false, requestedOutput.string(), true);
     const auto output = safePayloadPath(path, extension);
+    enforcePolicy("writePayloadSource", "file.write", false, output.string(), true);
     if (options.checkOnly) {
         emitAudit("writePayloadSource", "file.write", "allow", "checkOnly path=" + output.string() + " language=" + normalizedLanguage);
         return output.string();

@@ -15,6 +15,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\capability_policy.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\Wapi.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -35,6 +38,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\capability_policy.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\lexer.h">
       <Filter>Header Files</Filter>
     </ClInclude>

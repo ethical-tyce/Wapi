@@ -33,21 +33,23 @@
 
 namespace {
 void printBanner() {
-    static const std::wstring banner = LR"WAPI(
-���                           ���
-������                     ������
-������۲                 ��������
-��������        �        ��������
-��������      �����      ��������
-��������    ���������    ��������          ������          ���������������       �������
-��������  �������������  ��������        ���������         �������������������   �������
-���������������������������������       ������������       �������     ��������  �������
-���������������   ���������������      ������ �������      �������      �������  �������
-��������������     ��������������     ������    ������     �������������������   �������
-������������         �����������    �������������������    �����������������     �������
-   ��������           ��������     ����������������������  �������               �������
-      ���               ���       �������          ������� �������               �������
-)WAPI";
+    // ASCII markers keep the source encoding-safe. They are translated to
+    // Unicode block characters only when written to the Windows console.
+    static const std::vector<std::string> bannerRows = {
+        "ddd                           ddd",
+        "dddddd                     dddddd",
+        "dddddddd                 dddddddd",
+        "dddddddd        d        dddddddd",
+        "dddddddd      ddfff      dddddddd",
+        "dddddddd    ddddfffff    dddddddd          aaaaaa          aaaaaaaaaaaaaaa       aaaaaaa",
+        "dddddddd  ffddddfffffff  dddddddf        aaaaaaaaa         aaaaaaaaaaaaaaaaaaa   aaaaaaa",
+        "ddddddddfffffdddfffffffffdddddfff       aaaaaaaaaaaa       aaaaaaa     aaaaaaaa  aaaaaaa",
+        "fffdddddfffffff   fffffffddffffff      aaaaaa aaaaaaa      aaaaaaa      aaaaaaa  aaaaaaa",
+        "ffffffffffffff     ffffffffffffff     aaaaaa    aaaaaa     aaaaaaaaaaaaaaaaaaa   aaaaaaa",
+        "ffffffffffff         fffffffffff    aaaaaaaaaaaaaaaaaaa    aaaaaaaaaaaaaaaaa     aaaaaaa",
+        "   ffffffff           ffffffff     aaaaaaaaaaaaaaaaaaaaaa  aaaaaaa               aaaaaaa",
+        "      fff               fff       aaaaaaa          aaaaaaa aaaaaaa               aaaaaaa",
+    };
 
     SetConsoleTitleW(L"Wapi Terminal");
     HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -55,13 +57,37 @@ void printBanner() {
     if (output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &consoleMode)) {
         CONSOLE_SCREEN_BUFFER_INFO original{};
         const bool hasOriginal = GetConsoleScreenBufferInfo(output, &original) != FALSE;
-        SetConsoleTextAttribute(
-            output,
-            static_cast<WORD>(FOREGROUND_GREEN | FOREGROUND_INTENSITY)
+        const WORD green = static_cast<WORD>(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        const WORD white = static_cast<WORD>(
+            FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY
         );
+        WORD activeColor = green;
+        SetConsoleTextAttribute(output, activeColor);
+
         DWORD written = 0;
-        WriteConsoleW(output, banner.data(), static_cast<DWORD>(banner.size()), &written, nullptr);
-        if (hasOriginal) SetConsoleTextAttribute(output, original.wAttributes);
+        static constexpr wchar_t newline[] = L"\r\n";
+        WriteConsoleW(output, newline, 2, &written, nullptr);
+        static const std::vector<std::size_t> displayedRows = {
+            0, 1, 3, 4, 5, 7, 8, 9, 11, 12
+        };
+        for (std::size_t rowIndex : displayedRows) {
+            for (char marker : bannerRows[rowIndex]) {
+                WORD requestedColor = activeColor;
+                if (marker == 'a') requestedColor = white;
+                else if (marker == 'd' || marker == 'f') requestedColor = green;
+                if (requestedColor != activeColor) {
+                    SetConsoleTextAttribute(output, requestedColor);
+                    activeColor = requestedColor;
+                }
+
+                const wchar_t glyph = marker == 'd' ? L'\u2593'
+                    : marker == 'f' ? L'\u2588'
+                    : marker == 'a' ? L'\u2592'
+                    : L' ';
+                WriteConsoleW(output, &glyph, 1, &written, nullptr);
+            }
+            WriteConsoleW(output, newline, 2, &written, nullptr);
+        }        if (hasOriginal) SetConsoleTextAttribute(output, original.wAttributes);
     } else {
         std::cout << "\nWAPI TERMINAL\n";
     }
@@ -70,7 +96,6 @@ void printBanner() {
         << "\n  Drop a .wapi script below, or type 'quit' to close."
         << "\n\n";
 }
-
 
 void printUsage() {
     std::cout
@@ -92,7 +117,8 @@ void printUsage() {
         << "Options:\n"
         << "  --mode safe|dev|unsafe|dangerous\n"
         << "                           Runtime safety mode; WAPI_MODE is used when omitted.\n"
-        << "  --cap <name>             Add a capability grant.\n"
+        << "  --cap <rule>             Add a capability grant; repeat for more rules.\n"
+        << "  --deny <rule>            Add an overriding capability denial.\n"
         << "  --trust-script-directives\n"
         << "                           Grant #mode/#cap/#allow-injection from trusted scripts.\n"
         << "  --allow-injection        Permit injection helpers outside unsafe/dangerous mode.\n"
@@ -112,7 +138,8 @@ void printUsage() {
         << "File directives (top of any .wapi file, before any code):\n"
         << "  #mode safe|dev|unsafe|dangerous\n"
         << "                               Minimum mode. Dangerous must be granted externally.\n"
-        << "  #cap <name> [<name>...]      Declared capability requirements, not grants.\n"
+        << "  #cap <rule> [<rule>...]      Declared requirements; quoted path scopes are supported.\n"
+        << "  #deny <rule> [<rule>...]     Restrictions that always override grants.\n"
         << "  #include \"path/to/file.wapi\" Include a relative .wapi file inside the source root.\n"
         << "  #strict                      Treat missing capabilities as errors.\n"
         << "  #allow-injection             Declare injection helper usage.\n"
@@ -150,6 +177,7 @@ struct ScriptDirectives {
     bool hasMode = false;
     WapiMode mode = WapiMode::Safe;
     std::unordered_set<std::string> capabilities;
+    std::unordered_set<std::string> deniedCapabilities;
     std::vector<std::string> includes;
     bool allowInjection = false;
     bool strict = false;
@@ -176,6 +204,7 @@ void mergeDirectives(ScriptDirectives& target, const ScriptDirectives& incoming)
         target.mode = incoming.mode;
     }
     target.capabilities.insert(incoming.capabilities.begin(), incoming.capabilities.end());
+    target.deniedCapabilities.insert(incoming.deniedCapabilities.begin(), incoming.deniedCapabilities.end());
     target.includes.insert(target.includes.end(), incoming.includes.begin(), incoming.includes.end());
     target.allowInjection = target.allowInjection || incoming.allowInjection;
     target.strict = target.strict || incoming.strict;
@@ -235,7 +264,16 @@ WapiRuntimeOptions parseOptions(const std::vector<std::string>& args, bool check
         }
         if (args[i] == "--cap") {
             if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --cap");
-            options.capabilities.insert(args[++i]);
+            const std::string rule = args[++i];
+            wapi::policy::parseCapabilityRule(rule, wapi::policy::RuleKind::Allow);
+            options.capabilities.insert(rule);
+            continue;
+        }
+        if (args[i] == "--deny") {
+            if (i + 1 >= args.size()) throw std::runtime_error("Missing value for --deny");
+            const std::string rule = args[++i];
+            wapi::policy::parseCapabilityRule(rule, wapi::policy::RuleKind::Deny);
+            options.deniedCapabilities.insert(rule);
             continue;
         }
         if (args[i] == "--quiet") {
@@ -350,6 +388,7 @@ void printErrors() {
         << "E_INDEX_OUT_OF_RANGE Index outside string/array\n"
         << "E_LOOP_LIMIT      Loop guard exceeded\n"
         << "E_PERMISSION      Runtime capability denied\n"
+        << "E_CAPABILITY_RULE Invalid capability allow/deny rule\n"
         << "E_ASSERT          assert(...) failed\n";
 }
 
@@ -407,6 +446,10 @@ std::filesystem::path canonicalDirectory(const std::filesystem::path& path) {
     return canonical;
 }
 
+std::string includePathKey(const std::filesystem::path& path) {
+    return lowerAsciiCopy(path.lexically_normal().generic_string());
+}
+
 std::filesystem::path resolveIncludePath(
     const std::filesystem::path& baseDir,
     const std::filesystem::path& includeRoot,
@@ -435,13 +478,92 @@ std::filesystem::path resolveIncludePath(
     return resolved;
 }
 
+std::vector<std::string> splitCapabilityRuleList(
+    const std::string& raw,
+    wapi::policy::RuleKind kind,
+    std::size_t lineNumber,
+    const std::string& directive
+) {
+    std::vector<std::string> rules;
+    std::string current;
+    char quote = '\0';
+    int parenthesisDepth = 0;
+
+    const auto finishRule = [&]() {
+        const std::string rule = trimCopy(current);
+        current.clear();
+        if (rule.empty()) return;
+        try {
+            wapi::policy::parseCapabilityRule(rule, kind);
+        }
+        catch (const std::exception& error) {
+            throw std::runtime_error(
+                "E_DIRECTIVE: line " + std::to_string(lineNumber) + " #" + directive + " " + error.what()
+            );
+        }
+        rules.push_back(rule);
+    };
+
+    for (std::size_t index = 0; index < raw.size(); ++index) {
+        const char ch = raw[index];
+        if (quote != '\0') {
+            current.push_back(ch);
+            if (ch == quote) quote = '\0';
+            continue;
+        }
+        if (ch == '"' || ch == '\'') {
+            quote = ch;
+            current.push_back(ch);
+            continue;
+        }
+        if (ch == '(') parenthesisDepth++;
+        if (ch == ')') {
+            parenthesisDepth--;
+            if (parenthesisDepth < 0) {
+                throw std::runtime_error(
+                    "E_DIRECTIVE: line " + std::to_string(lineNumber) + " #" + directive +
+                    " has an unexpected )"
+                );
+            }
+        }
+        if (std::isspace(static_cast<unsigned char>(ch)) && parenthesisDepth == 0) {
+            const std::size_t next = raw.find_first_not_of(" \t\r\n", index + 1);
+            const bool separatesCapabilityFromScope =
+                !current.empty() &&
+                current.find('(') == std::string::npos &&
+                next != std::string::npos &&
+                raw[next] == '(';
+            if (separatesCapabilityFromScope) continue;
+            finishRule();
+        }
+        else {
+            current.push_back(ch);
+        }
+    }
+    if (quote != '\0' || parenthesisDepth != 0) {
+        throw std::runtime_error(
+            "E_DIRECTIVE: line " + std::to_string(lineNumber) + " #" + directive +
+            " has an unterminated quoted scope"
+        );
+    }
+    finishRule();
+    if (rules.empty()) {
+        throw std::runtime_error(
+            "E_DIRECTIVE: line " + std::to_string(lineNumber) + " #" + directive + " requires at least one rule"
+        );
+    }
+    return rules;
+}
+
 ExtractResult extractDirectives(const std::string& raw) {
     ScriptDirectives dir;
     std::ostringstream cleaned;
     std::istringstream in(raw);
     std::string line;
+    std::size_t lineNumber = 0;
 
     while (std::getline(in, line)) {
+        lineNumber++;
         const std::string trimmed = trimCopy(line);
         if (trimmed.empty()) {
             cleaned << '\n';
@@ -458,9 +580,12 @@ ExtractResult extractDirectives(const std::string& raw) {
             dir.mode = parseMode(trimCopy(rest.substr(5)));
         }
         else if (rest.rfind("cap ", 0) == 0) {
-            std::istringstream caps(rest.substr(4));
-            std::string cap;
-            while (caps >> cap) dir.capabilities.insert(cap);
+            const auto rules = splitCapabilityRuleList(rest.substr(4), wapi::policy::RuleKind::Allow, lineNumber, "cap");
+            dir.capabilities.insert(rules.begin(), rules.end());
+        }
+        else if (rest.rfind("deny ", 0) == 0) {
+            const auto rules = splitCapabilityRuleList(rest.substr(5), wapi::policy::RuleKind::Deny, lineNumber, "deny");
+            dir.deniedCapabilities.insert(rules.begin(), rules.end());
         }
         else if (rest.rfind("include \"", 0) == 0 && rest.size() > 10 && rest.back() == '"') {
             dir.includes.push_back(rest.substr(9, rest.size() - 10));
@@ -495,6 +620,14 @@ ExtractResult extractDirectives(const std::string& raw) {
     return { cleaned.str(), dir };
 }
 
+std::string expandExtractedSource(
+    const ExtractResult& extracted,
+    const std::filesystem::path& baseDir,
+    const std::filesystem::path& includeRoot,
+    std::unordered_set<std::string>& seen,
+    ScriptDirectives& directives
+);
+
 std::string expandIncludes(
     const std::string& source,
     const std::filesystem::path& baseDir,
@@ -512,16 +645,37 @@ std::string expandIncludes(
         if (isOldStyle || isNewStyle) {
             const size_t skip = isOldStyle ? 9 : 10;
             const std::filesystem::path includePath = resolveIncludePath(baseDir, includeRoot, trimmed.substr(skip, trimmed.size() - skip - 1));
-            const std::string key = includePath.string();
+            const std::string key = includePathKey(includePath);
             if (!seen.insert(key).second) throw std::runtime_error("E_INCLUDE_CYCLE: " + key);
             const ExtractResult nested = extractDirectives(readTextFile(includePath));
             mergeDirectives(directives, nested.directives);
-            out << expandIncludes(nested.source, includePath.parent_path(), includeRoot, seen, directives) << "\n";
+            out << expandExtractedSource(nested, includePath.parent_path(), includeRoot, seen, directives) << "\n";
             continue;
         }
         out << line << "\n";
     }
     return out.str();
+}
+
+std::string expandExtractedSource(
+    const ExtractResult& extracted,
+    const std::filesystem::path& baseDir,
+    const std::filesystem::path& includeRoot,
+    std::unordered_set<std::string>& seen,
+    ScriptDirectives& directives
+) {
+    std::ostringstream expanded;
+    for (const auto& requested : extracted.directives.includes) {
+        const std::filesystem::path includePath = resolveIncludePath(baseDir, includeRoot, requested);
+        const std::string key = includePathKey(includePath);
+        if (!seen.insert(key).second) throw std::runtime_error("E_INCLUDE_CYCLE: " + key);
+        const ExtractResult nested = extractDirectives(readTextFile(includePath));
+        mergeDirectives(directives, nested.directives);
+        expanded << expandExtractedSource(
+            nested, includePath.parent_path(), includeRoot, seen, directives) << '\n';
+    }
+    expanded << expandIncludes(extracted.source, baseDir, includeRoot, seen, directives);
+    return expanded.str();
 }
 
 ResolvedSource resolveSourceWithDirectives(const std::string& argument, const std::filesystem::path& cwd) {
@@ -537,7 +691,7 @@ ResolvedSource resolveSourceWithDirectives(const std::string& argument, const st
         if (std::filesystem::exists(path) && std::filesystem::is_regular_file(path)) {
             path = std::filesystem::weakly_canonical(path);
             baseDir = path.parent_path();
-            seen.insert(path.string());
+            seen.insert(includePathKey(path));
             raw = readTextFile(path);
         }
         else {
@@ -547,18 +701,8 @@ ResolvedSource resolveSourceWithDirectives(const std::string& argument, const st
 
     ExtractResult extracted = extractDirectives(raw);
     ScriptDirectives directives = extracted.directives;
-    std::ostringstream withIncludes;
     const std::filesystem::path includeRoot = canonicalDirectory(baseDir);
-    for (const auto& inc : directives.includes) {
-        std::filesystem::path incPath = resolveIncludePath(baseDir, includeRoot, inc);
-        const std::string key = incPath.string();
-        if (!seen.insert(key).second) throw std::runtime_error("E_INCLUDE_CYCLE: " + key);
-        ExtractResult nested = extractDirectives(readTextFile(incPath));
-        mergeDirectives(directives, nested.directives);
-        withIncludes << expandIncludes(nested.source, incPath.parent_path(), includeRoot, seen, directives) << '\n';
-    }
-    withIncludes << expandIncludes(extracted.source, baseDir, includeRoot, seen, directives);
-    return { withIncludes.str(), directives };
+    return { expandExtractedSource(extracted, baseDir, includeRoot, seen, directives), directives };
 }
 
 std::string resolveSourceArgument(const std::string& argument) {
@@ -578,6 +722,42 @@ ResolvedSource resolveSourceArgumentsWithDirectives(const std::vector<std::strin
 
 std::string resolveSourceArguments(const std::vector<std::string>& arguments) {
     return resolveSourceArgumentsWithDirectives(arguments).source;
+}
+
+std::string serialiseResolvedSource(const ResolvedSource& resolved) {
+    std::ostringstream bundled;
+    const auto writeMetadata = [&](const std::string& directive, std::string value) {
+        if (value.empty()) return;
+        std::replace(value.begin(), value.end(), '\r', ' ');
+        std::replace(value.begin(), value.end(), '\n', ' ');
+        bundled << '#' << directive << " \"" << value << "\"\n";
+    };
+
+    writeMetadata("name", resolved.directives.name);
+    writeMetadata("version", resolved.directives.version);
+    writeMetadata("author", resolved.directives.author);
+    writeMetadata("description", resolved.directives.description);
+    if (resolved.directives.hasMode) {
+        bundled << "#mode " << modeToDirectiveString(resolved.directives.mode) << '\n';
+    }
+    if (resolved.directives.strict) bundled << "#strict\n";
+    if (resolved.directives.allowInjection) bundled << "#allow-injection\n";
+
+    std::vector<std::string> capabilities(
+        resolved.directives.capabilities.begin(),
+        resolved.directives.capabilities.end()
+    );
+    std::vector<std::string> denials(
+        resolved.directives.deniedCapabilities.begin(),
+        resolved.directives.deniedCapabilities.end()
+    );
+    std::sort(capabilities.begin(), capabilities.end());
+    std::sort(denials.begin(), denials.end());
+    for (const auto& rule : capabilities) bundled << "#cap " << rule << '\n';
+    for (const auto& rule : denials) bundled << "#deny " << rule << '\n';
+
+    bundled << '\n' << resolved.source;
+    return bundled.str();
 }
 
 std::string formatSource(const std::string& source) {
@@ -624,7 +804,7 @@ void printFunctionHelp(const std::string& name) {
         {"syntax", "var x = 1_000; let y = \"x={x}\"; match x { _ => print(y) }", "Language syntax overview."},
         {"methods", "text.len(), items.push(value), maybe?.len() ?? 0", "Method call and null-safe syntax."},
         {"struct", "struct Point { int x } Point p = Point { x: 1 }", "Declare and instantiate structured values."},
-        {"directives", "#mode dev\n#cap proc.list runtime.print\n#include \"helpers.wapi\"\n#strict", "File-level directives must appear before code. Includes must be relative .wapi files inside the source root."}
+        {"directives", "#mode dev\n#cap file.write(\"generated_payloads/**\") runtime.print\n#deny file.write(\"generated_payloads/private/**\")\n#strict", "Scoped path grants are supported for file.write and pe.inspect. Denies always override grants."}
     };
     if (name.empty()) {
         std::cout << "Available help topics:\n";
@@ -700,7 +880,7 @@ const std::unordered_map<std::string, std::string>& functionCapabilities() {
         {"pe.inspect", "pe.inspect"}, {"payload.writeSource", "file.write"},
         {"inject.writePayloadSRC", "file.write"}, {"thread.startAddress", "thread.query"},
         {"inject.manualMapReport", "inject.manualmap"},
-        {"len", "language.core"}, {"substr", "language.string"}, {"contains", "language.string"}, {"replace", "language.string"}, {"toLower", "language.string"},
+        {"len", "language.core"}, {"substr", "language.string"}, {"contains", "language.core"}, {"replace", "language.string"}, {"toLower", "language.string"},
         {"toInt", "language.string"}, {"abs", "language.math"}, {"min", "language.math"}, {"max", "language.math"}, {"push", "language.array"},
         {"pop", "language.array"}, {"typeof", "language.core"}, {"assert", "language.core"}, {"toHex", "language.string"}, {"fromHex", "language.string"},
         {"split", "language.string"}, {"trim", "language.string"}, {"padLeft", "language.string"}, {"padRight", "language.string"}, {"sort", "language.array"},
@@ -760,19 +940,26 @@ void collectFunctionCalls(const std::shared_ptr<ASTNode>& node, std::unordered_s
 void emitLintWarnings(const std::shared_ptr<Program>& program, const ScriptDirectives& directives) {
     std::unordered_set<std::string> calls;
     std::unordered_set<std::string> usedCapabilities;
+    std::unordered_set<std::string> declaredCapabilities;
+    for (const auto& rule : directives.capabilities) {
+        declaredCapabilities.insert(wapi::policy::capabilityName(rule));
+    }
+
     collectFunctionCalls(program, calls);
     const auto& caps = functionCapabilities();
     for (const auto& call : calls) {
         auto found = caps.find(call);
         if (found == caps.end()) continue;
-        usedCapabilities.insert(found->second);
-        if (directives.capabilities.count(found->second) == 0) {
+        const std::string capability = wapi::policy::capabilityName(found->second);
+        usedCapabilities.insert(capability);
+        if (declaredCapabilities.count(capability) == 0) {
             std::cout << "[LINT] " << call << " requires capability '" << found->second << "' - add #cap " << found->second << "\n";
         }
     }
-    for (const auto& cap : directives.capabilities) {
-        if (usedCapabilities.count(cap) == 0) {
-            std::cout << "[LINT] #cap '" << cap << "' declared but no functions using it were found\n";
+    for (const auto& rule : directives.capabilities) {
+        const std::string capability = wapi::policy::capabilityName(rule);
+        if (usedCapabilities.count(capability) == 0) {
+            std::cout << "[LINT] #cap '" << rule << "' declared but no functions using it were found\n";
         }
     }
 }
@@ -805,10 +992,11 @@ void applyDirectivesToOptions(const ScriptDirectives& dir, WapiRuntimeOptions& o
             options.mode = dir.mode;
         }
     }
+    options.deniedCapabilities.insert(dir.deniedCapabilities.begin(), dir.deniedCapabilities.end());
     if (options.trustScriptDirectives) {
-        for (const auto& cap : dir.capabilities) {
+        for (const auto& rule : dir.capabilities) {
             // Manual mapping always needs an external capability grant, even for trusted scripts.
-            if (cap != "inject.manualmap") options.capabilities.insert(cap);
+            if (wapi::policy::capabilityName(rule) != "inject.manualmap") options.capabilities.insert(rule);
         }
         if (dir.allowInjection && !options.cliInjectionExplicit) options.allowInjection = true;
     }
@@ -914,6 +1102,18 @@ void testDirectiveFailure(const std::string& name, const ScriptDirectives& direc
     }
 }
 
+void testCondition(const std::string& name, bool condition, const std::string& detail = "") {
+    if (condition) {
+        std::cout << "[PASS] " << name << "\n";
+        passed++;
+        return;
+    }
+    std::cout << "[FAIL] " << name;
+    if (!detail.empty()) std::cout << " - " << detail;
+    std::cout << "\n";
+    failed++;
+}
+
 void runStandardizedTests() {
     passed = 0;
     failed = 0;
@@ -1015,6 +1215,301 @@ void runStandardizedTests() {
     WapiRuntimeOptions sleepTimeoutOptions;
     sleepTimeoutOptions.timeoutMs = 1;
     testFailure("sleep respects runtime timeout", "sleep(50)", sleepTimeoutOptions, "E_TIMEOUT");
+
+    try {
+        const WapiRuntimeOptions parsedCliRules = parseOptions({
+            "--cap", "runtime.print",
+            "--cap", "language.core",
+            "--deny", "runtime.sleep",
+            "--deny", "proc.*"
+        }, true);
+        testCondition(
+            "CLI accepts repeatable allow and deny rules",
+            parsedCliRules.capabilities.size() == 2 &&
+            parsedCliRules.deniedCapabilities.size() == 2
+        );
+    }
+    catch (const std::exception& error) {
+        testCondition("CLI accepts repeatable allow and deny rules", false, error.what());
+    }
+
+    try {
+        const ExtractResult parsedRules = extractDirectives(R"WAPI(#cap runtime.print file.write ("generated payloads/**")
+#deny file.write("generated payloads/private/**")
+print("ok")
+)WAPI");
+        testCondition(
+            "directive parser preserves quoted scoped rules with optional whitespace",
+            parsedRules.directives.capabilities.count("runtime.print") == 1 &&
+            parsedRules.directives.capabilities.count("file.write(\"generated payloads/**\")") == 1 &&
+            parsedRules.directives.deniedCapabilities.count("file.write(\"generated payloads/private/**\")") == 1
+        );
+    }
+    catch (const std::exception& error) {
+        testCondition("directive parser preserves quoted scoped rules with optional whitespace", false, error.what());
+    }
+
+    WapiRuntimeOptions scopedFileOptions;
+    scopedFileOptions.checkOnly = true;
+    scopedFileOptions.strictPermissions = true;
+    scopedFileOptions.capabilities.insert("file.write(\"generated payloads/**\")");
+    const auto scopedOutputPath = std::filesystem::current_path() / "generated payloads" / "scoped.cpp";
+    const bool scopedOutputExisted = std::filesystem::exists(scopedOutputPath);
+    test(
+        "scoped file grant allows a descendant",
+        "payload.writeSource(\"cpp\", \"generated payloads/scoped.cpp\", \"source\")",
+        scopedFileOptions
+    );
+    testFailure(
+        "scoped file grant rejects a sibling",
+        "payload.writeSource(\"cpp\", \"generated_payloads/scoped.cpp\", \"source\")",
+        scopedFileOptions,
+        "resource not allowed"
+    );
+    testFailure(
+        "scoped file grant rejects traversal outside the subtree",
+        "payload.writeSource(\"cpp\", \"generated payloads/../outside_scope.cpp\", \"source\")",
+        scopedFileOptions,
+        "resource not allowed"
+    );
+    testCondition(
+        "check mode does not create scoped output",
+        std::filesystem::exists(scopedOutputPath) == scopedOutputExisted
+    );
+
+    WapiRuntimeOptions narrowedFileOptions;
+    narrowedFileOptions.checkOnly = true;
+    narrowedFileOptions.strictPermissions = true;
+    narrowedFileOptions.capabilities.insert("file.write");
+    narrowedFileOptions.deniedCapabilities.insert("file.write(\"generated payloads/private/**\")");
+    test(
+        "scoped deny leaves non-matching paths allowed",
+        "payload.writeSource(\"cpp\", \"generated payloads/public.cpp\", \"source\")",
+        narrowedFileOptions
+    );
+    testFailure(
+        "scoped deny overrides a broad grant",
+        "payload.writeSource(\"cpp\", \"generated payloads/private/blocked.cpp\", \"source\")",
+        narrowedFileOptions,
+        "by rule=file.write"
+    );
+
+    WapiRuntimeOptions namespaceDenyOptions;
+    namespaceDenyOptions.checkOnly = true;
+    namespaceDenyOptions.capabilities.insert("runtime.print");
+    namespaceDenyOptions.deniedCapabilities.insert("Runtime.*");
+    testFailure(
+        "namespace deny is case-insensitive and overrides a soft capability grant",
+        "print(\"blocked\")",
+        namespaceDenyOptions,
+        "by rule=Runtime.*"
+    );
+
+    WapiRuntimeOptions languageDenyOptions;
+    languageDenyOptions.checkOnly = true;
+    languageDenyOptions.capabilities.insert("language.core");
+    languageDenyOptions.capabilities.insert("language.string");
+    languageDenyOptions.deniedCapabilities.insert("Language.*");
+    testFailure(
+        "language namespace deny applies to pure functions",
+        "len(\"blocked\")",
+        languageDenyOptions,
+        "by rule=Language.*"
+    );
+    testFailure(
+        "language namespace deny applies to methods",
+        "string text = \" blocked \" text.trim()",
+        languageDenyOptions,
+        "by rule=Language.*"
+    );
+
+    WapiRuntimeOptions globalDenyOptions;
+    globalDenyOptions.checkOnly = true;
+    globalDenyOptions.capabilities.insert("runtime.print");
+    globalDenyOptions.deniedCapabilities.insert("*");
+    testFailure(
+        "global deny overrides every capability grant",
+        "print(\"blocked\")",
+        globalDenyOptions,
+        "by rule=*"
+    );
+
+    WapiRuntimeOptions containsPolicyOptions;
+    containsPolicyOptions.checkOnly = true;
+    containsPolicyOptions.strictPermissions = true;
+    containsPolicyOptions.capabilities.insert("language.core");
+    containsPolicyOptions.deniedCapabilities.insert("language.string");
+    containsPolicyOptions.deniedCapabilities.insert("language.array");
+    test(
+        "contains uses its shared core capability for strings and arrays",
+        "bool inText = contains(\"wapi\", \"api\") var items = [1, 2] bool inArray = items.contains(2)",
+        containsPolicyOptions
+    );
+
+    WapiRuntimeOptions wildcardAllowOptions;
+    wildcardAllowOptions.checkOnly = true;
+    wildcardAllowOptions.capabilities.insert("inject.*");
+    testFailure(
+        "wildcard capability grants fail closed",
+        "print(\"blocked\")",
+        wildcardAllowOptions,
+        "wildcard capability grants are not allowed"
+    );
+
+    WapiRuntimeOptions questionWildcardOptions;
+    questionWildcardOptions.checkOnly = true;
+    questionWildcardOptions.capabilities.insert("file.write(\"generated?.cpp\")");
+    testFailure(
+        "unsupported resource wildcards fail closed",
+        "print(\"blocked\")",
+        questionWildcardOptions,
+        "resource wildcard must be a terminal /**"
+    );
+
+    WapiRuntimeOptions unsupportedScopeOptions;
+    unsupportedScopeOptions.checkOnly = true;
+    unsupportedScopeOptions.deniedCapabilities.insert("proc.list(\"notepad.exe\")");
+    testFailure(
+        "unsupported resource scopes fail closed",
+        "print(\"blocked\")",
+        unsupportedScopeOptions,
+        "resource scopes are currently supported only"
+    );
+
+    ScriptDirectives untrustedScopedDirective;
+    untrustedScopedDirective.capabilities.insert("file.write(\"generated payloads/**\")");
+    WapiRuntimeOptions untrustedScopedOptions;
+    untrustedScopedOptions.checkOnly = true;
+    untrustedScopedOptions.strictPermissions = true;
+    applyDirectivesToOptions(untrustedScopedDirective, untrustedScopedOptions);
+    testFailure(
+        "untrusted scoped cap cannot grant file access",
+        "payload.writeSource(\"cpp\", \"generated payloads/untrusted.cpp\", \"source\")",
+        untrustedScopedOptions,
+        "missing capability=file.write"
+    );
+
+    WapiRuntimeOptions trustedScopedOptions;
+    trustedScopedOptions.checkOnly = true;
+    trustedScopedOptions.strictPermissions = true;
+    trustedScopedOptions.trustScriptDirectives = true;
+    applyDirectivesToOptions(untrustedScopedDirective, trustedScopedOptions);
+    test(
+        "trusted scoped cap grants only its declared path",
+        "payload.writeSource(\"cpp\", \"generated payloads/trusted.cpp\", \"source\")",
+        trustedScopedOptions
+    );
+
+    ScriptDirectives scriptDenyDirective;
+    scriptDenyDirective.deniedCapabilities.insert("runtime.print");
+    WapiRuntimeOptions scriptDenyOptions;
+    scriptDenyOptions.checkOnly = true;
+    scriptDenyOptions.capabilities.insert("runtime.print");
+    applyDirectivesToOptions(scriptDenyDirective, scriptDenyOptions);
+    testFailure(
+        "untrusted script deny still narrows authority",
+        "print(\"blocked\")",
+        scriptDenyOptions,
+        "denied capability=runtime.print"
+    );
+
+    try {
+        const ResolvedSource bundleInput = resolveSourceArgumentsWithDirectives({
+            "#name \"policy bundle\"\n#cap runtime.print\n#deny runtime.sleep\nprint(\"one\")",
+            "#strict\n#cap file.write(\"generated payloads/**\")\nprint(\"two\")"
+        });
+        const ExtractResult reparsedBundle = extractDirectives(serialiseResolvedSource(bundleInput));
+        testCondition(
+            "bundle preserves merged policy directives",
+            reparsedBundle.directives.name == "policy bundle" &&
+            reparsedBundle.directives.strict &&
+            reparsedBundle.directives.capabilities.count("runtime.print") == 1 &&
+            reparsedBundle.directives.capabilities.count("file.write(\"generated payloads/**\")") == 1 &&
+            reparsedBundle.directives.deniedCapabilities.count("runtime.sleep") == 1 &&
+            reparsedBundle.source.find("print(\"one\")") != std::string::npos &&
+            reparsedBundle.source.find("print(\"two\")") != std::string::npos
+        );
+    }
+    catch (const std::exception& error) {
+        testCondition("bundle preserves merged policy directives", false, error.what());
+    }
+
+    const auto nestedBundleStamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path nestedBundleRoot = std::filesystem::temp_directory_path() /
+        ("wapi_nested_bundle_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(nestedBundleStamp));
+    try {
+        writeTextFileIfMissing(
+            nestedBundleRoot / "main.wapi",
+            "#name \"nested bundle\"\n#include \"child.wapi\"\nprint(\"main\")\n"
+        );
+        writeTextFileIfMissing(
+            nestedBundleRoot / "child.wapi",
+            "#cap runtime.print\n#deny runtime.sleep\n#include \"nested/grand.wapi\"\nprint(\"child\")\n"
+        );
+        writeTextFileIfMissing(
+            nestedBundleRoot / "nested" / "grand.wapi",
+            "#strict\n#cap language.core\nprint(\"grand\")\n"
+        );
+        const ResolvedSource nestedBundle = resolveSourceArgumentsWithDirectives({
+            (nestedBundleRoot / "main.wapi").string()
+        });
+        const ExtractResult reparsedNestedBundle = extractDirectives(serialiseResolvedSource(nestedBundle));
+        const std::size_t grandPosition = reparsedNestedBundle.source.find("print(\"grand\")");
+        const std::size_t childPosition = reparsedNestedBundle.source.find("print(\"child\")");
+        const std::size_t mainPosition = reparsedNestedBundle.source.find("print(\"main\")");
+        testCondition(
+            "bundle expands nested directive includes and preserves their policy",
+            reparsedNestedBundle.directives.name == "nested bundle" &&
+            reparsedNestedBundle.directives.strict &&
+            reparsedNestedBundle.directives.capabilities.count("runtime.print") == 1 &&
+            reparsedNestedBundle.directives.capabilities.count("language.core") == 1 &&
+            reparsedNestedBundle.directives.deniedCapabilities.count("runtime.sleep") == 1 &&
+            reparsedNestedBundle.directives.includes.empty() &&
+            grandPosition < childPosition && childPosition < mainPosition
+        );
+        std::error_code cleanupError;
+        std::filesystem::remove_all(nestedBundleRoot, cleanupError);
+    }
+    catch (const std::exception& error) {
+        std::error_code cleanupError;
+        std::filesystem::remove_all(nestedBundleRoot, cleanupError);
+        testCondition("bundle expands nested directive includes and preserves their policy", false, error.what());
+    }
+
+    wchar_t executableBuffer[32768]{};
+    const DWORD executableLength = GetModuleFileNameW(nullptr, executableBuffer, 32768);
+    if (executableLength > 0 && executableLength < 32768) {
+        const std::string executablePath = std::filesystem::path(executableBuffer).generic_string();
+        const std::string scopedPeRule = "pe.inspect(\"" + executablePath + "\")";
+        const std::string inspectCurrentExecutable = "pe.inspect(\"" + executablePath + "\")";
+
+        WapiRuntimeOptions scopedPeOptions;
+        scopedPeOptions.checkOnly = true;
+        scopedPeOptions.strictPermissions = true;
+        scopedPeOptions.capabilities.insert(scopedPeRule);
+        test(
+            "scoped PE grant allows its exact file",
+            inspectCurrentExecutable,
+            scopedPeOptions
+        );
+
+        WapiRuntimeOptions deniedPeOptions;
+        deniedPeOptions.checkOnly = true;
+        deniedPeOptions.strictPermissions = true;
+        deniedPeOptions.capabilities.insert("pe.inspect");
+        deniedPeOptions.deniedCapabilities.insert(scopedPeRule);
+        testFailure(
+            "scoped PE deny overrides a broad grant",
+            inspectCurrentExecutable,
+            deniedPeOptions,
+            "by rule=pe.inspect"
+        );
+    }
+    else {
+        testCondition("scoped PE grant allows its exact file", false, "could not resolve current executable");
+        testCondition("scoped PE deny overrides a broad grant", false, "could not resolve current executable");
+    }
+
     std::cout << "[Process] ---------------------------------------------\n";
     test("proc.list", "proc.list()", options);
     test("proc.find", "int pid = proc.find(\"notepad\")", options);
@@ -1113,7 +1608,7 @@ void runStandardizedTests() {
 int errorExitCode(const std::string& message) {
     if (message.rfind("E_LEX", 0) == 0 || message.rfind("E_PARSE", 0) == 0) return 65;
     if (message.rfind("E_TYPE", 0) == 0 || message.rfind("E_ARG", 0) == 0) return 66;
-    if (message.rfind("E_PERMISSION", 0) == 0 || message.rfind("E_DIRECTIVE", 0) == 0) return 77;
+    if (message.rfind("E_PERMISSION", 0) == 0 || message.rfind("E_DIRECTIVE", 0) == 0 || message.rfind("E_CAPABILITY_RULE", 0) == 0) return 77;
     if (message.rfind("E_TIMEOUT", 0) == 0) return 124;
     return 1;
 }
@@ -1227,24 +1722,39 @@ int runInteractiveLauncher(std::filesystem::path initialPath = {}) {
             preview.directives.capabilities.begin(),
             preview.directives.capabilities.end()
         );
+        std::vector<std::string> denials(
+            preview.directives.deniedCapabilities.begin(),
+            preview.directives.deniedCapabilities.end()
+        );
         std::sort(capabilities.begin(), capabilities.end());
+        std::sort(denials.begin(), denials.end());
+        const bool requestsManualMap = std::any_of(capabilities.begin(), capabilities.end(), [](const std::string& rule) {
+            return wapi::policy::capabilityName(rule) == "inject.manualmap";
+        });
+        const auto printRules = [](const std::vector<std::string>& rules) {
+            if (rules.empty()) {
+                std::cout << "none";
+                return;
+            }
+            for (std::size_t index = 0; index < rules.size(); ++index) {
+                if (index != 0) std::cout << ", ";
+                std::cout << rules[index];
+            }
+        };
 
         std::cout << "  File         " << scriptPath.string() << "\n";
         std::cout << "  Mode         "
                   << (preview.directives.hasMode ? modeToDirectiveString(preview.directives.mode) : "safe")
                   << "\n";
         std::cout << "  Capabilities ";
-        if (capabilities.empty()) std::cout << "none";
-        else {
-            for (std::size_t index = 0; index < capabilities.size(); ++index) {
-                if (index != 0) std::cout << ", ";
-                std::cout << capabilities[index];
-            }
-        }
+        printRules(capabilities);
+        std::cout << "\n";
+        std::cout << "  Denials      ";
+        printRules(denials);
         std::cout << "\n\n";
 
         if ((preview.directives.hasMode && preview.directives.mode == WapiMode::Dangerous) ||
-            preview.directives.capabilities.count("inject.manualmap") != 0) {
+            requestsManualMap) {
             std::cout
                 << "  [!] Dangerous/manual-map scripts require an explicit CLI launch.\n"
                 << "      Wapi.exe run \"" << scriptPath.string()
@@ -1352,7 +1862,8 @@ int main(int argc, char* argv[]) {
                 sourceArgs.push_back(arg);
             }
             if (sourceArgs.empty()) throw std::runtime_error("Missing source file for bundle");
-            const std::string bundled = resolveSourceArguments(sourceArgs);
+            const std::string bundled = serialiseResolvedSource(
+                resolveSourceArgumentsWithDirectives(sourceArgs));
             if (!outputPath.empty()) {
                 std::ofstream out(outputPath, std::ios::binary | std::ios::trunc);
                 if (!out) throw std::runtime_error("Could not write bundle: " + outputPath.string());

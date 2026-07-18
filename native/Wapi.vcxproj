@@ -205,6 +205,7 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\capability_policy.cpp" />
     <ClCompile Include="src\evaluator.cpp" />
     <ClCompile Include="src\manual_mapper.cpp" />
     <ClCompile Include="src\memory_inspector.cpp" />
@@ -213,6 +214,7 @@
     <ClCompile Include="src\Wapi.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\capability_policy.h" />
     <ClInclude Include="src\evaluator.h" />
     <ClInclude Include="src\manual_mapper.h" />
     <ClInclude Include="src\memory_inspector.h" />

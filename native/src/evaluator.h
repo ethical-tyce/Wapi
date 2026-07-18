@@ -2,11 +2,13 @@
 #include <chrono>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
 #include <vector>
+#include "capability_policy.h"
 #include "parser.h"
 
 struct WapiArray;
@@ -43,6 +45,7 @@ struct WapiRuntimeOptions {
     int maxSteps = 100000;
     std::string outputFormat = "text";
     std::unordered_set<std::string> capabilities;
+    std::unordered_set<std::string> deniedCapabilities;
 };
 
 class WapiUnstableException : public std::exception {
@@ -69,6 +72,8 @@ private:
     std::unordered_map<std::string, std::shared_ptr<StructDeclaration>> structRegistry;
     std::unordered_set<long long> trackedHandles;
     std::unordered_map<long long, std::unordered_set<long long>> trackedAllocations;
+    std::vector<wapi::policy::CapabilityRule> capabilityAllowRules;
+    std::vector<wapi::policy::CapabilityRule> capabilityDenyRules;
 
     WapiValue evalNode(std::shared_ptr<ASTNode> node);
     WapiValue evalFunctionCall(std::shared_ptr<FunctionCall> call);
@@ -95,7 +100,13 @@ private:
     long long asNumberValue(const WapiValue& value, const std::string& context) const;
     void emitJsonEvent(const std::string& kind, const std::string& payload) const;
     void emitAudit(const std::string& functionName, const std::string& capability, const std::string& result, const std::string& detail = "") const;
-    void enforcePolicy(const std::string& functionName, const std::string& capability, bool requiresInjectionFlag = false) const;
+    void enforcePolicy(
+        const std::string& functionName,
+        const std::string& capability,
+        bool requiresInjectionFlag = false,
+        const std::optional<std::string>& resource = std::nullopt,
+        bool resourceRequired = false
+    ) const;
     [[noreturn]] void throwArgType(const std::string& functionName, int argIndex, const std::string& expectedType) const;
 
     std::string asString(const std::shared_ptr<ASTNode>& node, const std::string& functionName, int argIndex);

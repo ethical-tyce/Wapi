@@ -13,7 +13,9 @@ Directives are parsed before lexing. Put them at the top of a file before normal
 #description "Small safe-mode script"
 #mode safe
 #strict
-#cap runtime.print proc.list
+#cap runtime.print
+#cap file.write("generated_payloads/**")
+#deny file.write("generated_payloads/private/**")
 #include "helpers.wapi"
 
 print("ready")
@@ -22,7 +24,8 @@ print("ready")
 Supported directives:
 
 - `#mode safe|dev|unsafe|dangerous` declares the minimum runtime mode. `dangerous` must be granted externally.
-- `#cap <capability> [<capability>...]` declares required capabilities. It does not grant them unless the CLI is run with `--trust-script-directives`.
+- `#cap <rule> [<rule>...]` declares required capabilities. It does not grant them unless the CLI is run with `--trust-script-directives`.
+- `#deny <rule> [<rule>...]` always narrows authority, including for untrusted scripts. Denies merge across includes and override every grant.
 - `#include "relative/path.wapi"`
 - `#strict`
 - `#allow-injection` declares injection helper usage. It is not an injection grant unless directives are trusted.
@@ -32,6 +35,35 @@ Supported directives:
 - `#description "..."`
 
 `#include` is preferred. Old body-level `include "file.wapi"` still works for compatibility.
+
+### Capability rule grammar
+
+Broad grants remain compatible:
+
+```wapi
+#cap runtime.print proc.list
+```
+
+The implemented resource-scoped form takes one quoted path:
+
+```wapi
+#cap file.write("generated_payloads/**")
+#cap pe.inspect("build/plugin.dll")
+#deny file.write("generated_payloads/private/**")
+#deny inject.*
+```
+
+- Resource scopes currently apply only to `file.write` and `pe.inspect`.
+- A path is exact unless it ends in `/**`, which covers the directory itself and all descendants.
+- Relative paths resolve from the process launch working directory. Forward slashes are required for the `/**` suffix.
+- Wildcard grants, ordinary `*`, `?`, mid-pattern wildcards, and scopes on unsupported capabilities fail with `E_CAPABILITY_RULE`.
+- Capability names are matched case-insensitively.
+- Denies may use an exact capability, the global `*`, or a terminal namespace wildcard such as `inject.*`.
+- Quoted paths may contain spaces; directive splitting occurs only outside quotes and parentheses.
+
+The runtime performs a coarse capability check before evaluating arguments, authorizes the lexical target, resolves it, then repeats the deny-first check on the resolved target before file I/O. This v1 does not yet claim filesystem-wide confinement for DLL loading or other path-consuming bindings.
+
+`wapi bundle` expands includes and emits the merged metadata, mode, strictness, capability, and deny directives ahead of the bundled source. Expanded `#include` directives are intentionally omitted.
 
 ## Declarations
 
@@ -253,7 +285,9 @@ Use this order when checking scripts manually:
 
 ```powershell
 wapi lint script.wapi --mode safe
-wapi check script.wapi --mode safe --strict-permissions --cap runtime.print
+wapi check script.wapi --mode safe --strict-permissions `
+  --cap 'file.write("generated_payloads/**")' `
+  --deny 'file.write("generated_payloads/private/**")'
 wapi run script.wapi --trust-script-directives
 ```
 
