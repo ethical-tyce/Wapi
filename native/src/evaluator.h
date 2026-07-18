@@ -141,6 +141,13 @@ private:
     WapiValue wapi_freeMemory(long long handle, long long address);
     WapiValue wapi_protectMemory(long long handle, long long address, int size, int protection);
     WapiValue wapi_queryMemory(long long handle, long long address);
+    WapiValue wapi_listMemoryRegions(long long handle);
+    WapiValue wapi_listExecutableRegions(long long handle);
+    WapiValue wapi_detectUnbackedExecutable(int pid);
+    WapiValue wapi_detectPeImage(long long handle, long long address);
+    WapiValue wapi_inspectPeFile(const std::string& path);
+    WapiValue wapi_writePayloadSource(const std::string& language, const std::string& path, const std::string& source);
+    WapiValue wapi_writeGeneratedPayloadSource(const std::string& language, const std::string& source);
 
 
     WapiValue wapi_listModules(int pid);
@@ -160,6 +167,7 @@ private:
     WapiValue wapi_resumeThread(long long threadHandle);
     WapiValue wapi_getThreadContext(long long threadHandle);
     WapiValue wapi_setThreadContext(long long threadHandle, long long contextAddress);
+    WapiValue wapi_getThreadStartAddress(long long threadHandle);
     WapiValue wapi_listWindowsByPID(int pid);
     WapiValue wapi_findWindowByPID(int pid, const std::string& title);
     WapiValue wapi_sendWindowMessage(long long hwndValue, int message, long long wparam, long long lparam);
@@ -177,5 +185,7 @@ private:
     WapiValue wapi_createRemoteThread(int pid, long long startAddress, long long parameter);
     WapiValue wapi_injectDLL(int pid, const std::string& dllPath);
     WapiValue wapi_injectManualMap(int pid, const std::string& dllPath);
+    WapiValue wapi_injectManualMapReport(int pid, const std::string& dllPath);
+    WapiValue wapi_injectManualMapImpl(int pid, const std::string& dllPath, bool report);
     WapiValue wapi_testInjectDLL(int pid);
 };

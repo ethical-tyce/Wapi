@@ -1,5 +1,6 @@
 #include "evaluator.h"
 #include "manual_mapper.h"
+#include "memory_inspector.h"
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <vector>
@@ -10,6 +11,7 @@
 #include <cctype>
 #include <optional>
 #include <cwctype>
+#include <fstream>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -299,6 +301,187 @@ bool isRemoteRangeAccessible(HANDLE process, long long address, int size, bool w
         current = (std::min)(end, regionEnd);
     }
     return true;
+}
+
+WapiStructPtr memoryRegionValue(const wapi::inspection::MemoryRegionInfo& region) {
+    auto value = std::make_shared<WapiStructInstance>();
+    value->typeName = "MemoryRegion";
+    value->fields = {
+        {"base", static_cast<long long>(region.base)},
+        {"allocationBase", static_cast<long long>(region.allocationBase)},
+        {"size", static_cast<long long>(region.size)},
+        {"state", static_cast<long long>(region.state)},
+        {"type", static_cast<long long>(region.type)},
+        {"protection", static_cast<long long>(region.protection)},
+        {"allocationProtection", static_cast<long long>(region.allocationProtection)},
+        {"protectionName", region.protectionName},
+        {"readable", region.readable},
+        {"writable", region.writable},
+        {"executable", region.executable},
+        {"guarded", region.guarded},
+        {"registeredModule", region.registeredModule},
+        {"module", region.moduleName},
+        {"classification", region.classification},
+        {"suspicious", region.suspicious}
+    };
+    return value;
+}
+
+WapiArrayPtr memoryRegionArray(const std::vector<wapi::inspection::MemoryRegionInfo>& regions) {
+    auto result = std::make_shared<WapiArray>();
+    result->values.reserve(regions.size());
+    for (const auto& region : regions) result->values.emplace_back(memoryRegionValue(region));
+    return result;
+}
+
+WapiStructPtr peImageValue(const wapi::inspection::PeImageInfo& info) {
+    auto value = std::make_shared<WapiStructInstance>();
+    value->typeName = "PeImageInfo";
+    value->fields = {
+        {"readable", info.readable}, {"valid", info.valid}, {"dll", info.dll},
+        {"pe32Plus", info.pe32Plus}, {"machine", static_cast<long long>(info.machine)},
+        {"machineName", info.machineName}, {"sections", static_cast<long long>(info.sectionCount)},
+        {"imageBase", static_cast<long long>(info.imageBase)}, {"sizeOfImage", static_cast<long long>(info.sizeOfImage)},
+        {"entryPoint", static_cast<long long>(info.entryPoint)}, {"hasImports", info.hasImports},
+        {"hasRelocations", info.hasRelocations}, {"hasTls", info.hasTls},
+        {"hasExceptionDirectory", info.hasExceptionDirectory}, {"reason", info.reason}
+    };
+    return value;
+}
+
+WapiStructPtr manualMapResultValue(const wapi::injection::ManualMapResult& result) {
+    auto value = std::make_shared<WapiStructInstance>();
+    value->typeName = "ManualMapReport";
+    value->fields = {
+        {"base", static_cast<long long>(result.baseAddress)},
+        {"imageSize", static_cast<long long>(result.imageSize)},
+        {"sections", static_cast<long long>(result.sectionCount)},
+        {"importModules", static_cast<long long>(result.importModuleCount)},
+        {"relocations", static_cast<long long>(result.relocationCount)},
+        {"unwindEntries", static_cast<long long>(result.unwindEntryCount)},
+        {"validated", result.validated},
+        {"entryPointCalled", result.entryPointCalled},
+        {"unwindRegistered", result.unwindRegistered},
+        {"finalProtectionsApplied", result.finalProtectionsApplied}
+    };
+    return value;
+}
+
+WapiStructPtr threadStartValue(const wapi::inspection::ThreadStartInfo& info) {
+    auto value = std::make_shared<WapiStructInstance>();
+    value->typeName = "ThreadStartInfo";
+    value->fields = {
+        {"threadId", static_cast<long long>(info.threadId)}, {"pid", static_cast<long long>(info.processId)},
+        {"address", static_cast<long long>(info.address)}, {"registeredModule", info.registeredModule},
+        {"module", info.moduleName}, {"executable", info.executable},
+        {"classification", info.classification}, {"suspicious", info.suspicious}
+    };
+    return value;
+}
+
+std::filesystem::path resolvedExistingDllPath(const std::string& path) {
+    if (path.empty()) throw WapiUnstableException("DLL path is empty");
+    std::error_code error;
+    std::filesystem::path resolved = std::filesystem::weakly_canonical(std::filesystem::path(path), error);
+    if (error) {
+        error.clear();
+        resolved = std::filesystem::absolute(std::filesystem::path(path), error);
+    }
+    if (error || !std::filesystem::is_regular_file(resolved)) {
+        throw WapiUnstableException("DLL path does not exist: " + path);
+    }
+    if (toLowerAscii(resolved.extension().string()) != ".dll") {
+        throw WapiUnstableException("Injection path must point to a .dll file");
+    }
+    return resolved;
+}
+
+std::uintptr_t remoteModuleBase(DWORD pid, const std::wstring& moduleName) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (snapshot == INVALID_HANDLE_VALUE) return 0;
+    MODULEENTRY32W module{};
+    module.dwSize = sizeof(module);
+    const std::wstring wanted = [&] {
+        std::wstring value = moduleName;
+        std::transform(value.begin(), value.end(), value.begin(), ::towlower);
+        return value;
+    }();
+    if (Module32FirstW(snapshot, &module)) {
+        do {
+            std::wstring current(module.szModule);
+            std::transform(current.begin(), current.end(), current.begin(), ::towlower);
+            if (current == wanted) {
+                const auto base = reinterpret_cast<std::uintptr_t>(module.modBaseAddr);
+                CloseHandle(snapshot);
+                return base;
+            }
+        } while (Module32NextW(snapshot, &module));
+    }
+    CloseHandle(snapshot);
+    return 0;
+}
+
+std::wstring normalizedPathKey(const std::filesystem::path& path) {
+    std::error_code error;
+    std::filesystem::path resolved = std::filesystem::weakly_canonical(path, error);
+    if (error) {
+        error.clear();
+        resolved = std::filesystem::absolute(path, error);
+    }
+    if (error) resolved = path.lexically_normal();
+    std::wstring value = resolved.lexically_normal().wstring();
+    std::transform(value.begin(), value.end(), value.begin(), ::towlower);
+    return value;
+}
+
+std::uintptr_t remoteModuleBaseForPath(DWORD pid, const std::filesystem::path& expectedPath) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (snapshot == INVALID_HANDLE_VALUE) return 0;
+    MODULEENTRY32W module{};
+    module.dwSize = sizeof(module);
+    const std::wstring expected = normalizedPathKey(expectedPath);
+    if (Module32FirstW(snapshot, &module)) {
+        do {
+            if (normalizedPathKey(module.szExePath) == expected) {
+                const auto base = reinterpret_cast<std::uintptr_t>(module.modBaseAddr);
+                CloseHandle(snapshot);
+                return base;
+            }
+        } while (Module32NextW(snapshot, &module));
+    }
+    CloseHandle(snapshot);
+    return 0;
+}
+
+std::uintptr_t remoteAddressForLocalFunction(DWORD pid, FARPROC function) {
+    if (!function) throw WapiUnstableException("Required loader function is unavailable");
+    HMODULE localModule = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(function), &localModule)) {
+        throw WapiUnstableException("Could not identify the loader function module");
+    }
+    wchar_t path[MAX_PATH]{};
+    if (GetModuleFileNameW(localModule, path, MAX_PATH) == 0) {
+        throw WapiUnstableException("Could not identify the loader module name");
+    }
+    const std::wstring moduleName = std::filesystem::path(path).filename().wstring();
+    const std::uintptr_t remoteBase = remoteModuleBase(pid, moduleName);
+    if (remoteBase == 0) throw WapiUnstableException("Loader module is absent from the target: " + wideToUtf8(moduleName));
+    const auto offset = reinterpret_cast<std::uintptr_t>(function) - reinterpret_cast<std::uintptr_t>(localModule);
+    return remoteBase + offset;
+}
+
+WORD targetMachine(HANDLE process) {
+    using IsWow64Process2Fn = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (!kernel32) return IMAGE_FILE_MACHINE_UNKNOWN;
+    auto function = reinterpret_cast<IsWow64Process2Fn>(GetProcAddress(kernel32, "IsWow64Process2"));
+    if (!function) return IMAGE_FILE_MACHINE_UNKNOWN;
+    USHORT processMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+    USHORT nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+    if (!function(process, &processMachine, &nativeMachine)) return IMAGE_FILE_MACHINE_UNKNOWN;
+    return processMachine == IMAGE_FILE_MACHINE_UNKNOWN ? nativeMachine : processMachine;
 }
 
 } // namespace
@@ -1485,6 +1668,48 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
             }}
         },
         {
+            "listMemoryRegions",
+            {1, "mem.query", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_listMemoryRegions(e.asLongLong(c->args[0], c->name, 0));
+            }}
+        },
+        {
+            "listExecutableRegions",
+            {1, "mem.query", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_listExecutableRegions(e.asLongLong(c->args[0], c->name, 0));
+            }}
+        },
+        {
+            "detectUnbackedExecutable",
+            {1, "detect.memory", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_detectUnbackedExecutable(e.asInt(c->args[0], c->name, 0));
+            }}
+        },
+        {
+            "detectPeImage",
+            {2, "detect.memory", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_detectPeImage(e.asLongLong(c->args[0], c->name, 0), e.asLongLong(c->args[1], c->name, 1));
+            }}
+        },
+        {
+            "inspectPeFile",
+            {1, "pe.inspect", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_inspectPeFile(e.asString(c->args[0], c->name, 0));
+            }}
+        },
+        {
+            "writePayloadSource",
+            {3, "file.write", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_writePayloadSource(e.asString(c->args[0], c->name, 0), e.asString(c->args[1], c->name, 1), e.asString(c->args[2], c->name, 2));
+            }}
+        },
+        {
+            "writeGeneratedPayloadSource",
+            {2, "file.write", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_writeGeneratedPayloadSource(e.asString(c->args[0], c->name, 0), e.asString(c->args[1], c->name, 1));
+            }}
+        },
+        {
             "listThreads",
             {1, "thread.list", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
                 return evaluator.wapi_listThreads(evaluator.asInt(call->args[0], call->name, 0));
@@ -1518,6 +1743,12 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
             "setThreadContext",
             {2, "thread.context.write", false, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
                 return evaluator.wapi_setThreadContext(evaluator.asLongLong(call->args[0], call->name, 0), evaluator.asLongLong(call->args[1], call->name, 1));
+            }}
+        },
+        {
+            "getThreadStartAddress",
+            {1, "thread.query", false, [](Evaluator& e, const std::shared_ptr<FunctionCall>& c) -> WapiValue {
+                return e.wapi_getThreadStartAddress(e.asLongLong(c->args[0], c->name, 0));
             }}
         },
         {
@@ -1605,6 +1836,15 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
             }}
         },
         {
+            "manualMapReportDLL",
+            {2, "inject.manualmap", true, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
+                return evaluator.wapi_injectManualMapReport(
+                    evaluator.asInt(call->args[0], call->name, 0),
+                    evaluator.asString(call->args[1], call->name, 1)
+                );
+            }}
+        },
+        {
             "testInjectDLL",
             {1, "inject.dll", true, [](Evaluator& evaluator, const std::shared_ptr<FunctionCall>& call) -> WapiValue {
                 return evaluator.wapi_testInjectDLL(evaluator.asInt(call->args[0], call->name, 0));
@@ -1631,12 +1871,20 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         {"proc.module.size", "getModuleSize"},
         {"mem.protect", "protectMemory"},
         {"mem.query", "queryMemory"},
+        {"mem.regions", "listMemoryRegions"},
+        {"mem.executableRegions", "listExecutableRegions"},
+        {"detect.unbackedExecutable", "detectUnbackedExecutable"},
+        {"detect.peImage", "detectPeImage"},
+        {"pe.inspect", "inspectPeFile"},
+        {"payload.writeSource", "writePayloadSource"},
+        {"inject.writePayloadSRC", "writeGeneratedPayloadSource"},
         {"thread.list", "listThreads"},
         {"thread.open", "openThread"},
         {"thread.suspend", "suspendThread"},
         {"thread.resume", "resumeThread"},
         {"thread.context", "getThreadContext"},
         {"thread.context.set", "setThreadContext"},
+        {"thread.startAddress", "getThreadStartAddress"},
         {"window.listByPid", "listWindowsByPID"},
         {"window.findByPid", "findWindowByPID"},
         {"window.message", "sendWindowMessage"},
@@ -1694,6 +1942,7 @@ WapiValue Evaluator::evalFunctionCall(std::shared_ptr<FunctionCall> call) {
         {"inject.loadLibrary", "injectDLL"},
         {"inject.manualMap", "manualMapDLL"},
         {"inject.manualmap", "manualMapDLL"},
+        {"inject.manualMapReport", "manualMapReportDLL"},
         {"inject.testDll", "testInjectDLL"},
         {"inject.test", "testInjectDLL"},
         {"testInjectDll", "testInjectDLL"}
@@ -2505,6 +2754,128 @@ WapiValue Evaluator::wapi_queryMemory(long long handle, long long address) {
     return static_cast<long long>(info.RegionSize);
 }
 
+WapiValue Evaluator::wapi_listMemoryRegions(long long handle) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "listMemoryRegions"));
+    if (options.checkOnly) {
+        emitAudit("listMemoryRegions", "mem.query", "allow", "checkOnly no side-effects");
+        return std::make_shared<WapiArray>();
+    }
+    const auto regions = wapi::inspection::memoryRegions(process, false);
+    emitAudit("listMemoryRegions", "mem.query", "success", "regions=" + std::to_string(regions.size()));
+    return memoryRegionArray(regions);
+}
+
+WapiValue Evaluator::wapi_listExecutableRegions(long long handle) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "listExecutableRegions"));
+    if (options.checkOnly) {
+        emitAudit("listExecutableRegions", "mem.query", "allow", "checkOnly no side-effects");
+        return std::make_shared<WapiArray>();
+    }
+    const auto regions = wapi::inspection::memoryRegions(process, true);
+    emitAudit("listExecutableRegions", "mem.query", "success", "regions=" + std::to_string(regions.size()));
+    return memoryRegionArray(regions);
+}
+
+WapiValue Evaluator::wapi_detectUnbackedExecutable(int pid) {
+    if (pid <= 0) throw WapiUnstableException("Invalid pid");
+    if (options.checkOnly) {
+        emitAudit("detectUnbackedExecutable", "detect.memory", "allow", "checkOnly no side-effects");
+        return std::make_shared<WapiArray>();
+    }
+    try {
+        const auto regions = wapi::inspection::unbackedExecutableRegions(static_cast<std::uint32_t>(pid));
+        emitAudit("detectUnbackedExecutable", "detect.memory", "success", "pid=" + std::to_string(pid) + " findings=" + std::to_string(regions.size()));
+        return memoryRegionArray(regions);
+    } catch (const std::exception& error) {
+        throw WapiUnstableException(std::string("Failed to inspect executable regions: ") + error.what());
+    }
+}
+
+WapiValue Evaluator::wapi_detectPeImage(long long handle, long long address) {
+    HANDLE process = reinterpret_cast<HANDLE>(requireTrackedHandle(handle, "detectPeImage"));
+    if (address <= 0) throw WapiUnstableException("Invalid PE image address");
+    if (options.checkOnly) {
+        emitAudit("detectPeImage", "detect.memory", "allow", "checkOnly no side-effects");
+        wapi::inspection::PeImageInfo placeholder;
+        placeholder.reason = "checkOnly did not read target memory";
+        return peImageValue(placeholder);
+    }
+    const auto info = wapi::inspection::inspectRemotePe(process, static_cast<std::uint64_t>(address));
+    emitAudit("detectPeImage", "detect.memory", "success", "address=" + std::to_string(address) + " valid=" + (info.valid ? "true" : "false"));
+    return peImageValue(info);
+}
+
+WapiValue Evaluator::wapi_inspectPeFile(const std::string& path) {
+    if (path.empty()) throw WapiUnstableException("PE path is empty");
+    try {
+        const auto info = wapi::inspection::inspectPeFile(std::filesystem::path(path));
+        emitAudit("inspectPeFile", "pe.inspect", "success", "path=" + path + " valid=" + (info.valid ? "true" : "false"));
+        return peImageValue(info);
+    } catch (const std::exception& error) {
+        throw WapiUnstableException(std::string("Failed to inspect PE file: ") + error.what());
+    }
+}
+
+namespace {
+std::pair<std::string, std::string> payloadLanguageInfo(std::string language) {
+    language = toLowerAscii(trimAscii(std::move(language)));
+    if (language == "c") return {"c", ".c"};
+    if (language == "cpp" || language == "c++" || language == "cxx") return {"cpp", ".cpp"};
+    if (language == "rust" || language == "rs") return {"rust", ".rs"};
+    if (language == "zig") return {"zig", ".zig"};
+    throw WapiUnstableException("Payload source language must be c, cpp, rust, or zig");
+}
+
+std::filesystem::path safePayloadPath(const std::string& requested, const std::string& extension) {
+    if (requested.empty()) throw WapiUnstableException("Payload source path is empty");
+    const std::filesystem::path relative(requested);
+    if (relative.is_absolute() || relative.has_root_name() || relative.has_root_directory()) {
+        throw WapiUnstableException("Payload source path must be relative to the current workspace");
+    }
+    std::error_code error;
+    const auto root = std::filesystem::weakly_canonical(std::filesystem::current_path(), error);
+    if (error) throw WapiUnstableException("Could not resolve the current workspace");
+    const auto output = std::filesystem::absolute(root / relative, error).lexically_normal();
+    if (error) throw WapiUnstableException("Could not resolve the payload source path");
+    const auto within = output.lexically_relative(root);
+    if (within.empty() || within.is_absolute() || *within.begin() == "..") {
+        throw WapiUnstableException("Payload source path escapes the current workspace");
+    }
+    if (toLowerAscii(output.extension().string()) != extension) {
+        throw WapiUnstableException("Payload source extension must be " + extension);
+    }
+    return output;
+}
+} // namespace
+
+WapiValue Evaluator::wapi_writePayloadSource(const std::string& language, const std::string& path, const std::string& source) {
+    const auto [normalizedLanguage, extension] = payloadLanguageInfo(language);
+    if (source.empty()) throw WapiUnstableException("Payload source is empty");
+    if (source.size() > 1024u * 1024u) throw WapiUnstableException("Payload source exceeds the 1 MiB limit");
+    const auto output = safePayloadPath(path, extension);
+    if (options.checkOnly) {
+        emitAudit("writePayloadSource", "file.write", "allow", "checkOnly path=" + output.string() + " language=" + normalizedLanguage);
+        return output.string();
+    }
+    std::error_code error;
+    if (!output.parent_path().empty()) std::filesystem::create_directories(output.parent_path(), error);
+    if (error) throw WapiUnstableException("Could not create the payload source directory");
+    std::ofstream file(output, std::ios::binary | std::ios::trunc);
+    if (!file || !file.write(source.data(), static_cast<std::streamsize>(source.size()))) {
+        throw WapiUnstableException("Could not write payload source: " + output.string());
+    }
+    emitAudit("writePayloadSource", "file.write", "success", "path=" + output.string() + " language=" + normalizedLanguage);
+    return output.string();
+}
+
+WapiValue Evaluator::wapi_writeGeneratedPayloadSource(const std::string& language, const std::string& source) {
+    const auto [normalizedLanguage, extension] = payloadLanguageInfo(language);
+    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::string path = "generated_payloads/payload_" + std::to_string(stamp) + extension;
+    return wapi_writePayloadSource(normalizedLanguage, path, source);
+}
+
 WapiValue Evaluator::wapi_listThreads(int pid) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     if (options.checkOnly) { emitAudit("listThreads", "thread.list", "allow", "checkOnly no side-effects"); return 0; }
@@ -2578,6 +2949,21 @@ WapiValue Evaluator::wapi_setThreadContext(long long threadHandle, long long con
 #endif
     if (!SetThreadContext(thread, &context)) throw WapiUnstableException("Failed to write thread context");
     return 0;
+}
+
+WapiValue Evaluator::wapi_getThreadStartAddress(long long threadHandle) {
+    HANDLE thread = reinterpret_cast<HANDLE>(requireTrackedHandle(threadHandle, "getThreadStartAddress"));
+    if (options.checkOnly) {
+        emitAudit("getThreadStartAddress", "thread.query", "allow", "checkOnly no side-effects");
+        return threadStartValue({});
+    }
+    try {
+        const auto info = wapi::inspection::threadStartAddress(thread);
+        emitAudit("getThreadStartAddress", "thread.query", "success", "tid=" + std::to_string(info.threadId) + " address=" + std::to_string(info.address));
+        return threadStartValue(info);
+    } catch (const std::exception& error) {
+        throw WapiUnstableException(std::string("Failed to query thread start address: ") + error.what());
+    }
 }
 
 WapiValue Evaluator::wapi_closeHandle(long long handle) {
@@ -2761,46 +3147,84 @@ WapiValue Evaluator::wapi_injectShellcode(int pid, const std::string& hexBytes) 
 
 WapiValue Evaluator::wapi_injectDLL(int pid, const std::string& dllPath) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
-    if (dllPath.empty()) throw WapiUnstableException("DLL path is empty");
-    if (!std::filesystem::exists(std::filesystem::path(dllPath))) {
-        throw WapiUnstableException("DLL path does not exist: " + dllPath);
+    const std::filesystem::path resolvedPath = resolvedExistingDllPath(dllPath);
+    const auto image = wapi::inspection::inspectPeFile(resolvedPath);
+    if (!image.valid || !image.dll) {
+        throw WapiUnstableException("Injection path is not a valid native PE DLL: " + image.reason);
     }
+    const std::string auditContext = "pid=" + std::to_string(pid) + " path=" + resolvedPath.string();
     if (options.checkOnly) {
-        emitAudit("injectDLL", "inject.dll", "allow", "checkOnly no side-effects");
+        emitAudit("injectDLL", "inject.dll", "validated", auditContext + " machine=" + image.machineName);
         return 0;
     }
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, static_cast<DWORD>(pid));
-    if (!hProcess) throw WapiUnstableException("Failed to open process");
-    LPVOID remote = VirtualAllocEx(hProcess, nullptr, dllPath.size() + 1, MEM_COMMIT, PAGE_READWRITE);
+
+    const DWORD targetPid = static_cast<DWORD>(pid);
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (!kernel32) throw WapiUnstableException("kernel32.dll is unavailable in the Wapi process");
+    const auto localLoadLibraryW = GetProcAddress(kernel32, "LoadLibraryW");
+    const std::uintptr_t remoteLoadLibraryW = remoteAddressForLocalFunction(targetPid, localLoadLibraryW);
+    constexpr DWORD rights = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+        PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE;
+    HANDLE process = OpenProcess(rights, FALSE, targetPid);
+    if (!process) throw WapiUnstableException("Failed to open process with DLL-loader rights");
+    const WORD machine = targetMachine(process);
+    if (machine != IMAGE_FILE_MACHINE_UNKNOWN && machine != image.machine) {
+        CloseHandle(process);
+        throw WapiUnstableException("DLL architecture " + image.machineName + " does not match the target process");
+    }
+
+    const std::wstring widePath = resolvedPath.wstring();
+    const SIZE_T pathBytes = (widePath.size() + 1) * sizeof(wchar_t);
+    LPVOID remote = VirtualAllocEx(process, nullptr, pathBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!remote) {
-        CloseHandle(hProcess);
-        throw WapiUnstableException("Failed to allocate memory");
+        CloseHandle(process);
+        throw WapiUnstableException("Failed to allocate the remote DLL path");
     }
-    if (!WriteProcessMemory(hProcess, remote, dllPath.c_str(), dllPath.size() + 1, nullptr)) {
-        VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
-        throw WapiUnstableException("Failed to write memory");
+    SIZE_T written = 0;
+    if (!WriteProcessMemory(process, remote, widePath.c_str(), pathBytes, &written) || written != pathBytes) {
+        VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+        CloseHandle(process);
+        throw WapiUnstableException("Failed to write the complete remote DLL path");
     }
-    HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA")), remote, 0, nullptr);
-    if (!hThread) {
-        VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
-        throw WapiUnstableException("Failed to create remote thread");
+    HANDLE thread = CreateRemoteThread(
+        process, nullptr, 0,
+        reinterpret_cast<LPTHREAD_START_ROUTINE>(remoteLoadLibraryW),
+        remote, 0, nullptr
+    );
+    if (!thread) {
+        VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+        CloseHandle(process);
+        throw WapiUnstableException("Failed to create the remote loader thread");
     }
-    WaitForSingleObject(hThread, INFINITE);
+
+    DWORD waitMs = 15000u;
+    if (timeoutEnabled) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(timeoutDeadline - std::chrono::steady_clock::now()).count();
+        waitMs = remaining <= 0 ? 1u : static_cast<DWORD>((std::min)(remaining, static_cast<long long>((std::numeric_limits<DWORD>::max)())));
+    }
+    const DWORD waitResult = WaitForSingleObject(thread, waitMs);
+    if (waitResult != WAIT_OBJECT_0) {
+        CloseHandle(thread);
+        CloseHandle(process);
+        throw WapiUnstableException("Remote loader did not finish; target state is uncertain and the path allocation was retained");
+    }
     DWORD exitCode = 0;
-    GetExitCodeThread(hThread, &exitCode);
-    VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
-    CloseHandle(hThread);
-    CloseHandle(hProcess);
-    if (exitCode == 0) {
-        throw WapiUnstableException("LoadLibrary failed inside target process - check DLL path");
+    const BOOL exitRead = GetExitCodeThread(thread, &exitCode);
+    VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+    CloseHandle(thread);
+    CloseHandle(process);
+    if (!exitRead) throw WapiUnstableException("Could not read the remote loader result");
+    const std::uintptr_t moduleBase = remoteModuleBaseForPath(targetPid, resolvedPath);
+    if (moduleBase == 0) {
+        if (exitCode == 0) throw WapiUnstableException("LoadLibrary failed inside target process - check DLL path");
+        throw WapiUnstableException("The remote loader completed but the requested DLL path was not present in the target module list");
     }
-    std::cout << "DLL injected successfully\n";
-    return 0;
+    emitAudit("injectDLL", "inject.dll", "success", auditContext + " remoteBase=" + std::to_string(moduleBase));
+    std::cout << "DLL loaded at " << moduleBase << "\n";
+    return static_cast<long long>(moduleBase);
 }
 
-WapiValue Evaluator::wapi_injectManualMap(int pid, const std::string& dllPath) {
+WapiValue Evaluator::wapi_injectManualMapImpl(int pid, const std::string& dllPath, bool report) {
     if (pid <= 0) throw WapiUnstableException("Invalid pid");
     wapi::injection::ManualMapOptions mapOptions;
     if (timeoutEnabled) {
@@ -2828,7 +3252,7 @@ WapiValue Evaluator::wapi_injectManualMap(int pid, const std::string& dllPath) {
         "pid=" + std::to_string(pid) + " path=" + resolvedPath.string();
     emitAudit("manualMapDLL", "inject.manualmap", "start", auditContext);
     try {
-        const std::uintptr_t remoteBase = wapi::injection::manualMapDll(
+        const wapi::injection::ManualMapResult result = wapi::injection::manualMapDllDetailed(
             static_cast<std::uint32_t>(pid),
             resolvedPath,
             mapOptions
@@ -2838,18 +3262,26 @@ WapiValue Evaluator::wapi_injectManualMap(int pid, const std::string& dllPath) {
                 "manualMapDLL", "inject.manualmap", "validated",
                 auditContext + " x64 native PE; query-only target access; no allocations or threads"
             );
-            return 0;
+            return report ? WapiValue(manualMapResultValue(result)) : WapiValue(0);
         }
         emitAudit(
             "manualMapDLL", "inject.manualmap", "success",
-            auditContext + " remoteBase=" + std::to_string(remoteBase)
+            auditContext + " remoteBase=" + std::to_string(result.baseAddress)
         );
-        std::cout << "DLL manually mapped at " << remoteBase << "\n";
-        return static_cast<long long>(remoteBase);
+        std::cout << "DLL manually mapped at " << result.baseAddress << "\n";
+        return report ? WapiValue(manualMapResultValue(result)) : WapiValue(static_cast<long long>(result.baseAddress));
     } catch (const std::exception& error) {
         emitAudit("manualMapDLL", "inject.manualmap", "failure", auditContext + " error=" + error.what());
         throw;
     }
+}
+
+WapiValue Evaluator::wapi_injectManualMap(int pid, const std::string& dllPath) {
+    return wapi_injectManualMapImpl(pid, dllPath, false);
+}
+
+WapiValue Evaluator::wapi_injectManualMapReport(int pid, const std::string& dllPath) {
+    return wapi_injectManualMapImpl(pid, dllPath, true);
 }
 
 WapiValue Evaluator::wapi_testInjectDLL(int pid) {

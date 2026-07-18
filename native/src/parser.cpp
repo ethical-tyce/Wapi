@@ -21,7 +21,7 @@ bool isAssignmentOperator(TokenType type) {
 
 bool isQualifiedRuntimePrefix(const std::string& name) {
     static const std::unordered_set<std::string> prefixes = {
-        "proc", "mem", "thread", "window", "inject", "debug", "token", "handle", "runtime"
+        "proc", "mem", "thread", "window", "inject", "debug", "token", "handle", "runtime", "detect", "payload", "pe"
     };
     return prefixes.count(name) > 0;
 }

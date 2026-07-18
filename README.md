@@ -134,19 +134,23 @@ Every function below has a global name and a dotted alias, and is gated behind a
 
 **Modules** - `listModules` / `proc.modules`, `getModuleBase`, `getModuleBaseAddress` / `proc.module.base`, `getModuleSize` / `proc.module.size`
 
-**Memory** - `readMemory` / `mem.read`, `scanPattern` / `mem.scan`, `writeMemory` / `mem.write`, `allocMemory` / `mem.alloc`, `freeMemory` / `mem.free`, `protectMemory` / `mem.protect`, `queryMemory` / `mem.query`
+**Memory** - `readMemory` / `mem.read`, `scanPattern` / `mem.scan`, `writeMemory` / `mem.write`, `allocMemory` / `mem.alloc`, `freeMemory` / `mem.free`, `protectMemory` / `mem.protect`, `queryMemory` / `mem.query`, `listMemoryRegions` / `mem.regions`, and `listExecutableRegions` / `mem.executableRegions`
 Typed memory access is available through `mem.readInt32`, `mem.readInt64`, `mem.readFloat`, `mem.readDouble`, and `mem.readPtr`, with matching write functions. `mem.follow` resolves bounded pointer chains.
 
 Small and unsigned integers use `mem.readInt8`, `mem.readUInt8`, `mem.readInt16`, `mem.readUInt16`, `mem.readUInt32`, and `mem.readUInt64`, with matching writes. Buffer and text helpers are `mem.readBytes`, `mem.writeBytes`, `mem.readString`, and `mem.writeString`. Validate uncertain ranges with `mem.isReadable` and `mem.isWritable`.
 
 
-**Threads** - `listThreads` / `thread.list`, `openThread` / `thread.open`, `suspendThread` / `thread.suspend`, `resumeThread` / `thread.resume`, `getThreadContext` / `thread.context`, `setThreadContext` / `thread.context.set`
+**Detection / inspection** - `detect.unbackedExecutable(pid)` returns suspicious executable regions, `detect.peImage(handle, base)` validates an in-memory PE image, and `pe.inspect(path)` inspects an on-disk EXE or DLL without loading it.
+
+**Threads** - `listThreads` / `thread.list`, `openThread` / `thread.open`, `suspendThread` / `thread.suspend`, `resumeThread` / `thread.resume`, `getThreadContext` / `thread.context`, `setThreadContext` / `thread.context.set`, `getThreadStartAddress` / `thread.startAddress`
 
 **Window** - `findWindow` / `window.find`, `listWindowsByPID` / `window.listByPid`, `findWindowByPID` / `window.findByPid`, `sendWindowMessage` / `window.message`
 
-**Injection** - standard loading uses `injectDLL` / `inject.dll` (also `inject.loadLibrary`), with `testInjectDLL` / `inject.test` for the fixture DLL. Shellcode and remote-thread helpers remain `injectShellcode` / `inject.shellcode` and `createRemoteThread` / `inject.thread`. Ordinary injection needs `--allow-injection` below `unsafe` mode.
+**Injection** - standard loading uses `injectDLL` / `inject.dll` (also `inject.loadLibrary`) as `inject.dll(pid, "relative/or/absolute/plugin.dll")`. It validates that the path is an existing native DLL, checks target architecture, and returns the loaded module base. `testInjectDLL` / `inject.test` uses the fixture DLL. Shellcode and remote-thread helpers remain `injectShellcode` / `inject.shellcode` and `createRemoteThread` / `inject.thread`. Ordinary injection needs `--allow-injection` below `unsafe` mode.
 
-Manual mapping uses `manualMapDLL` / `inject.manualMap`. It always requires externally granted `dangerous` mode and the explicit `inject.manualmap` capability. The bounded first version is x64-only and deliberately does not erase PE headers, unlink loader records, hide threads, or bypass security products. It refuses critical processes and targets with CFG or enforced dynamic-code, binary-signature, or image-load mitigation policies.
+Source scaffolding is separate from loading. `inject.writePayloadSRC(language, source)` writes C, C++, Rust, or Zig source under `generated_payloads/` and returns its path. `payload.writeSource(language, relativePath, source)` selects the relative path. Build that source with its normal toolchain, inspect the resulting DLL with `pe.inspect`, then pass the compiled `.dll` path to `inject.dll`. Wapi does not guess a compiled DLL's original source language and does not compile-and-inject in one call.
+
+Manual mapping uses `manualMapDLL` / `inject.manualMap`; `inject.manualMapReport` returns structured validation/mapping details. It always requires externally granted `dangerous` mode and the explicit `inject.manualmap` capability. The bounded first version is x64-only and deliberately does not erase PE headers, unlink loader records, hide threads, or bypass security products. It refuses critical processes and targets with CFG or enforced dynamic-code, binary-signature, or image-load mitigation policies.
 
 Both DLL loaders are source-language independent for native PE DLLs: C, C++, Rust, Zig, and similar toolchains work when Wapi, the target, and DLL architecture match. Managed C# assemblies and Python, Java, or JavaScript payloads require a dedicated runtime/bootstrap and are not treated as native DLLs.
 

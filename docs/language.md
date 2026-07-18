@@ -218,10 +218,30 @@ print(mem.readFloat(handle, healthAddress))
 
 `mem.readBytes` returns an integer array and `mem.writeBytes` accepts values from 0 through 255. `mem.readString(handle, address, maxLength, encoding)` supports `ascii`, `utf8`, and `utf16le`; `mem.writeString` uses the same encodings and writes a null terminator. `mem.isReadable` and `mem.isWritable` validate a complete range across region boundaries.
 
+Detector-oriented inspection is available without modifying the target: `mem.regions(handle)` lists committed regions, `mem.executableRegions(handle)` filters executable regions, `detect.unbackedExecutable(pid)` highlights executable private memory, `detect.peImage(handle, base)` parses a possible in-memory PE image, and `thread.startAddress(threadHandle)` attributes a thread start address to its module and memory region. Unregistered `MEM_IMAGE` regions remain classified in the general region list but are not automatically treated as malicious. On-disk files can be checked with `pe.inspect(path)`.
+
+Payload source and compiled DLLs are deliberately separate:
+
+```wapi
+#mode dev
+#strict
+#cap proc.list file.write pe.inspect inject.dll
+#allow-injection
+let pid = proc.find("notepad")
+
+let sourcePath = inject.writePayloadSRC("cpp", "int exported_marker = 1;")
+// Build sourcePath with your C++ toolchain. The result must be a native PE DLL.
+let dllInfo = pe.inspect("build/plugin.dll")
+let moduleBase = inject.dll(pid, "build/plugin.dll")
+```
+
+`inject.writePayloadSRC(language, source)` accepts `c`, `cpp`/`c++`, `rust`, or `zig`, writes under `generated_payloads/`, and returns the generated relative path. `payload.writeSource(language, relativePath, source)` provides an explicit workspace-relative path with the correct language extension. Source writing requires `file.write`; it never invokes a compiler. `inject.dll(pid, dllPath)` requires an existing `.dll`, validates its PE type and target architecture, loads it through the target's normal Windows loader, and returns the remote module base.
+
+
 
 Ordinary injection helpers additionally need an injection grant below `unsafe` mode. Use `--allow-injection` or `--trust-script-directives` for trusted scripts that declare `#allow-injection`.
 
-`manualMapDLL` / `inject.manualMap` is separate: it requires externally granted `dangerous` mode and the explicit `inject.manualmap` capability. `--trust-script-directives` cannot grant either boundary. The bounded mapper accepts a validated subset of x64 native PE DLLs, resolves relocations and imports, invokes `DllMain`, registers validated x64 unwind data, and applies final non-RWX section protections. It rejects CLR/mixed-mode images, delay imports, TLS callbacks/static TLS, CFG images/targets, writable-executable sections, critical Windows targets, and targets with enforced dynamic-code, signature, or image-load policies.
+`manualMapDLL` / `inject.manualMap` is separate; `inject.manualMapReport(pid, dllPath)` returns a struct with validation, image, import, relocation, unwind, entry-point, protection, and remote-base details. Both require externally granted `dangerous` mode and the explicit `inject.manualmap` capability. `--trust-script-directives` cannot grant either boundary. The bounded mapper accepts a validated subset of x64 native PE DLLs, resolves relocations and imports, invokes `DllMain`, registers validated x64 unwind data, and applies final non-RWX section protections. It rejects CLR/mixed-mode images, delay imports, TLS callbacks/static TLS, CFG images/targets, writable-executable sections, critical Windows targets, and targets with enforced dynamic-code, signature, or image-load policies.
 
 Standard and manual-map loading are source-language independent for native DLLs produced by C, C++, Rust, Zig, and similar toolchains. Managed C#, Python, Java, and JavaScript payloads need an explicit runtime/bootstrap and are not loaded as native DLLs.
 

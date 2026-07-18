@@ -242,8 +242,10 @@ void validateTarget(std::uint32_t pid, HANDLE process) {
     };
     if (blockedProcesses.count(processName) != 0) fail("manual mapping into critical Windows processes is blocked");
     using IsProcessCriticalFn = BOOL(WINAPI*)(HANDLE, PBOOL);
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (!kernel32) fail("kernel32.dll is unavailable in the Wapi process");
     const auto isProcessCritical = reinterpret_cast<IsProcessCriticalFn>(
-        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsProcessCritical")
+        GetProcAddress(kernel32, "IsProcessCritical")
     );
     if (!isProcessCritical) fail("IsProcessCritical is unavailable on this Windows version");
     BOOL critical = FALSE;
@@ -254,7 +256,7 @@ void validateTarget(std::uint32_t pid, HANDLE process) {
 
     using IsWow64Process2Fn = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
     const auto isWow64Process2 = reinterpret_cast<IsWow64Process2Fn>(
-        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2")
+        GetProcAddress(kernel32, "IsWow64Process2")
     );
     if (!isWow64Process2) fail("IsWow64Process2 is unavailable on this Windows version");
     USHORT processMachine = IMAGE_FILE_MACHINE_UNKNOWN;
@@ -592,16 +594,17 @@ FARPROC requiredProc(const wchar_t* moduleName, const char* functionName) {
     return proc;
 }
 
-void processRelocations(ParsedImage& image, std::uint64_t delta, bool applyChanges) {
+std::size_t processRelocations(ParsedImage& image, std::uint64_t delta, bool applyChanges) {
     const auto directory = image.directory(IMAGE_DIRECTORY_ENTRY_BASERELOC);
     if (directory.VirtualAddress == 0) {
         if (directory.Size != 0) fail("relocation directory has a size without an RVA");
         if (delta != 0) fail("preferred image base is unavailable and the DLL has no relocation table");
-        return;
+        return 0;
     }
     if (directory.Size < sizeof(IMAGE_BASE_RELOCATION)) fail("truncated relocation directory");
 
     std::size_t consumed = 0;
+    std::size_t relocationCount = 0;
     while (consumed < directory.Size) {
         if (directory.Size - consumed < sizeof(IMAGE_BASE_RELOCATION)) fail("truncated relocation block");
         auto* block = image.at<IMAGE_BASE_RELOCATION>(directory.VirtualAddress + consumed);
@@ -617,6 +620,7 @@ void processRelocations(ParsedImage& image, std::uint64_t delta, bool applyChang
             const WORD offset = entries[index] & 0x0fff;
             if (type == IMAGE_REL_BASED_ABSOLUTE) continue;
             if (type != IMAGE_REL_BASED_DIR64) fail("unsupported x64 relocation type " + std::to_string(type));
+            ++relocationCount;
             const std::size_t targetRva = static_cast<std::size_t>(block->VirtualAddress) + offset;
             auto* target = image.at<ULONGLONG>(targetRva);
             if (applyChanges) *target += delta;
@@ -624,10 +628,11 @@ void processRelocations(ParsedImage& image, std::uint64_t delta, bool applyChang
         consumed += block->SizeOfBlock;
     }
     if (consumed != directory.Size) fail("relocation directory has trailing bytes");
+    return relocationCount;
 }
 
-void validateRelocations(ParsedImage& image) {
-    processRelocations(image, 0, false);
+std::size_t validateRelocations(ParsedImage& image) {
+    return processRelocations(image, 0, false);
 }
 
 void applyRelocations(ParsedImage& image, std::uintptr_t remoteBase) {
@@ -655,15 +660,16 @@ void validateTls(const ParsedImage& image, std::uintptr_t remoteBase) {
     }
 }
 
-void validateImports(const ParsedImage& image) {
+std::size_t validateImports(const ParsedImage& image) {
     const auto directory = image.directory(IMAGE_DIRECTORY_ENTRY_IMPORT);
     if (directory.VirtualAddress == 0) {
         if (directory.Size != 0) fail("import directory has a size without an RVA");
-        return;
+        return 0;
     }
     const std::size_t descriptorLimit = directory.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
     if (descriptorLimit == 0 || descriptorLimit > kMaxImports) fail("invalid import directory size");
     std::size_t totalImports = 0;
+    std::size_t moduleCount = 0;
     bool foundTerminator = false;
 
     for (std::size_t descriptorIndex = 0; descriptorIndex < descriptorLimit; ++descriptorIndex) {
@@ -676,6 +682,7 @@ void validateImports(const ParsedImage& image) {
             break;
         }
         if (descriptor->Name == 0 || descriptor->FirstThunk == 0) fail("invalid import descriptor");
+        ++moduleCount;
         if (image.stringAt(descriptor->Name, MAX_PATH).empty()) fail("empty imported module name");
         const DWORD lookupRva = descriptor->OriginalFirstThunk != 0
             ? descriptor->OriginalFirstThunk
@@ -707,6 +714,7 @@ void validateImports(const ParsedImage& image) {
         if (!thunkTerminated) fail("import table is unterminated or exceeds the import limit");
     }
     if (!foundTerminator) fail("import descriptor table is not terminated");
+    return moduleCount;
 }
 
 void validateExceptionDirectory(const ParsedImage& image) {
@@ -858,7 +866,7 @@ void protectRemoteImage(
 
 } // namespace
 
-std::uintptr_t manualMapDll(
+ManualMapResult manualMapDllDetailed(
     std::uint32_t pid,
     const std::filesystem::path& dllPath,
     const ManualMapOptions& options
@@ -875,10 +883,19 @@ std::uintptr_t manualMapDll(
     ParsedImage image = parseImage(dllPath);
     if (deadline.remainingMs() == 0) fail("operation timed out during DLL parsing");
 
-    validateRelocations(image);
-    validateImports(image);
+    ManualMapResult result;
+    result.imageSize = image.optional.SizeOfImage;
+    result.sectionCount = image.sections.size();
+    result.relocationCount = validateRelocations(image);
+    result.importModuleCount = validateImports(image);
     validateTls(image, static_cast<std::uintptr_t>(image.optional.ImageBase));
     validateExceptionDirectory(image);
+    const auto validatedExceptionDirectory = image.directory(IMAGE_DIRECTORY_ENTRY_EXCEPTION);
+    if (validatedExceptionDirectory.VirtualAddress != 0) {
+        result.unwindEntryCount = validatedExceptionDirectory.Size / sizeof(X64RuntimeFunctionEntry);
+    }
+    result.validated = true;
+
     if (deadline.remainingMs() == 0) fail("operation timed out during DLL structural validation");
 
     constexpr DWORD queryRights = PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION;
@@ -886,7 +903,7 @@ std::uintptr_t manualMapDll(
     if (!queryProcess) failWin32("could not open target process for validation");
     validateTarget(pid, queryProcess.get());
     if (deadline.remainingMs() == 0) fail("operation timed out during target validation");
-    if (options.validateOnly) return 0;
+    if (options.validateOnly) return result;
 
     constexpr DWORD processRights = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
         PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE;
@@ -912,6 +929,7 @@ std::uintptr_t manualMapDll(
     RemoteAllocation remoteImage(process.get(), remoteAddress, uncertain);
     const std::uintptr_t remoteBase = remoteImage.value();
 
+    result.baseAddress = remoteBase;
     applyRelocations(image, remoteBase);
     validateTls(image, remoteBase);
 
@@ -951,6 +969,7 @@ std::uintptr_t manualMapDll(
         if (caller.invoke(remoteAddFunctionTable, tableAddress, functionCount, remoteBase) == 0) {
             fail("RtlAddFunctionTable rejected the mapped exception directory");
         }
+        result.unwindRegistered = true;
         functionTableRollback = std::make_unique<FunctionTableRollback>(
             caller, remoteDeleteFunctionTable, tableAddress, uncertain
         );
@@ -962,6 +981,7 @@ std::uintptr_t manualMapDll(
             uncertain = true;
             fail("DLL entry point returned FALSE; target state is uncertain and allocations were retained");
         }
+        result.entryPointCalled = true;
     }
 
     try {
@@ -971,11 +991,20 @@ std::uintptr_t manualMapDll(
         throw;
     }
 
+    result.finalProtectionsApplied = true;
     if (functionTableRollback) functionTableRollback->release();
     dependencies.release();
     remoteImage.release();
-    return remoteBase;
+    return result;
 #endif
+}
+
+std::uintptr_t manualMapDll(
+    std::uint32_t pid,
+    const std::filesystem::path& dllPath,
+    const ManualMapOptions& options
+) {
+    return manualMapDllDetailed(pid, dllPath, options).baseAddress;
 }
 
 } // namespace wapi::injection

@@ -34,19 +34,19 @@
 namespace {
 void printBanner() {
     static const std::wstring banner = LR"WAPI(
-ÛÛÛ                           ²²²
-ÛÛÛÛÛÛ                     ²²²²²²
-ÛÛÛÛÛÛÛ²                 ²²²²²²²²
-²²²²²²²²        ²        ²²²²²²²²
-²²²²²²²²      ²²²±²      ²²²²²²²²
-²²²²²²²²    ²²²²²±±²²    ²²²²²²²²          ÛÛÛÛÛÛ          ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ       ÛÛÛÛÛÛÛ
-²²²²²²²²  ²²²²²²²±±²²²²  ²²²²²²²²        ÛÛÛÛÛÛÛÛÛ         ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ   ÛÛÛÛÛÛÛ
-²²²²²²²²±±²²²²²²²±±±²²±±±²²²²²²²²       ÛÛÛÛÛÛÛÛÛÛÛÛ       ÛÛÛÛÛÛÛ     ÛÛÛÛÛÛÛÛ  ÛÛÛÛÛÛÛ
-²²²²²²²²±±²²²²²   ±±±±±±±²²²²²²²²      ÛÛÛÛÛÛ ÛÛÛÛÛÛÛ      ÛÛÛÛÛÛÛ      ÛÛÛÛÛÛÛ  ÛÛÛÛÛÛÛ
-²²²²²²²²±±±²²²     ±±±±±±²²²²²²²²     ÛÛÛÛÛÛ    ÛÛÛÛÛÛ     ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ   ÛÛÛÛÛÛÛ
-²²²²²²²²±±±²         ±±±±²²²²²²²    ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ    ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ     ÛÛÛÛÛÛÛ
-   ²±±²²±±±           ±±±²²±±²     ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ  ÛÛÛÛÛÛÛ               ÛÛÛÛÛÛÛ
-      ±±±               ±±±       ÛÛÛÛÛÛÛ          ÛÛÛÛÛÛÛ ÛÛÛÛÛÛÛ               ÛÛÛÛÛÛÛ
+ï¿½ï¿½ï¿½                           ï¿½ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½                     ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Û²                 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½        ï¿½        ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½      ï¿½ï¿½ï¿½ï¿½ï¿½      ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½    ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½    ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½          ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½          ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½       ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½        ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½         ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½       ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½       ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½     ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½      ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½      ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½      ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½     ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½     ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½    ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½     ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½         ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½    ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½    ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½     ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½           ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½     ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½               ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+      ï¿½ï¿½ï¿½               ï¿½ï¿½ï¿½       ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½          ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½               ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 )WAPI";
 
     SetConsoleTitleW(L"Wapi Terminal");
@@ -690,6 +690,16 @@ const std::unordered_map<std::string, std::string>& functionCapabilities() {
         {"inject.manualMap", "inject.manualmap"},
         {"inject.manualmap", "inject.manualmap"}, {"inject.testDll", "inject.dll"},
         {"inject.test", "inject.dll"}, {"testInjectDll", "inject.dll"},
+        {"listMemoryRegions", "mem.query"}, {"listExecutableRegions", "mem.query"},
+        {"detectUnbackedExecutable", "detect.memory"}, {"detectPeImage", "detect.memory"},
+        {"inspectPeFile", "pe.inspect"}, {"writePayloadSource", "file.write"},
+        {"writeGeneratedPayloadSource", "file.write"}, {"getThreadStartAddress", "thread.query"},
+        {"manualMapReportDLL", "inject.manualmap"},
+        {"mem.regions", "mem.query"}, {"mem.executableRegions", "mem.query"},
+        {"detect.unbackedExecutable", "detect.memory"}, {"detect.peImage", "detect.memory"},
+        {"pe.inspect", "pe.inspect"}, {"payload.writeSource", "file.write"},
+        {"inject.writePayloadSRC", "file.write"}, {"thread.startAddress", "thread.query"},
+        {"inject.manualMapReport", "inject.manualmap"},
         {"len", "language.core"}, {"substr", "language.string"}, {"contains", "language.string"}, {"replace", "language.string"}, {"toLower", "language.string"},
         {"toInt", "language.string"}, {"abs", "language.math"}, {"min", "language.math"}, {"max", "language.math"}, {"push", "language.array"},
         {"pop", "language.array"}, {"typeof", "language.core"}, {"assert", "language.core"}, {"toHex", "language.string"}, {"fromHex", "language.string"},
@@ -1033,6 +1043,12 @@ void runStandardizedTests() {
     test("mem.writeString", "long h = proc.open(1) mem.writeString(h, 0x1000, \"hello\", \"utf16le\")", options);
     test("mem.isReadable", "long h = proc.open(1) bool readable = mem.isReadable(h, 0x1000, 4)", options);
     test("mem.isWritable", "long h = proc.open(1) bool writable = mem.isWritable(h, 0x1000, 4)", options);
+    test("mem.regions", "long h = proc.open(1) var regions = mem.regions(h)", options);
+    test("mem.executableRegions", "long h = proc.open(1) var regions = mem.executableRegions(h)", options);
+    test("detect.unbackedExecutable", "var findings = detect.unbackedExecutable(1)", options);
+    test("detect.peImage", "long h = proc.open(1) var image = detect.peImage(h, 0x1000)", options);
+    test("payload.writeSource", "string path = payload.writeSource(\"cpp\", \"generated_payloads/test.cpp\", \"int value = 1;\")", options);
+    test("inject.writePayloadSRC", "string path = inject.writePayloadSRC(\"rust\", \"pub fn marker() {}\")", options);
     testFailure("mem.writeBytes validates byte range", "long h = proc.open(1) mem.writeBytes(h, 0x1000, [256])", options, "outside 0..255");
     testFailure("mem.writeUInt8 validates range", "long h = proc.open(1) mem.writeUInt8(h, 0x1000, -1)", options, "outside the target integer range");
     test("mem.alloc", "int pid = proc.find(\"notepad\") int handle = proc.open(pid) int addr = mem.alloc(handle, 1024)", options);
@@ -1040,7 +1056,7 @@ void runStandardizedTests() {
 
     std::cout << "\n[Window] --------------------------------------------\n";
     test("window.find", "int win = window.find(\"Notepad\")", options);
-    test("inject.dll", "int pid = proc.find(\"notepad\") inject.dll(pid, \"C:\\\\Temp\\\\TestDLL.dll\")", options);
+    testFailure("inject.dll validates path", "inject.dll(1, \"C:\\\\missing\\\\payload.dll\")", options, "DLL path does not exist");
     test("inject.testDll", "int pid = proc.find(\"notepad\") inject.testDll(pid)", options);
 
     std::cout << "\n[Roadmap / To Implement]\n";
@@ -1065,6 +1081,7 @@ void runStandardizedTests() {
     test("thread.resume", "int tid = 1 int th = thread.open(tid) thread.resume(th)", options);
     test("thread.context", "int tid = 1 int th = thread.open(tid) int ctx = thread.context(th)", options);
     test("thread.context.set", "int tid = 1 int th = thread.open(tid) thread.context.set(th, 0)", options);
+    test("thread.startAddress", "int tid = 1 int th = thread.open(tid) var start = thread.startAddress(th)", options);
 
     std::cout << "\n[Injection Advanced] ---------------------------------\n";
     test("inject.shellcode", "int pid = proc.find(\"notepad\") inject.shellcode(pid, \"90 90 C3\")", options);
